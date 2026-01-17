@@ -11,12 +11,14 @@
 # No Setup Wizard needed - the system auto-initializes on first run.
 # =============================================================================
 
+# docker buildx build --platform linux/amd64 -t cfjwlchangji/sub2api:latest --push .
+
 services:
   # ===========================================================================
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    image: cfjwlchangji/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
     ulimits:
