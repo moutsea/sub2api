@@ -363,9 +363,11 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 		// 服务器要求：当 thinking 启用时，最后一条 assistant 消息必须以 thinking block 开头
 		// 注意：
 		// 1. 这里改为检查 i == lastAssistantIdx，而不是 i == len(messages)-1
-		// 2. 移除 allowDummyThought 的检查：无论是 Gemini 还是 Claude 模型，都需要添加 dummy thinking block
-		//    因为上游要求最后一条 assistant 消息必须以 thinking block 开头（当 thinking 模式启用时）
-		if role == "model" && isThinkingEnabled && i == lastAssistantIdx {
+		// 2. 如果已经有 thinking blocks 被降级（strippedThinking=true），则不添加 dummy thinking block
+		//    因为后续会禁用 thinking 模式，上游不需要 thinking block
+		// 3. 对于 Claude 模型（allowDummyThought=false），如果需要 dummy thinking block 但无法提供有效 signature，
+		//    则标记 strippedThinking=true 以触发 thinking 模式禁用，避免第一次请求就失败
+		if role == "model" && isThinkingEnabled && !strippedThinking && i == lastAssistantIdx {
 			hasThoughtPart := false
 			for _, p := range parts {
 				if p.Thought {
@@ -374,18 +376,20 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 				}
 			}
 			if !hasThoughtPart && len(parts) > 0 {
-				// 在开头添加 dummy thinking block
-				// Signature 处理：
-				// - Gemini 模型：使用 dummy signature 跳过验证
-				// - Claude 模型：不设置 signature（保持空字符串，序列化时会被 omitempty 省略）
-				dummyPart := GeminiPart{
-					Text:    "Thinking...",
-					Thought: true,
-				}
 				if allowDummyThought {
-					dummyPart.ThoughtSignature = dummyThoughtSignature
+					// Gemini 模型：添加 dummy thinking block with dummy signature
+					dummyPart := GeminiPart{
+						Text:             "Thinking...",
+						Thought:          true,
+						ThoughtSignature: dummyThoughtSignature,
+					}
+					parts = append([]GeminiPart{dummyPart}, parts...)
+				} else {
+					// Claude 模型：无法添加有效的 dummy thinking block
+					// （上游要求 signature 字段必须存在且有效，不能为空或 dummy 值）
+					// 标记为需要降级，以便后续禁用 thinking 模式
+					strippedThinking = true
 				}
-				parts = append([]GeminiPart{dummyPart}, parts...)
 			}
 		}
 
@@ -443,15 +447,20 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			// - 如果有真实的 signature，直接使用（Claude 和 Gemini 都需要）
 			// - 如果没有 signature：
 			//   - Gemini 模型：使用 dummy signature 跳过验证
-			//   - Claude 模型：不设置 signature（保持空字符串，序列化时会被 omitempty 省略）
+			//   - Claude 模型：降级为普通 text block（因为上游要求 signature 字段必须存在且有效）
 			if block.Signature != "" {
 				part.ThoughtSignature = block.Signature
-			} else if allowDummyThought {
-				// 仅 Gemini 模型使用 dummy signature
+			} else if !allowDummyThought {
+				// Claude 模型需要有效 signature；在缺失时降级为普通文本，并在上层禁用 thinking mode。
+				if strings.TrimSpace(block.Thinking) != "" {
+					parts = append(parts, GeminiPart{Text: block.Thinking})
+				}
+				strippedThinking = true
+				continue
+			} else {
+				// Gemini 模型使用 dummy signature
 				part.ThoughtSignature = dummyThoughtSignature
 			}
-			// Claude 模型缺少 signature 时，保持 ThoughtSignature 为空字符串
-			// JSON 序列化时会因为 omitempty 而省略该字段
 			parts = append(parts, part)
 
 		case "image":

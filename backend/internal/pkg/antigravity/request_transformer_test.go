@@ -15,15 +15,15 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 		description       string
 	}{
 		{
-			name: "Claude model - use dummy signature when signature missing",
+			name: "Claude model - downgrade thinking to text when signature missing",
 			content: `[
 				{"type": "text", "text": "Hello"},
 				{"type": "thinking", "thinking": "Let me think...", "signature": ""},
 				{"type": "text", "text": "World"}
 			]`,
 			allowDummyThought: false,
-			expectedParts:     3, // thinking 保留为 thinking block，但不设置 signature（空字符串）
-			description:       "Claude模型缺少signature时不设置signature字段（保持空字符串，序列化时会被omitempty省略）",
+			expectedParts:     3, // thinking 降级为 text（因为上游要求 signature 字段必须存在且有效）
+			description:       "Claude模型缺少signature时将thinking降级为普通text（避免上游返回 'signature: Field required' 错误）",
 		},
 		{
 			name: "Claude model - preserve thinking block with signature",
@@ -71,19 +71,17 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 					t.Fatalf("expected thought part with signature sig_real_123, got thought=%v signature=%q",
 						parts[1].Thought, parts[1].ThoughtSignature)
 				}
-			case "Claude model - use dummy signature when signature missing":
+			case "Claude model - downgrade thinking to text when signature missing":
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
-				// 验证 thinking block 被保留但 signature 为空字符串（不设置 dummy signature）
-				if !parts[1].Thought {
-					t.Fatalf("expected thinking block to be preserved, got thought=%v", parts[1].Thought)
+				// 验证 thinking block 被降级为普通 text（Thought=false）
+				if parts[1].Thought {
+					t.Fatalf("expected thinking block to be downgraded to text, got thought=%v", parts[1].Thought)
 				}
-				if parts[1].ThoughtSignature != "" {
-					t.Fatalf("expected empty signature for Claude model, got %q", parts[1].ThoughtSignature)
-				}
+				// 验证文本内容被保留
 				if parts[1].Text != "Let me think..." {
-					t.Fatalf("expected thinking text %q, got %q", "Let me think...", parts[1].Text)
+					t.Fatalf("expected text %q, got %q", "Let me think...", parts[1].Text)
 				}
 			case "Gemini model - use dummy signature":
 				if len(parts) != 3 {
