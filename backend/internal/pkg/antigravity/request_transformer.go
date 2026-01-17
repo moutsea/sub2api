@@ -361,8 +361,11 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 
 		// 只对最后一条 assistant 消息添加 dummy thinking block（如果缺失）
 		// 服务器要求：当 thinking 启用时，最后一条 assistant 消息必须以 thinking block 开头
-		// 注意：这里改为检查 i == lastAssistantIdx，而不是 i == len(messages)-1
-		if allowDummyThought && role == "model" && isThinkingEnabled && i == lastAssistantIdx {
+		// 注意：
+		// 1. 这里改为检查 i == lastAssistantIdx，而不是 i == len(messages)-1
+		// 2. 移除 allowDummyThought 的检查：无论是 Gemini 还是 Claude 模型，都需要添加 dummy thinking block
+		//    因为上游要求最后一条 assistant 消息必须以 thinking block 开头（当 thinking 模式启用时）
+		if role == "model" && isThinkingEnabled && i == lastAssistantIdx {
 			hasThoughtPart := false
 			for _, p := range parts {
 				if p.Thought {
@@ -372,11 +375,17 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 			}
 			if !hasThoughtPart && len(parts) > 0 {
 				// 在开头添加 dummy thinking block
-				parts = append([]GeminiPart{{
-					Text:             "Thinking...",
-					Thought:          true,
-					ThoughtSignature: dummyThoughtSignature,
-				}}, parts...)
+				// Signature 处理：
+				// - Gemini 模型：使用 dummy signature 跳过验证
+				// - Claude 模型：不设置 signature（保持空字符串，序列化时会被 omitempty 省略）
+				dummyPart := GeminiPart{
+					Text:    "Thinking...",
+					Thought: true,
+				}
+				if allowDummyThought {
+					dummyPart.ThoughtSignature = dummyThoughtSignature
+				}
+				parts = append([]GeminiPart{dummyPart}, parts...)
 			}
 		}
 
@@ -430,15 +439,19 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 				Text:    block.Thinking,
 				Thought: true,
 			}
-			// 保留原有 signature（Claude 模型需要有效的 signature）
+			// Signature 处理逻辑：
+			// - 如果有真实的 signature，直接使用（Claude 和 Gemini 都需要）
+			// - 如果没有 signature：
+			//   - Gemini 模型：使用 dummy signature 跳过验证
+			//   - Claude 模型：不设置 signature（保持空字符串，序列化时会被 omitempty 省略）
 			if block.Signature != "" {
 				part.ThoughtSignature = block.Signature
-			} else {
-				// 无论是 Gemini 还是 Claude 模型，缺少 signature 时都使用 dummy signature
-				// 保留 thinking block 结构，避免降级为 text 导致服务器拒绝请求
-				// （降级为 text 会触发：Expected `thinking`, but found `text`）
+			} else if allowDummyThought {
+				// 仅 Gemini 模型使用 dummy signature
 				part.ThoughtSignature = dummyThoughtSignature
 			}
+			// Claude 模型缺少 signature 时，保持 ThoughtSignature 为空字符串
+			// JSON 序列化时会因为 omitempty 而省略该字段
 			parts = append(parts, part)
 
 		case "image":

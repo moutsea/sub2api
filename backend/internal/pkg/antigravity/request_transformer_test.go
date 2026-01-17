@@ -22,8 +22,8 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 				{"type": "text", "text": "World"}
 			]`,
 			allowDummyThought: false,
-			expectedParts:     3, // thinking 保留为 thinking block，使用 dummy signature
-			description:       "Claude模型缺少signature时也使用dummy signature，避免降级为text导致服务器拒绝",
+			expectedParts:     3, // thinking 保留为 thinking block，但不设置 signature（空字符串）
+			description:       "Claude模型缺少signature时不设置signature字段（保持空字符串，序列化时会被omitempty省略）",
 		},
 		{
 			name: "Claude model - preserve thinking block with signature",
@@ -75,12 +75,12 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
-				// 验证 thinking block 被保留并使用了 dummy signature
+				// 验证 thinking block 被保留但 signature 为空字符串（不设置 dummy signature）
 				if !parts[1].Thought {
 					t.Fatalf("expected thinking block to be preserved, got thought=%v", parts[1].Thought)
 				}
-				if parts[1].ThoughtSignature != dummyThoughtSignature {
-					t.Fatalf("expected dummy signature %q, got %q", dummyThoughtSignature, parts[1].ThoughtSignature)
+				if parts[1].ThoughtSignature != "" {
+					t.Fatalf("expected empty signature for Claude model, got %q", parts[1].ThoughtSignature)
 				}
 				if parts[1].Text != "Let me think..." {
 					t.Fatalf("expected thinking text %q, got %q", "Let me think...", parts[1].Text)
