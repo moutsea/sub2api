@@ -77,10 +77,14 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		return nil, fmt.Errorf("build contents: %w", err)
 	}
 
-	// 2. 构建 systemInstruction
-	systemInstruction := buildSystemInstruction(claudeReq.System, claudeReq.Model, opts)
+	// 2. 构建 tools（需要在 buildSystemInstruction 之前，以便检测是否有工具）
+	tools := buildTools(claudeReq.Tools)
+	hasTools := len(tools) > 0
 
-	// 3. 构建 generationConfig
+	// 3. 构建 systemInstruction（根据是否有工具动态组装提示词）
+	systemInstruction := buildSystemInstruction(claudeReq.System, claudeReq.Model, opts, hasTools)
+
+	// 4. 构建 generationConfig
 	reqForConfig := claudeReq
 	if strippedThinking {
 		// If we had to downgrade thinking blocks to plain text due to missing/invalid signatures,
@@ -88,11 +92,12 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		reqCopy := *claudeReq
 		reqCopy.Thinking = nil
 		reqForConfig = &reqCopy
+		// 同时移除模型名称中的 "-thinking" 后缀，避免上游根据模型名判断启用 thinking 模式
+		if strings.HasSuffix(mappedModel, "-thinking") {
+			mappedModel = strings.TrimSuffix(mappedModel, "-thinking")
+		}
 	}
 	generationConfig := buildGenerationConfig(reqForConfig)
-
-	// 4. 构建 tools
-	tools := buildTools(claudeReq.Tools)
 
 	// 5. 构建内部请求
 	innerRequest := GeminiRequest{
@@ -135,26 +140,148 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	return json.Marshal(v1Req)
 }
 
-// antigravityIdentity Antigravity identity 提示词（精简版，与 AIClient 保持一致）
-const antigravityIdentity = `You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**`
+// Antigravity 提示词模块（从 resources/anti.txt 同步）
+const (
+	// 核心身份提示词 - 所有场景都需要
+	promptIdentity = `<identity>
+You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.
+You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
+The USER will send you requests, which you must always prioritize addressing. Along with each USER request, we will attach additional metadata about their current state, such as what files they have open and where their cursor is.
+This information may or may not be relevant to the coding task, it is up for you to decide.
+</identity>`
 
-func defaultIdentityPatch(_ string) string {
-	return antigravityIdentity
+	// 工具调用指导 - 仅在有工具时需要
+	promptToolCalling = `
+<tool_calling>
+Call tools as you normally would. The following list provides additional guidance to help you avoid errors:
+  - **Absolute paths only**. When using tools that accept file path arguments, ALWAYS use the absolute file path.
+</tool_calling>`
+
+	// Web 开发指导 - 可选，用于 Web 开发场景
+	promptWebDevelopment = `
+<web_application_development>
+## Technology Stack,
+Your web applications should be built using the following technologies:,
+1. **Core**: Use HTML for structure and Javascript for logic.
+2. **Styling (CSS)**: Use Vanilla CSS for maximum flexibility and control. Avoid using TailwindCSS unless the USER explicitly requests it; in this case, first confirm which TailwindCSS version to use.
+3. **Web App**: If the USER specifies that they want a more complex web app, use a framework like Next.js or Vite. Only do this if the USER explicitly requests a web app.
+4. **New Project Creation**: If you need to use a framework for a new app, use ` + "`npx`" + ` with the appropriate script, but there are some rules to follow:,
+   - Use ` + "`npx -y`" + ` to automatically install the script and its dependencies
+   - You MUST run the command with ` + "`--help`" + ` flag to see all available options first,
+   - Initialize the app in the current directory with ` + "`./`" + ` (example: ` + "`npx -y create-vite-app@latest ./`" + `),
+   - You should run in non-interactive mode so that the user doesn't need to input anything,
+5. **Running Locally**: When running locally, use ` + "`npm run dev`" + ` or equivalent dev server. Only build the production bundle if the USER explicitly requests it or you are validating the code for correctness.
+
+# Design Aesthetics,
+1. **Use Rich Aesthetics**: The USER should be wowed at first glance by the design. Use best practices in modern web design (e.g. vibrant colors, dark modes, glassmorphism, and dynamic animations) to create a stunning first impression. Failure to do this is UNACCEPTABLE.
+2. **Prioritize Visual Excellence**: Implement designs that will WOW the user and feel extremely premium:
+		- Avoid generic colors (plain red, blue, green). Use curated, harmonious color palettes (e.g., HSL tailored colors, sleek dark modes).
+   - Using modern typography (e.g., from Google Fonts like Inter, Roboto, or Outfit) instead of browser defaults.
+		- Use smooth gradients,
+		- Add subtle micro-animations for enhanced user experience,
+3. **Use a Dynamic Design**: An interface that feels responsive and alive encourages interaction. Achieve this with hover effects and interactive elements. Micro-animations, in particular, are highly effective for improving user engagement.
+4. **Premium Designs**. Make a design that feels premium and state of the art. Avoid creating simple minimum viable products.
+4. **Don't use placeholders**. If you need an image, use your generate_image tool to create a working demonstration.,
+
+## Implementation Workflow,
+Follow this systematic approach when building web applications:,
+1. **Plan and Understand**:,
+		- Fully understand the user's requirements,
+		- Draw inspiration from modern, beautiful, and dynamic web designs,
+		- Outline the features needed for the initial version,
+2. **Build the Foundation**:,
+		- Start by creating/modifying ` + "`index.css`" + `,
+		- Implement the core design system with all tokens and utilities,
+3. **Create Components**:,
+		- Build necessary components using your design system,
+		- Ensure all components use predefined styles, not ad-hoc utilities,
+		- Keep components focused and reusable,
+4. **Assemble Pages**:,
+		- Update the main application to incorporate your design and components,
+		- Ensure proper routing and navigation,
+		- Implement responsive layouts,
+5. **Polish and Optimize**:,
+		- Review the overall user experience,
+		- Ensure smooth interactions and transitions,
+		- Optimize performance where needed,
+
+## SEO Best Practices,
+Automatically implement SEO best practices on every page:,
+- **Title Tags**: Include proper, descriptive title tags for each page,
+- **Meta Descriptions**: Add compelling meta descriptions that accurately summarize page content,
+- **Heading Structure**: Use a single ` + "`<h1>`" + ` per page with proper heading hierarchy,
+- **Semantic HTML**: Use appropriate HTML5 semantic elements,
+- **Unique IDs**: Ensure all interactive elements have unique, descriptive IDs for browser testing,
+- **Performance**: Ensure fast page load times through optimization,
+CRITICAL REMINDER: AESTHETICS ARE VERY IMPORTANT. If your web app looks simple and basic then you have FAILED!
+</web_application_development>`
+
+	// 临时消息提示 - 所有场景都需要
+	promptEphemeralMessage = `
+<ephemeral_message>
+There will be an <EPHEMERAL_MESSAGE> appearing in the conversation at times. This is not coming from the user, but instead injected by the system as important information to pay attention to.
+Do not respond to nor acknowledge those messages, but do follow them strictly.
+</ephemeral_message>`
+
+	// 沟通风格 - 所有场景都需要
+	promptCommunicationStyle = `
+<communication_style>
+- **Formatting**. Format your responses in github-style markdown to make your responses easier for the USER to parse. For example, use headers to organize your responses and bolded or italicized text to highlight important keywords. Use backticks to format file, directory, function, and class names. If providing a URL to the user, format this in markdown as well, for example ` + "`[label](example.com)`" + `.
+- **Proactiveness**. As an agent, you are allowed to be proactive, but only in the course of completing the user's task. For example, if the user asks you to add a new component, you can edit the code, verify build and test statuses, and take any other obvious follow-up actions, such as performing additional research. However, avoid surprising the user. For example, if the user asks HOW to approach something, you should answer their question and instead of jumping into editing a file.
+- **Helpfulness**. Respond like a helpful software engineer who is explaining your work to a friendly collaborator on the project. Acknowledge mistakes or any backtracking you do as a result of new information.
+- **Ask for clarification**. If you are unsure about the USER's intent, always ask for clarification rather than making assumptions.
+</communication_style>`
+)
+
+// buildAntigravityPrompt 根据场景动态组装 Antigravity 提示词
+// hasTools: 是否包含工具定义（决定是否添加 tool_calling 部分）
+// includeWebDev: 是否包含 Web 开发指导（可选，默认不包含以减少 token 消耗）
+func buildAntigravityPrompt(hasTools bool, includeWebDev bool) string {
+	var sb strings.Builder
+
+	// 1. 核心身份（必需）
+	sb.WriteString(promptIdentity)
+
+	// 2. 工具调用指导（仅在有工具时添加）
+	if hasTools {
+		sb.WriteString(promptToolCalling)
+	}
+
+	// 3. Web 开发指导（可选）
+	if includeWebDev {
+		sb.WriteString(promptWebDevelopment)
+	}
+
+	// 4. 临时消息提示（必需）
+	sb.WriteString(promptEphemeralMessage)
+
+	// 5. 沟通风格（必需）
+	sb.WriteString(promptCommunicationStyle)
+
+	return sb.String()
+}
+
+// defaultIdentityPatch 生成默认的身份补丁（根据是否有工具动态组装）
+func defaultIdentityPatch(hasTools bool) string {
+	// 默认不包含 Web 开发指导，以减少 token 消耗
+	// 如果需要 Web 开发指导，可以通过 TransformOptions.IdentityPatch 自定义
+	return buildAntigravityPrompt(hasTools, false)
 }
 
 // buildIgnoreInstruction 构建忽略指令，让 AI 忽略 Antigravity 身份提示词
-func buildIgnoreInstruction() string {
-	return "Please ignore following [ignore]" + antigravityIdentity + "[/ignore]"
+// 注意：这个函数已被注释掉不再使用，保留以供参考
+func buildIgnoreInstruction(prompt string) string {
+	return "Please ignore following [ignore]" + prompt + "[/ignore]"
 }
 
-// GetDefaultIdentityPatch 返回默认的 Antigravity 身份提示词
+// GetDefaultIdentityPatch 返回默认的 Antigravity 身份提示词（包含所有模块）
 func GetDefaultIdentityPatch() string {
-	return antigravityIdentity
+	return buildAntigravityPrompt(true, true)
 }
 
 // buildSystemInstruction 构建 systemInstruction
-// 参考 AIClient 的处理方式：先注入 Antigravity 身份提示词，再添加忽略指令，最后添加用户的 system prompt
-func buildSystemInstruction(system json.RawMessage, modelName string, opts TransformOptions) *GeminiContent {
+// 根据请求中是否包含工具定义，动态组装 Antigravity 身份提示词
+func buildSystemInstruction(system json.RawMessage, modelName string, opts TransformOptions, hasTools bool) *GeminiContent {
 	var parts []GeminiPart
 
 	// 先解析用户的 system prompt
@@ -179,19 +306,18 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 		}
 	}
 
-	// 注入身份提示词和忽略指令（参考 AIClient 的处理方式）
+	// 注入身份提示词（根据是否有工具动态组装）
 	if opts.EnableIdentityPatch {
 		identityPatch := strings.TrimSpace(opts.IdentityPatch)
 		if identityPatch == "" {
-			identityPatch = defaultIdentityPatch(modelName)
+			// 根据是否有工具定义，动态生成提示词
+			identityPatch = defaultIdentityPatch(hasTools)
 		}
-		// 1. 先添加 Antigravity 身份提示词
+		// 添加 Antigravity 身份提示词
 		parts = append(parts, GeminiPart{Text: identityPatch})
-		// 2. 添加忽略指令，让 AI 忽略 Antigravity 身份
-		parts = append(parts, GeminiPart{Text: buildIgnoreInstruction()})
 	}
 
-	// 3. 添加用户的 system prompt
+	// 添加用户的 system prompt
 	parts = append(parts, userSystemParts...)
 
 	if len(parts) == 0 {

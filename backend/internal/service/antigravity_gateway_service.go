@@ -603,10 +603,15 @@ urlFallbackLoop:
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries")
 			}
 
-			// 检查是否应触发 URL 降级（仅 429）
-			if resp.StatusCode == http.StatusTooManyRequests && urlIdx < len(availableURLs)-1 {
+			// 检查 429 错误：账号级别限流，立即标记账号并触发 failover
+			// 429 是账号级别的限流，切换 URL 没有意义，应该直接切换账号
+			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+
+				// 立即标记账号限流状态
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 				logBody := s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBody
@@ -624,13 +629,19 @@ urlFallbackLoop:
 					AccountName:        account.Name,
 					UpstreamStatusCode: resp.StatusCode,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
-					Kind:               "retry",
+					Kind:               "account_rate_limited",
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				antigravity.DefaultURLAvailability.MarkUnavailable(baseURL)
-				log.Printf("%s URL fallback (HTTP 429): %s -> %s body=%s", prefix, baseURL, availableURLs[urlIdx+1], truncateForLog(respBody, 200))
-				continue urlFallbackLoop
+				log.Printf("%s status=429 account_rate_limited body=%s", prefix, truncateForLog(respBody, 200))
+
+				// 包装响应并跳出循环，触发账号级别的 failover
+				resp = &http.Response{
+					StatusCode: resp.StatusCode,
+					Header:     resp.Header.Clone(),
+					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				}
+				break urlFallbackLoop
 			}
 
 			if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
@@ -736,7 +747,13 @@ urlFallbackLoop:
 
 				log.Printf("Antigravity account %d: detected signature-related 400, retrying once (%s)", account.ID, stage.name)
 
-				retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, mappedModel, s.getClaudeTransformOptions(ctx))
+				// 重试时移除模型名称中的 "-thinking" 后缀，因为 thinking 已被禁用
+				retryMappedModel := mappedModel
+				if strings.HasSuffix(retryMappedModel, "-thinking") {
+					retryMappedModel = strings.TrimSuffix(retryMappedModel, "-thinking")
+				}
+
+				retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, retryMappedModel, s.getClaudeTransformOptions(ctx))
 				if txErr != nil {
 					continue
 				}
@@ -1418,10 +1435,15 @@ urlFallbackLoop:
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed after retries")
 			}
 
-			// 检查是否应触发 URL 降级（仅 429）
-			if resp.StatusCode == http.StatusTooManyRequests && urlIdx < len(availableURLs)-1 {
+			// 检查 429 错误：账号级别限流，立即标记账号并触发 failover
+			// 429 是账号级别的限流，切换 URL 没有意义，应该直接切换账号
+			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+
+				// 立即标记账号限流状态
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 				logBody := s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBody
@@ -1439,13 +1461,19 @@ urlFallbackLoop:
 					AccountName:        account.Name,
 					UpstreamStatusCode: resp.StatusCode,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
-					Kind:               "retry",
+					Kind:               "account_rate_limited",
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				antigravity.DefaultURLAvailability.MarkUnavailable(baseURL)
-				log.Printf("%s URL fallback (HTTP 429): %s -> %s body=%s", prefix, baseURL, availableURLs[urlIdx+1], truncateForLog(respBody, 200))
-				continue urlFallbackLoop
+				log.Printf("%s status=429 account_rate_limited body=%s", prefix, truncateForLog(respBody, 200))
+
+				// 包装响应并跳出循环，触发账号级别的 failover
+				resp = &http.Response{
+					StatusCode: resp.StatusCode,
+					Header:     resp.Header.Clone(),
+					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				}
+				break urlFallbackLoop
 			}
 
 			if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
@@ -1911,6 +1939,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	var firstTokenMs *int
 	var last map[string]any
 	var lastWithParts map[string]any
+	var lastUsageMetadata map[string]any // 单独追踪 usageMetadata，因为它通常在最后一个 chunk 中
 
 	type scanEvent struct {
 		line string
@@ -2005,6 +2034,11 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 
 			last = parsed
 
+			// 提取 usageMetadata（通常在最后一个 chunk 中）
+			if um, ok := parsed["usageMetadata"].(map[string]any); ok && um != nil {
+				lastUsageMetadata = um
+			}
+
 			// 提取 usage
 			if u := extractGeminiUsage(parsed); u != nil {
 				usage = u
@@ -2028,6 +2062,15 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 returnResponse:
 	// 选择最后一个有效响应
 	finalResponse := pickGeminiCollectResult(last, lastWithParts)
+
+	// 合并 usageMetadata：如果 finalResponse 中没有 usageMetadata，从 lastUsageMetadata 中补充
+	// 这是因为 Antigravity 上游的 SSE 响应中，usageMetadata 通常只在最后一个 chunk 中，
+	// 而 parts 在中间的 chunks 中，pickGeminiCollectResult 优先选择有 parts 的响应会丢失 usageMetadata
+	if finalResponse != nil && lastUsageMetadata != nil {
+		if _, hasUsage := finalResponse["usageMetadata"]; !hasUsage {
+			finalResponse["usageMetadata"] = lastUsageMetadata
+		}
+	}
 
 	// 处理空响应情况
 	if last == nil && lastWithParts == nil {
@@ -2160,6 +2203,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 	var firstTokenMs *int
 	var last map[string]any
 	var lastWithParts map[string]any
+	var lastUsageMetadata map[string]any // 单独追踪 usageMetadata，因为它通常在最后一个 chunk 中
 
 	type scanEvent struct {
 		line string
@@ -2254,6 +2298,11 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 
 			last = parsed
 
+			// 提取 usageMetadata（通常在最后一个 chunk 中）
+			if um, ok := parsed["usageMetadata"].(map[string]any); ok && um != nil {
+				lastUsageMetadata = um
+			}
+
 			// 保留最后一个有 parts 的响应
 			if parts := extractGeminiParts(parsed); len(parts) > 0 {
 				lastWithParts = parsed
@@ -2272,6 +2321,15 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 returnResponse:
 	// 选择最后一个有效响应
 	finalResponse := pickGeminiCollectResult(last, lastWithParts)
+
+	// 合并 usageMetadata：如果 finalResponse 中没有 usageMetadata，从 lastUsageMetadata 中补充
+	// 这是因为 Antigravity 上游的 SSE 响应中，usageMetadata 通常只在最后一个 chunk 中，
+	// 而 parts 在中间的 chunks 中，pickGeminiCollectResult 优先选择有 parts 的响应会丢失 usageMetadata
+	if finalResponse != nil && lastUsageMetadata != nil {
+		if _, hasUsage := finalResponse["usageMetadata"]; !hasUsage {
+			finalResponse["usageMetadata"] = lastUsageMetadata
+		}
+	}
 
 	// 处理空响应情况
 	if last == nil && lastWithParts == nil {
