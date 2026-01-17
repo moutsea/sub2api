@@ -163,8 +163,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	// 计算粘性会话hash
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	// 计算粘性会话hash（优先使用 X-Conversation-ID header）
+	conversationID := c.GetHeader("X-Conversation-ID")
+	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq, conversationID)
 
 	// 获取平台：优先使用强制平台（/antigravity 路由，中间件已设置 request.Context），否则使用分组平台
 	platform := ""
@@ -734,8 +735,9 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	// 计算粘性会话 hash
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	// 计算粘性会话 hash（优先使用 X-Conversation-ID header）
+	conversationID := c.GetHeader("X-Conversation-ID")
+	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq, conversationID)
 
 	// 选择支持该模型的账号
 	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)

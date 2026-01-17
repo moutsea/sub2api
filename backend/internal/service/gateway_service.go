@@ -177,6 +177,7 @@ type GatewayService struct {
 	concurrencyService  *ConcurrencyService
 	claudeTokenProvider *ClaudeTokenProvider
 	sessionLimitCache   SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	usageCache          *UsageCache       // 用量缓存，用于账号选择时检查配额
 }
 
 // NewGatewayService creates a new GatewayService
@@ -198,6 +199,7 @@ func NewGatewayService(
 	deferredService *DeferredService,
 	claudeTokenProvider *ClaudeTokenProvider,
 	sessionLimitCache SessionLimitCache,
+	usageCache *UsageCache,
 ) *GatewayService {
 	return &GatewayService{
 		accountRepo:         accountRepo,
@@ -217,16 +219,23 @@ func NewGatewayService(
 		deferredService:     deferredService,
 		claudeTokenProvider: claudeTokenProvider,
 		sessionLimitCache:   sessionLimitCache,
+		usageCache:          usageCache,
 	}
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
-func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
+// conversationID: 可选，来自请求 header X-Conversation-ID，优先级最高
+func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest, conversationID string) string {
 	if parsed == nil {
 		return ""
 	}
 
-	// 1. 最高优先级：从 metadata.user_id 提取 session_xxx
+	// 0. 最高优先级：使用请求 header 中的 X-Conversation-ID
+	if conversationID != "" {
+		return s.hashContent(conversationID)
+	}
+
+	// 1. 次高优先级：从 metadata.user_id 提取 session_xxx
 	if parsed.MetadataUserID != "" {
 		if match := sessionIDRegex.FindStringSubmatch(parsed.MetadataUserID); len(match) > 1 {
 			return match[1]
@@ -534,7 +543,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	if len(routingAccountIDs) > 0 && s.concurrencyService != nil {
 		// 1. 过滤出路由列表中可调度的账号
 		var routingCandidates []*Account
-		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost int
+		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost, filteredQuota int
 		for _, routingAccountID := range routingAccountIDs {
 			if isExcluded(routingAccountID) {
 				filteredExcluded++
@@ -566,13 +575,18 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				filteredWindowCost++
 				continue
 			}
+			// 配额检查（Antigravity 账号）
+			if !s.isAccountQuotaAvailable(account) {
+				filteredQuota++
+				continue
+			}
 			routingCandidates = append(routingCandidates, account)
 		}
 
 		if s.debugModelRoutingEnabled() {
-			log.Printf("[ModelRoutingDebug] routed candidates: group_id=%v model=%s routed=%d candidates=%d filtered(excluded=%d missing=%d unsched=%d platform=%d model_scope=%d model_mapping=%d window_cost=%d)",
+			log.Printf("[ModelRoutingDebug] routed candidates: group_id=%v model=%s routed=%d candidates=%d filtered(excluded=%d missing=%d unsched=%d platform=%d model_scope=%d model_mapping=%d window_cost=%d quota=%d)",
 				derefGroupID(groupID), requestedModel, len(routingAccountIDs), len(routingCandidates),
-				filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost)
+				filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost, filteredQuota)
 		}
 
 		if len(routingCandidates) > 0 {
@@ -586,7 +600,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							s.isAccountAllowedForPlatform(stickyAccount, platform, useMixed) &&
 							stickyAccount.IsSchedulableForModel(requestedModel) &&
 							(requestedModel == "" || s.isModelSupportedByAccount(stickyAccount, requestedModel)) &&
-							s.isAccountSchedulableForWindowCost(ctx, stickyAccount, true) { // 粘性会话窗口费用检查
+							s.isAccountSchedulableForWindowCost(ctx, stickyAccount, true) && // 粘性会话窗口费用检查
+							s.isAccountQuotaAvailable(stickyAccount) { // 配额检查
 							result, err := s.tryAcquireAccountSlot(ctx, stickyAccountID, stickyAccount.Concurrency)
 							if err == nil && result.Acquired {
 								// 会话数量限制检查
@@ -724,7 +739,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				s.isAccountAllowedForPlatform(account, platform, useMixed) &&
 				account.IsSchedulableForModel(requestedModel) &&
 				(requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) &&
-				s.isAccountSchedulableForWindowCost(ctx, account, true) { // 粘性会话窗口费用检查
+				s.isAccountSchedulableForWindowCost(ctx, account, true) && // 粘性会话窗口费用检查
+				s.isAccountQuotaAvailable(account) { // 配额检查
 				result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 				if err == nil && result.Acquired {
 					// 会话数量限制检查
@@ -780,6 +796,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 		// 窗口费用检查（非粘性会话路径）
 		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
+			continue
+		}
+		// 配额检查（Antigravity 账号）
+		if !s.isAccountQuotaAvailable(acc) {
 			continue
 		}
 		candidates = append(candidates, acc)
@@ -1278,7 +1298,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
 					// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
-					if err == nil && s.isAccountInGroup(account, groupID) && account.Platform == platform && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) {
+					if err == nil && s.isAccountInGroup(account, groupID) && account.Platform == platform && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
 						if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 							log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
 						}
@@ -1330,6 +1350,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
 				continue
 			}
+			// 配额检查（Antigravity 账号）
+			if !s.isAccountQuotaAvailable(acc) {
+				continue
+			}
 			if selected == nil {
 				selected = acc
 				continue
@@ -1375,7 +1399,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
 				// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
-				if err == nil && s.isAccountInGroup(account, groupID) && account.Platform == platform && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) {
+				if err == nil && s.isAccountInGroup(account, groupID) && account.Platform == platform && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
 					if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 						log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
 					}
@@ -1414,6 +1438,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			continue
 		}
 		if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
+			continue
+		}
+		// 配额检查（Antigravity 账号）
+		if !s.isAccountQuotaAvailable(acc) {
 			continue
 		}
 		if selected == nil {
@@ -1479,7 +1507,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
 					// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
-					if err == nil && s.isAccountInGroup(account, groupID) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) {
+					if err == nil && s.isAccountInGroup(account, groupID) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
 						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 							if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 								log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
@@ -1533,6 +1561,10 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
 				continue
 			}
+			// 配额检查（Antigravity 账号）
+			if !s.isAccountQuotaAvailable(acc) {
+				continue
+			}
 			if selected == nil {
 				selected = acc
 				continue
@@ -1578,7 +1610,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
 				// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
-				if err == nil && s.isAccountInGroup(account, groupID) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) {
+				if err == nil && s.isAccountInGroup(account, groupID) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
 					if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 						if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 							log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
@@ -1619,6 +1651,10 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			continue
 		}
 		if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
+			continue
+		}
+		// 配额检查（Antigravity 账号）
+		if !s.isAccountQuotaAvailable(acc) {
 			continue
 		}
 		if selected == nil {
@@ -1730,6 +1766,12 @@ const (
 )
 
 func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode int) bool {
+	// 429/529 限流错误：不在同一账号上重试，直接 failover 到其他账号
+	// 这类错误表示当前账号已被限流，继续重试没有意义
+	if statusCode == 429 || statusCode == 529 {
+		return false
+	}
+
 	// OAuth/Setup Token 账号：仅 403 重试
 	if account.IsOAuth() {
 		return statusCode == 403
@@ -3656,4 +3698,55 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	}
 
 	return models
+}
+
+// 配额检查阈值常量
+const (
+	// defaultQuotaThreshold 默认配额阈值，超过此值的账号将被过滤（百分比，90 表示 90%）
+	defaultQuotaThreshold = 90
+)
+
+// isAccountQuotaAvailable 检查账号配额是否可用
+// 对于 Antigravity 账号，检查缓存中的配额使用率是否超过阈值
+// 返回 true 表示配额可用，false 表示配额已超过阈值
+func (s *GatewayService) isAccountQuotaAvailable(account *Account) bool {
+	if account == nil {
+		return false
+	}
+
+	// 仅对 Antigravity 账号进行配额检查
+	if account.Platform != PlatformAntigravity {
+		return true
+	}
+
+	// 如果没有配置 usageCache，跳过配额检查
+	if s.usageCache == nil {
+		return true
+	}
+
+	// 从缓存中获取配额信息
+	cached, ok := s.usageCache.antigravityCache.Load(account.ID)
+	if !ok {
+		// 没有缓存数据，允许使用（后续请求会触发配额获取）
+		return true
+	}
+
+	cache, ok := cached.(*antigravityUsageCache)
+	if !ok {
+		return true
+	}
+
+	// 检查缓存是否过期（3 分钟 TTL）
+	if time.Since(cache.timestamp) >= apiCacheTTL {
+		// 缓存过期，允许使用
+		return true
+	}
+
+	usageInfo := cache.usageInfo
+	if usageInfo == nil || usageInfo.FiveHour == nil {
+		return true
+	}
+
+	// 检查 FiveHour 使用率是否超过阈值
+	return usageInfo.FiveHour.Utilization < defaultQuotaThreshold
 }

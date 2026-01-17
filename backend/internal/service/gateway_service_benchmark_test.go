@@ -18,7 +18,7 @@ func BenchmarkGenerateSessionHash_Metadata(b *testing.B) {
 		if err != nil {
 			b.Fatalf("解析请求失败: %v", err)
 		}
-		benchmarkStringSink = svc.GenerateSessionHash(parsed)
+		benchmarkStringSink = svc.GenerateSessionHash(parsed, "")
 	}
 }
 

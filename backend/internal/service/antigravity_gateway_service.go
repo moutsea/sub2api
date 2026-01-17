@@ -998,7 +998,16 @@ func sanitizeThinkingBlocks(req *antigravity.ClaudeRequest) {
 	}
 
 	// Clean message content blocks and flatten history
-	lastMsgIdx := len(req.Messages) - 1
+	// 关键：找到最后一条 assistant 消息的索引，只对它之前的消息进行扁平化
+	// 上游要求：当 thinking 模式启用时，最后一条 assistant 消息必须以 thinking block 开头
+	lastAssistantIdx := -1
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "assistant" {
+			lastAssistantIdx = i
+			break
+		}
+	}
+
 	for msgIdx := range req.Messages {
 		raw := req.Messages[msgIdx].Content
 		if len(raw) == 0 {
@@ -1023,8 +1032,10 @@ func sanitizeThinkingBlocks(req *antigravity.ClaudeRequest) {
 					cleaned = true
 				}
 
-				// 2. Flatten to text if it's a history message (not the last one)
-				if msgIdx < lastMsgIdx {
+				// 2. Flatten to text if it's NOT the last assistant message
+				// 上游要求：当 thinking 模式启用时，最后一条 assistant 消息必须以 thinking block 开头
+				// 所以只对最后一条 assistant 消息之前的消息进行扁平化
+				if msgIdx < lastAssistantIdx {
 					log.Printf("[Antigravity] Flattening history thinking block to text at messages[%d].content[%d]", msgIdx, blockIdx)
 
 					// Extract thinking content
@@ -1639,8 +1650,10 @@ handleSuccess:
 }
 
 func (s *AntigravityGatewayService) shouldRetryUpstreamError(statusCode int) bool {
+	// 429/529 限流错误：不在同一账号上重试，直接 failover 到其他账号
+	// 这类错误表示当前账号已被限流，继续重试没有意义
 	switch statusCode {
-	case 429, 500, 502, 503, 504, 529:
+	case 500, 502, 503, 504:
 		return true
 	default:
 		return false

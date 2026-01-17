@@ -215,7 +215,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 
 	// 3) select account (sticky session based on request body)
 	parsedReq, _ := service.ParseGatewayRequest(body)
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	conversationID := c.GetHeader("X-Conversation-ID")
+	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq, conversationID)
 	sessionKey := sessionHash
 	if sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash

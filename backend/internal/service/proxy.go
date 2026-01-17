@@ -22,9 +22,16 @@ func (p *Proxy) IsActive() bool {
 	return p.Status == StatusActive
 }
 
+// 代理国家编码常量
+// 990100 = 美国
+// 后续可改为从配置或数据库字段读取
+const defaultProxyCountryCode = "990100"
+
 func (p *Proxy) URL() string {
 	if p.Username != "" && p.Password != "" {
-		return fmt.Sprintf("%s://%s:%s@%s:%d", p.Protocol, p.Username, p.Password, p.Host, p.Port)
+		// 格式: {protocol}://{username}:{password}:A{country_code}@{host}:{port}
+		// 例如: socks5://authkey:authpwd:A990100@proxy.example.com:1080
+		return fmt.Sprintf("%s://%s:%s:A%s@%s:%d", p.Protocol, p.Username, p.Password, defaultProxyCountryCode, p.Host, p.Port)
 	}
 	return fmt.Sprintf("%s://%s:%d", p.Protocol, p.Host, p.Port)
 }
