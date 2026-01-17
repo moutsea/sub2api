@@ -129,6 +129,24 @@ func TestBuildParts_ToolUseSignatureHandling(t *testing.T) {
 			t.Fatalf("expected preserved tool signature %q, got %q", "sig_tool_abc", parts[0].ThoughtSignature)
 		}
 	})
+
+	t.Run("Claude model - use dummy signature when tool_use lacks signature", func(t *testing.T) {
+		contentWithoutSig := `[
+			{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
+		]`
+		toolIDToName := make(map[string]string)
+		parts, _, err := buildParts(json.RawMessage(contentWithoutSig), toolIDToName, false)
+		if err != nil {
+			t.Fatalf("buildParts() error = %v", err)
+		}
+		if len(parts) != 1 || parts[0].FunctionCall == nil {
+			t.Fatalf("expected 1 functionCall part, got %+v", parts)
+		}
+		// Claude 模型缺少 signature 时应使用 dummy signature 避免上游报错
+		if parts[0].ThoughtSignature != dummyThoughtSignature {
+			t.Fatalf("expected dummy signature %q when signature missing, got %q", dummyThoughtSignature, parts[0].ThoughtSignature)
+		}
+	})
 }
 
 // TestBuildTools_CustomTypeTools 测试custom类型工具转换

@@ -488,11 +488,14 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			}
 			// tool_use 的 signature 处理：
 			// - Gemini 模型：使用 dummy signature（跳过 thought_signature 校验）
-			// - Claude 模型：透传上游返回的真实 signature（Vertex/Google 需要完整签名链路）
+			// - Claude 模型：优先透传上游返回的真实 signature，缺失时使用 dummy signature（避免上游报错）
 			if allowDummyThought {
 				part.ThoughtSignature = dummyThoughtSignature
 			} else if block.Signature != "" && block.Signature != dummyThoughtSignature {
 				part.ThoughtSignature = block.Signature
+			} else {
+				// Claude 模型缺少 signature：使用 dummy signature 避免 "signature: Field required" 错误
+				part.ThoughtSignature = dummyThoughtSignature
 			}
 			parts = append(parts, part)
 
