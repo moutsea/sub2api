@@ -15,15 +15,15 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 		description       string
 	}{
 		{
-			name: "Claude model - downgrade thinking to text without signature",
+			name: "Claude model - use dummy signature when signature missing",
 			content: `[
 				{"type": "text", "text": "Hello"},
 				{"type": "thinking", "thinking": "Let me think...", "signature": ""},
 				{"type": "text", "text": "World"}
 			]`,
 			allowDummyThought: false,
-			expectedParts:     3, // thinking 内容降级为普通 text part
-			description:       "Claude模型缺少signature时应将thinking降级为text，并在上层禁用thinking mode",
+			expectedParts:     3, // thinking 保留为 thinking block，使用 dummy signature
+			description:       "Claude模型缺少signature时也使用dummy signature，避免降级为text导致服务器拒绝",
 		},
 		{
 			name: "Claude model - preserve thinking block with signature",
@@ -71,16 +71,19 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 					t.Fatalf("expected thought part with signature sig_real_123, got thought=%v signature=%q",
 						parts[1].Thought, parts[1].ThoughtSignature)
 				}
-			case "Claude model - downgrade thinking to text without signature":
+			case "Claude model - use dummy signature when signature missing":
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
-				if parts[1].Thought {
-					t.Fatalf("expected downgraded text part, got thought=%v signature=%q",
-						parts[1].Thought, parts[1].ThoughtSignature)
+				// 验证 thinking block 被保留并使用了 dummy signature
+				if !parts[1].Thought {
+					t.Fatalf("expected thinking block to be preserved, got thought=%v", parts[1].Thought)
+				}
+				if parts[1].ThoughtSignature != dummyThoughtSignature {
+					t.Fatalf("expected dummy signature %q, got %q", dummyThoughtSignature, parts[1].ThoughtSignature)
 				}
 				if parts[1].Text != "Let me think..." {
-					t.Fatalf("expected downgraded text %q, got %q", "Let me think...", parts[1].Text)
+					t.Fatalf("expected thinking text %q, got %q", "Let me think...", parts[1].Text)
 				}
 			case "Gemini model - use dummy signature":
 				if len(parts) != 3 {

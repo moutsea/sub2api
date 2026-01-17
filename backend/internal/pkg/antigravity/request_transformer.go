@@ -335,6 +335,16 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 	var contents []GeminiContent
 	strippedThinking := false
 
+	// 找到最后一条 assistant 消息的索引
+	// 这是为了确保在 thinking 模式下，最后一条 assistant 消息有 thinking block
+	lastAssistantIdx := -1
+	for idx := len(messages) - 1; idx >= 0; idx-- {
+		if messages[idx].Role == "assistant" {
+			lastAssistantIdx = idx
+			break
+		}
+	}
+
 	for i, msg := range messages {
 		role := msg.Role
 		if role == "assistant" {
@@ -349,10 +359,10 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 			strippedThinking = true
 		}
 
-		// 只有 Gemini 模型支持 dummy thinking block workaround
-		// 只对最后一条 assistant 消息添加（Pre-fill 场景）
-		// 历史 assistant 消息不能添加没有 signature 的 dummy thinking block
-		if allowDummyThought && role == "model" && isThinkingEnabled && i == len(messages)-1 {
+		// 只对最后一条 assistant 消息添加 dummy thinking block（如果缺失）
+		// 服务器要求：当 thinking 启用时，最后一条 assistant 消息必须以 thinking block 开头
+		// 注意：这里改为检查 i == lastAssistantIdx，而不是 i == len(messages)-1
+		if allowDummyThought && role == "model" && isThinkingEnabled && i == lastAssistantIdx {
 			hasThoughtPart := false
 			for _, p := range parts {
 				if p.Thought {
@@ -423,15 +433,10 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			// 保留原有 signature（Claude 模型需要有效的 signature）
 			if block.Signature != "" {
 				part.ThoughtSignature = block.Signature
-			} else if !allowDummyThought {
-				// Claude 模型需要有效 signature；在缺失时降级为普通文本，并在上层禁用 thinking mode。
-				if strings.TrimSpace(block.Thinking) != "" {
-					parts = append(parts, GeminiPart{Text: block.Thinking})
-				}
-				strippedThinking = true
-				continue
 			} else {
-				// Gemini 模型使用 dummy signature
+				// 无论是 Gemini 还是 Claude 模型，缺少 signature 时都使用 dummy signature
+				// 保留 thinking block 结构，避免降级为 text 导致服务器拒绝请求
+				// （降级为 text 会触发：Expected `thinking`, but found `text`）
 				part.ThoughtSignature = dummyThoughtSignature
 			}
 			parts = append(parts, part)
