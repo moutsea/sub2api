@@ -203,7 +203,7 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		requestBody, err = s.buildGeminiTestRequest(projectID, mappedModel)
 	} else {
 		// Claude 模型：使用协议转换
-		requestBody, err = s.buildClaudeTestRequest(projectID, mappedModel)
+		requestBody, err = s.buildClaudeTestRequest(ctx, projectID, mappedModel)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
@@ -298,7 +298,7 @@ func (s *AntigravityGatewayService) buildGeminiTestRequest(projectID, model stri
 }
 
 // buildClaudeTestRequest 构建 Claude 格式测试请求并转换为 Gemini 格式
-func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedModel string) ([]byte, error) {
+func (s *AntigravityGatewayService) buildClaudeTestRequest(ctx context.Context, projectID, mappedModel string) ([]byte, error) {
 	claudeReq := &antigravity.ClaudeRequest{
 		Model: mappedModel,
 		Messages: []antigravity.ClaudeMessage{
@@ -310,7 +310,8 @@ func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedMode
 		MaxTokens: 1024,
 		Stream:    false,
 	}
-	return antigravity.TransformClaudeToGemini(claudeReq, projectID, mappedModel)
+	opts := s.getClaudeTransformOptions(ctx)
+	return antigravity.TransformClaudeToGeminiWithOptions(claudeReq, projectID, mappedModel, opts)
 }
 
 func (s *AntigravityGatewayService) getClaudeTransformOptions(ctx context.Context) antigravity.TransformOptions {

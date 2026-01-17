@@ -84,10 +84,6 @@ RUN apk add --no-cache \
     curl \
     && rm -rf /var/cache/apk/*
 
-# Create non-root user
-RUN addgroup -g 1000 sub2api && \
-    adduser -u 1000 -G sub2api -s /bin/sh -D sub2api
-
 # Set working directory
 WORKDIR /app
 
@@ -95,10 +91,7 @@ WORKDIR /app
 COPY --from=backend-builder /app/sub2api /app/sub2api
 
 # Create data directory
-RUN mkdir -p /app/data && chown -R sub2api:sub2api /app
-
-# Switch to non-root user
-USER sub2api
+RUN mkdir -p /app/data
 
 # Expose port (can be overridden by SERVER_PORT env var)
 EXPOSE 8080
