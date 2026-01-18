@@ -12,6 +12,8 @@ import (
 	mathrand "math/rand"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -704,6 +706,9 @@ urlFallbackLoop:
 		if resp.StatusCode == http.StatusBadRequest && isSignatureRelatedError(respBody) {
 			upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+			// 记录详细的调试信息，帮助排查 signature 验证失败的问题
+			logSignatureErrorContext(&claudeReq, upstreamMsg, mappedModel)
 			logBody := s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBody
 			maxBytes := 2048
 			if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBodyMaxBytes > 0 {
@@ -920,6 +925,94 @@ func isSignatureRelatedError(respBody []byte) bool {
 	}
 
 	return false
+}
+
+// signatureErrorMessageIndexRegex 匹配 "messages.N.content.M" 格式的错误路径
+var signatureErrorMessageIndexRegex = regexp.MustCompile(`messages\.(\d+)\.content\.(\d+)`)
+
+// logSignatureErrorContext 记录 signature 错误的详细上下文信息
+// 用于调试 thinking block signature 验证失败的问题
+func logSignatureErrorContext(claudeReq *antigravity.ClaudeRequest, errorMsg string, mappedModel string) {
+	// 解析错误消息中的消息索引
+	matches := signatureErrorMessageIndexRegex.FindStringSubmatch(errorMsg)
+	if len(matches) < 3 {
+		log.Printf("[SignatureDebug] Error message does not contain message index: %s", errorMsg)
+		return
+	}
+
+	msgIdx, err1 := strconv.Atoi(matches[1])
+	contentIdx, err2 := strconv.Atoi(matches[2])
+	if err1 != nil || err2 != nil {
+		log.Printf("[SignatureDebug] Failed to parse message index: %s", errorMsg)
+		return
+	}
+
+	log.Printf("[SignatureDebug] Model: %s, MessageIndex: %d, ContentIndex: %d", mappedModel, msgIdx, contentIdx)
+	log.Printf("[SignatureDebug] Total messages: %d", len(claudeReq.Messages))
+
+	// 检查索引是否有效
+	if msgIdx < 0 || msgIdx >= len(claudeReq.Messages) {
+		log.Printf("[SignatureDebug] Message index %d out of range (total: %d)", msgIdx, len(claudeReq.Messages))
+		return
+	}
+
+	msg := claudeReq.Messages[msgIdx]
+	log.Printf("[SignatureDebug] Message[%d].Role: %s", msgIdx, msg.Role)
+
+	// 解析 content
+	var blocks []map[string]any
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		// 可能是字符串格式
+		var textContent string
+		if err2 := json.Unmarshal(msg.Content, &textContent); err2 == nil {
+			log.Printf("[SignatureDebug] Message[%d].Content is plain text (len=%d)", msgIdx, len(textContent))
+		} else {
+			log.Printf("[SignatureDebug] Message[%d].Content parse error: %v", msgIdx, err)
+		}
+		return
+	}
+
+	log.Printf("[SignatureDebug] Message[%d] has %d content blocks", msgIdx, len(blocks))
+
+	// 记录每个 content block 的类型和 signature 信息
+	for i, block := range blocks {
+		blockType, _ := block["type"].(string)
+		signature, hasSignature := block["signature"].(string)
+		thinking, _ := block["thinking"].(string)
+
+		if blockType == "thinking" || blockType == "tool_use" {
+			signaturePreview := ""
+			if hasSignature && signature != "" {
+				if len(signature) > 50 {
+					signaturePreview = signature[:50] + "..."
+				} else {
+					signaturePreview = signature
+				}
+			} else {
+				signaturePreview = "(empty or missing)"
+			}
+
+			if i == contentIdx {
+				// 这是出错的 block
+				log.Printf("[SignatureDebug] >>> Message[%d].Content[%d]: type=%s, signature=%s (THIS IS THE ERROR BLOCK)",
+					msgIdx, i, blockType, signaturePreview)
+				if blockType == "thinking" && thinking != "" {
+					thinkingPreview := thinking
+					if len(thinkingPreview) > 100 {
+						thinkingPreview = thinkingPreview[:100] + "..."
+					}
+					log.Printf("[SignatureDebug]     thinking content: %s", thinkingPreview)
+				}
+			} else {
+				log.Printf("[SignatureDebug]     Message[%d].Content[%d]: type=%s, signature=%s",
+					msgIdx, i, blockType, signaturePreview)
+			}
+		} else {
+			if i == contentIdx {
+				log.Printf("[SignatureDebug] >>> Message[%d].Content[%d]: type=%s (THIS IS THE ERROR BLOCK)", msgIdx, i, blockType)
+			}
+		}
+	}
 }
 
 func extractAntigravityErrorMessage(body []byte) string {

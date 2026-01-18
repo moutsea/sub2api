@@ -413,7 +413,28 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 
 // dummyThoughtSignature 用于跳过 Gemini 3 thought_signature 验证
 // 参考: https://ai.google.dev/gemini-api/docs/thought-signatures
+// 注意: 这个 sentinel value 只适用于普通 Gemini API，Vertex AI 不接受
 const dummyThoughtSignature = "skip_thought_signature_validator"
+
+// minSignatureLength 最小签名长度
+// 有效的 thought signature 通常长度 >= 50
+// 太短的 signature 很可能是无效的或伪造的
+const minSignatureLength = 50
+
+// isValidSignature 验证 signature 是否有效
+// 返回 true 如果 signature 看起来是有效的（非空、非 dummy、长度足够）
+func isValidSignature(sig string) bool {
+	if sig == "" {
+		return false
+	}
+	if sig == dummyThoughtSignature {
+		return false
+	}
+	if len(sig) < minSignatureLength {
+		return false
+	}
+	return true
+}
 
 // buildParts 构建消息的 parts
 // allowDummyThought: 只有 Gemini 模型支持 dummy thought signature
@@ -444,29 +465,37 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			}
 
 		case "thinking":
-			part := GeminiPart{
-				Text:    block.Thinking,
-				Thought: true,
-			}
 			// Signature 处理逻辑：
-			// - 如果有真实的 signature，直接使用（Claude 和 Gemini 都需要）
-			// - 如果没有 signature：
-			//   - Gemini 模型：使用 dummy signature 跳过验证
-			//   - Claude 模型：降级为普通 text block（因为上游要求 signature 字段必须存在且有效）
-			if block.Signature != "" {
-				part.ThoughtSignature = block.Signature
-			} else if !allowDummyThought {
-				// Claude 模型需要有效 signature；在缺失时降级为普通文本，并在上层禁用 thinking mode。
+			// 1. 验证 signature 是否有效（非空、非 dummy、长度 >= 50）
+			// 2. 有效 signature：直接使用
+			// 3. 无效 signature：
+			//    - Gemini 模型：使用 dummy signature 跳过验证
+			//    - Claude 模型（Vertex AI）：降级为普通 text block
+			if isValidSignature(block.Signature) {
+				// 有效 signature，创建 thinking part
+				part := GeminiPart{
+					Text:             block.Thinking,
+					Thought:          true,
+					ThoughtSignature: block.Signature,
+				}
+				parts = append(parts, part)
+			} else if allowDummyThought {
+				// Gemini 模型：使用 dummy signature
+				part := GeminiPart{
+					Text:             block.Thinking,
+					Thought:          true,
+					ThoughtSignature: dummyThoughtSignature,
+				}
+				parts = append(parts, part)
+			} else {
+				// Claude 模型（Vertex AI）：无效 signature，降级为普通文本
+				// 因为 Vertex AI 不接受 dummy signature
 				if strings.TrimSpace(block.Thinking) != "" {
 					parts = append(parts, GeminiPart{Text: block.Thinking})
 				}
 				strippedThinking = true
 				continue
-			} else {
-				// Gemini 模型使用 dummy signature
-				part.ThoughtSignature = dummyThoughtSignature
 			}
-			parts = append(parts, part)
 
 		case "image":
 			if block.Source != nil && block.Source.Type == "base64" {
@@ -492,16 +521,20 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 				},
 			}
 			// tool_use 的 signature 处理：
-			// - Gemini 模型：使用 dummy signature（跳过 thought_signature 校验）
-			// - Claude 模型：优先透传上游返回的真实 signature，缺失时使用 dummy signature（避免上游报错）
-			if allowDummyThought {
-				part.ThoughtSignature = dummyThoughtSignature
-			} else if block.Signature != "" && block.Signature != dummyThoughtSignature {
+			// 1. 验证 signature 是否有效
+			// 2. 有效 signature：直接使用
+			// 3. 无效 signature：
+			//    - Gemini 模型：使用 dummy signature 跳过验证
+			//    - Claude 模型（Vertex AI）：不添加 signature 字段
+			//      （让上游根据消息结构自动处理，避免 dummy signature 被拒绝）
+			if isValidSignature(block.Signature) {
 				part.ThoughtSignature = block.Signature
-			} else {
-				// Claude 模型缺少 signature：使用 dummy signature 避免 "signature: Field required" 错误
+			} else if allowDummyThought {
+				// Gemini 模型：使用 dummy signature
 				part.ThoughtSignature = dummyThoughtSignature
 			}
+			// Claude 模型（Vertex AI）且无有效 signature：不设置 ThoughtSignature
+			// 这样可以避免 "Invalid signature in thinking block" 错误
 			parts = append(parts, part)
 
 		case "tool_result":
