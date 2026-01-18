@@ -257,6 +257,10 @@ type GatewayConfig struct {
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
 
+	// 是否记录 signature 调试日志（包含消息索引和 signature 预览）
+	// 建议仅在排查 thinking block 相关问题时开启
+	LogSignatureDebug bool `mapstructure:"log_signature_debug"`
+
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 }
@@ -759,6 +763,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
+	viper.SetDefault("gateway.log_signature_debug", false)
 	viper.SetDefault("gateway.max_body_size", int64(100*1024*1024))
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationAccountProxy)
 	// HTTP 上游连接池配置（针对 5000+ 并发用户优化）

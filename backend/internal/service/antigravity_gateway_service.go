@@ -708,7 +708,9 @@ urlFallbackLoop:
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
 			// 记录详细的调试信息，帮助排查 signature 验证失败的问题
-			logSignatureErrorContext(&claudeReq, upstreamMsg, mappedModel)
+			if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogSignatureDebug {
+				logSignatureErrorContext(&claudeReq, upstreamMsg, mappedModel)
+			}
 			logBody := s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBody
 			maxBytes := 2048
 			if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBodyMaxBytes > 0 {
