@@ -118,6 +118,12 @@ services:
       # Proxy for accessing GitHub (online updates + pricing data)
       # Examples: http://host:port, socks5://host:port
       - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
+
+      # =======================================================================
+      # Debug Configuration (调试配置)
+      # =======================================================================
+      # Enable signature debug logging for troubleshooting thinking block issues
+      - SUB2API_GATEWAY_LOG_SIGNATURE_DEBUG=${SUB2API_GATEWAY_LOG_SIGNATURE_DEBUG:-false}
     depends_on:
       postgres:
         condition: service_healthy
