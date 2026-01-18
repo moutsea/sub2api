@@ -97,12 +97,12 @@ var antigravityPrefixMapping = []struct {
 	{"claude-3-5-sonnet", "claude-sonnet-4-5"},       // 旧版 claude-3-5-sonnet-xxx
 	{"claude-sonnet-4-5", "claude-sonnet-4-5"},       // claude-sonnet-4-5-xxx
 	{"claude-haiku-4-5", "claude-sonnet-4-5"},        // claude-haiku-4-5-xxx → sonnet
-	{"claude-opus-4-5", "claude-opus-4-5-thinking"},
-	{"claude-3-haiku", "claude-sonnet-4-5"}, // 旧版 claude-3-haiku-xxx → sonnet
+	{"claude-opus-4-5", "claude-opus-4-5-thinking"},  // claude-opus-4-5-xxx → thinking
+	{"claude-3-haiku", "claude-sonnet-4-5"},          // 旧版 claude-3-haiku-xxx → sonnet
 	{"claude-sonnet-4", "claude-sonnet-4-5"},
-	{"claude-haiku-4", "claude-sonnet-4-5"}, // → sonnet
-	{"claude-opus-4", "claude-opus-4-5-thinking"},
-	{"gemini-3-pro", "gemini-3-pro-high"}, // gemini-3-pro, gemini-3-pro-preview 等
+	{"claude-haiku-4", "claude-sonnet-4-5"},        // → sonnet
+	{"claude-opus-4", "claude-opus-4-5-thinking"}, // claude-opus-4-xxx → thinking
+	{"gemini-3-pro", "gemini-3-pro-high"},          // gemini-3-pro, gemini-3-pro-preview 等
 }
 
 // AntigravityGatewayService 处理 Antigravity 平台的 API 转发
@@ -748,9 +748,14 @@ urlFallbackLoop:
 				log.Printf("Antigravity account %d: detected signature-related 400, retrying once (%s)", account.ID, stage.name)
 
 				// 重试时移除模型名称中的 "-thinking" 后缀，因为 thinking 已被禁用
+				// 注意：Opus 模型只有 thinking 版本，不能移除后缀
 				retryMappedModel := mappedModel
 				if strings.HasSuffix(retryMappedModel, "-thinking") {
-					retryMappedModel = strings.TrimSuffix(retryMappedModel, "-thinking")
+					// 只对 Sonnet 等有非 thinking 版本的模型移除后缀
+					if strings.Contains(retryMappedModel, "sonnet") || strings.Contains(retryMappedModel, "gemini") {
+						retryMappedModel = strings.TrimSuffix(retryMappedModel, "-thinking")
+					}
+					// Opus 等只有 thinking 版本的模型：保持后缀
 				}
 
 				retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, retryMappedModel, s.getClaudeTransformOptions(ctx))

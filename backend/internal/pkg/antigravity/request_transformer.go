@@ -93,8 +93,13 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		reqCopy.Thinking = nil
 		reqForConfig = &reqCopy
 		// 同时移除模型名称中的 "-thinking" 后缀，避免上游根据模型名判断启用 thinking 模式
+		// 注意：Opus 模型只有 thinking 版本，不能移除后缀
 		if strings.HasSuffix(mappedModel, "-thinking") {
-			mappedModel = strings.TrimSuffix(mappedModel, "-thinking")
+			// 只对 Sonnet 等有非 thinking 版本的模型移除后缀
+			if strings.Contains(mappedModel, "sonnet") || strings.Contains(mappedModel, "gemini") {
+				mappedModel = strings.TrimSuffix(mappedModel, "-thinking")
+			}
+			// Opus 等只有 thinking 版本的模型：保持后缀
 		}
 	}
 	generationConfig := buildGenerationConfig(reqForConfig)

@@ -1,8 +1,12 @@
 package antigravity
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	mathrand "math/rand"
+	"time"
 )
 
 // TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）
@@ -267,7 +271,13 @@ func generateRandomID() string {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	result := make([]byte, 12)
 	for i := range result {
-		result[i] = chars[i%len(chars)]
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if err != nil {
+			// fallback: 使用 math/rand（极少发生）
+			result[i] = chars[mathrand.New(mathrand.NewSource(time.Now().UnixNano())).Intn(len(chars))]
+		} else {
+			result[i] = chars[n.Int64()]
+		}
 	}
 	return string(result)
 }
