@@ -4,8 +4,153 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 )
+
+// remapFunctionCallArgs 修正 Gemini 返回的工具参数以符合 Claude Code 规范
+// 参考 Antigravity-Manager 的 streaming.rs 实现
+func remapFunctionCallArgs(toolName string, args map[string]any) {
+	if args == nil {
+		return
+	}
+
+	toolNameLower := strings.ToLower(toolName)
+
+	switch toolNameLower {
+	case "grep", "search", "search_files", "searchfiles", "search_code_definitions", "search_code_snippets":
+		// [FIX] Gemini 可能使用 "description" 字段而不是 "pattern"
+		if desc, ok := args["description"].(string); ok {
+			if _, hasPattern := args["pattern"]; !hasPattern {
+				args["pattern"] = desc
+				delete(args, "description")
+				log.Printf("[StreamTransformer] Remapped Grep: description → pattern")
+			}
+		}
+
+		// Gemini 使用 "query"，Claude Code 使用 "pattern"
+		if query, ok := args["query"].(string); ok {
+			if _, hasPattern := args["pattern"]; !hasPattern {
+				args["pattern"] = query
+				delete(args, "query")
+				log.Printf("[StreamTransformer] Remapped Grep: query → pattern")
+			}
+		}
+
+		// [CRITICAL] Claude Code 使用 "path" (字符串)，而不是 "paths" (数组)
+		if _, hasPath := args["path"]; !hasPath {
+			if paths, ok := args["paths"]; ok {
+				var pathStr string
+				switch v := paths.(type) {
+				case []any:
+					if len(v) > 0 {
+						if s, ok := v[0].(string); ok {
+							pathStr = s
+						}
+					}
+				case []string:
+					if len(v) > 0 {
+						pathStr = v[0]
+					}
+				case string:
+					pathStr = v
+				}
+				if pathStr == "" {
+					pathStr = "."
+				}
+				args["path"] = pathStr
+				delete(args, "paths")
+				log.Printf("[StreamTransformer] Remapped Grep: paths → path(\"%s\")", pathStr)
+			} else {
+				// 默认使用当前目录
+				args["path"] = "."
+				log.Printf("[StreamTransformer] Added default path: \".\"")
+			}
+		}
+
+	case "glob", "list_files", "listfiles":
+		// [FIX] Gemini 可能使用 "description" 字段而不是 "pattern"
+		if desc, ok := args["description"].(string); ok {
+			if _, hasPattern := args["pattern"]; !hasPattern {
+				args["pattern"] = desc
+				delete(args, "description")
+				log.Printf("[StreamTransformer] Remapped Glob: description → pattern")
+			}
+		}
+
+		// Gemini 使用 "query"，Claude Code 使用 "pattern"
+		if query, ok := args["query"].(string); ok {
+			if _, hasPattern := args["pattern"]; !hasPattern {
+				args["pattern"] = query
+				delete(args, "query")
+				log.Printf("[StreamTransformer] Remapped Glob: query → pattern")
+			}
+		}
+
+		// [CRITICAL] Claude Code 使用 "path" (字符串)，而不是 "paths" (数组)
+		if _, hasPath := args["path"]; !hasPath {
+			if paths, ok := args["paths"]; ok {
+				var pathStr string
+				switch v := paths.(type) {
+				case []any:
+					if len(v) > 0 {
+						if s, ok := v[0].(string); ok {
+							pathStr = s
+						}
+					}
+				case []string:
+					if len(v) > 0 {
+						pathStr = v[0]
+					}
+				case string:
+					pathStr = v
+				}
+				if pathStr == "" {
+					pathStr = "."
+				}
+				args["path"] = pathStr
+				delete(args, "paths")
+				log.Printf("[StreamTransformer] Remapped Glob: paths → path(\"%s\")", pathStr)
+			}
+			// Glob 的 path 是可选的，不需要默认值
+		}
+
+	case "read", "read_file", "readfile":
+		// Gemini 可能使用 "path" 而不是 "file_path"
+		if path, ok := args["path"].(string); ok {
+			if _, hasFilePath := args["file_path"]; !hasFilePath {
+				args["file_path"] = path
+				delete(args, "path")
+				log.Printf("[StreamTransformer] Remapped Read: path → file_path")
+			}
+		}
+
+	case "ls":
+		// LS 工具：确保 "path" 参数存在
+		if _, hasPath := args["path"]; !hasPath {
+			args["path"] = "."
+			log.Printf("[StreamTransformer] Remapped LS: default path → \".\"")
+		}
+
+	case "enterplanmode":
+		// [IMPORTANT] Claude Code CLI 的 EnterPlanMode 工具禁止携带任何参数
+		for k := range args {
+			delete(args, k)
+		}
+
+	default:
+		// 通用处理：如果工具有 "paths" (单元素数组) 但没有 "path"，转换它
+		if _, hasPath := args["path"]; !hasPath {
+			if paths, ok := args["paths"].([]any); ok && len(paths) == 1 {
+				if p, ok := paths[0].(string); ok {
+					args["path"] = p
+					delete(args, "paths")
+					log.Printf("[StreamTransformer] Generic fix for tool '%s': paths[0] → path(\"%s\")", toolName, p)
+				}
+			}
+		}
+	}
+}
 
 // BlockType 内容块类型
 type BlockType int
@@ -292,10 +437,17 @@ func (p *StreamingProcessor) processFunctionCall(fc *GeminiFunctionCall, signatu
 		toolID = fmt.Sprintf("%s-%s", fc.Name, generateRandomID())
 	}
 
+	// 工具名称规范化：search → grep
+	toolName := fc.Name
+	if strings.ToLower(toolName) == "search" {
+		toolName = "grep"
+		log.Printf("[StreamTransformer] Normalizing tool name: search → grep")
+	}
+
 	toolUse := map[string]any{
 		"type":  "tool_use",
 		"id":    toolID,
-		"name":  fc.Name,
+		"name":  toolName,
 		"input": map[string]any{},
 	}
 
@@ -307,10 +459,38 @@ func (p *StreamingProcessor) processFunctionCall(fc *GeminiFunctionCall, signatu
 
 	// 发送 input_json_delta
 	if fc.Args != nil {
-		argsJSON, _ := json.Marshal(fc.Args)
-		_, _ = result.Write(p.emitDelta("input_json_delta", map[string]any{
-			"partial_json": string(argsJSON),
-		}))
+		// [FIX] 重映射参数以符合 Claude Code 规范
+		// 首先需要将 Args 转换为 map[string]any
+		var remappedArgs map[string]any
+		switch v := fc.Args.(type) {
+		case map[string]any:
+			remappedArgs = make(map[string]any)
+			for k, val := range v {
+				remappedArgs[k] = val
+			}
+		default:
+			// 如果不是 map 类型，尝试通过 JSON 序列化/反序列化转换
+			argsBytes, err := json.Marshal(fc.Args)
+			if err == nil {
+				if err := json.Unmarshal(argsBytes, &remappedArgs); err != nil {
+					remappedArgs = nil
+				}
+			}
+		}
+
+		if remappedArgs != nil {
+			remapFunctionCallArgs(toolName, remappedArgs)
+			argsJSON, _ := json.Marshal(remappedArgs)
+			_, _ = result.Write(p.emitDelta("input_json_delta", map[string]any{
+				"partial_json": string(argsJSON),
+			}))
+		} else {
+			// 无法转换，直接使用原始参数
+			argsJSON, _ := json.Marshal(fc.Args)
+			_, _ = result.Write(p.emitDelta("input_json_delta", map[string]any{
+				"partial_json": string(argsJSON),
+			}))
+		}
 	}
 
 	_, _ = result.Write(p.endBlock())
