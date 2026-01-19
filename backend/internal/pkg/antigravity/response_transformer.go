@@ -39,12 +39,13 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 
 // NonStreamingProcessor 非流式响应处理器
 type NonStreamingProcessor struct {
-	contentBlocks     []ClaudeContentItem
-	textBuilder       string
-	thinkingBuilder   string
-	thinkingSignature string
-	trailingSignature string
-	hasToolCall       bool
+	contentBlocks       []ClaudeContentItem
+	textBuilder         string
+	thinkingBuilder     string
+	thinkingSignature   string
+	trailingSignature   string
+	hasToolCall         bool
+	hadNonThinkingBlock bool // [FIX] 跟踪是否已发送过非 thinking 块（text 或 tool_use）
 }
 
 // NewNonStreamingProcessor 创建非流式响应处理器
@@ -72,7 +73,8 @@ func (p *NonStreamingProcessor) Process(geminiResp *GeminiResponse, responseID, 
 	p.flushText()
 
 	// 处理 trailingSignature
-	if p.trailingSignature != "" {
+	// [FIX] 只有当还没有发送过非 thinking 块时，才能追加 thinking 块
+	if p.trailingSignature != "" && !p.hadNonThinkingBlock {
 		p.contentBlocks = append(p.contentBlocks, ClaudeContentItem{
 			Type:      "thinking",
 			Thinking:  "",
@@ -94,16 +96,18 @@ func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 		p.flushText()
 
 		// 处理 trailingSignature
-		if p.trailingSignature != "" {
+		// [FIX] 只有当还没有发送过非 thinking 块时，才能追加 thinking 块
+		if p.trailingSignature != "" && !p.hadNonThinkingBlock {
 			p.contentBlocks = append(p.contentBlocks, ClaudeContentItem{
 				Type:      "thinking",
 				Thinking:  "",
 				Signature: p.trailingSignature,
 			})
-			p.trailingSignature = ""
 		}
+		p.trailingSignature = ""
 
 		p.hasToolCall = true
+		p.hadNonThinkingBlock = true // [FIX] 标记已发送非 thinking 块
 
 		// 生成 tool_use id
 		toolID := part.FunctionCall.ID
@@ -133,15 +137,16 @@ func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 			p.flushText()
 
 			// 处理 trailingSignature
-			if p.trailingSignature != "" {
+			// [FIX] 只有当还没有发送过非 thinking 块时，才能追加 thinking 块
+			if p.trailingSignature != "" && !p.hadNonThinkingBlock {
 				p.flushThinking()
 				p.contentBlocks = append(p.contentBlocks, ClaudeContentItem{
 					Type:      "thinking",
 					Thinking:  "",
 					Signature: p.trailingSignature,
 				})
-				p.trailingSignature = ""
 			}
+			p.trailingSignature = ""
 
 			p.thinkingBuilder += part.Text
 			if signature != "" {
@@ -160,26 +165,25 @@ func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 			p.flushThinking()
 
 			// 处理之前的 trailingSignature
-			if p.trailingSignature != "" {
+			// [FIX] 只有当还没有发送过非 thinking 块时，才能追加 thinking 块
+			if p.trailingSignature != "" && !p.hadNonThinkingBlock {
 				p.flushText()
 				p.contentBlocks = append(p.contentBlocks, ClaudeContentItem{
 					Type:      "thinking",
 					Thinking:  "",
 					Signature: p.trailingSignature,
 				})
-				p.trailingSignature = ""
 			}
+			p.trailingSignature = ""
 
 			p.textBuilder += part.Text
+			p.hadNonThinkingBlock = true // [FIX] 标记已发送非 thinking 块
 
-			// 非空 text 带签名 - 立即刷新并输出空 thinking 块
+			// 非空 text 带签名 - 立即刷新
+			// [FIX] 不再追加 thinking 块，只丢弃签名
 			if signature != "" {
 				p.flushText()
-				p.contentBlocks = append(p.contentBlocks, ClaudeContentItem{
-					Type:      "thinking",
-					Thinking:  "",
-					Signature: signature,
-				})
+				// 签名被丢弃，因为 Claude 协议不允许在 text 块之后追加 thinking 块
 			}
 		}
 	}
