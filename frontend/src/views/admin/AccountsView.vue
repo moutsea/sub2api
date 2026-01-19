@@ -144,14 +144,14 @@ import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { Account, Proxy, Group } from '@/types'
+import type { Account, Proxy, AdminGroup } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
 const proxies = ref<Proxy[]>([])
-const groups = ref<Group[]>([])
+const groups = ref<AdminGroup[]>([])
 const selIds = ref<number[]>([])
 const showCreate = ref(false)
 const showEdit = ref(false)
