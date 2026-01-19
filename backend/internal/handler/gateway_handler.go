@@ -443,6 +443,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				log.Printf("Record usage failed: %v", err)
 			}
 		}(result, account, userAgent, clientIP)
+
+		// 对 Antigravity 账号，请求完成后异步刷新配额并更新健康状态
+		if account.Platform == service.PlatformAntigravity {
+			h.gatewayService.RefreshAntigravityQuotaAsync(account.ID)
+		}
 		return
 	}
 }

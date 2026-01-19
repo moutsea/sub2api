@@ -178,6 +178,7 @@ type GatewayService struct {
 	claudeTokenProvider *ClaudeTokenProvider
 	sessionLimitCache   SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
 	usageCache          *UsageCache       // 用量缓存，用于账号选择时检查配额
+	accountUsageService *AccountUsageService // 账号用量服务，用于主动刷新配额
 }
 
 // NewGatewayService creates a new GatewayService
@@ -200,6 +201,7 @@ func NewGatewayService(
 	claudeTokenProvider *ClaudeTokenProvider,
 	sessionLimitCache SessionLimitCache,
 	usageCache *UsageCache,
+	accountUsageService *AccountUsageService,
 ) *GatewayService {
 	return &GatewayService{
 		accountRepo:         accountRepo,
@@ -220,6 +222,7 @@ func NewGatewayService(
 		claudeTokenProvider: claudeTokenProvider,
 		sessionLimitCache:   sessionLimitCache,
 		usageCache:          usageCache,
+		accountUsageService: accountUsageService,
 	}
 }
 
@@ -3724,6 +3727,11 @@ func (s *GatewayService) isAccountQuotaAvailable(account *Account) bool {
 		return true
 	}
 
+	// 首先检查配额健康状态（由请求完成后的刷新逻辑标记）
+	if !s.usageCache.IsQuotaHealthy(account.ID) {
+		return false
+	}
+
 	// 从缓存中获取配额信息
 	cached, ok := s.usageCache.antigravityCache.Load(account.ID)
 	if !ok {
@@ -3749,4 +3757,78 @@ func (s *GatewayService) isAccountQuotaAvailable(account *Account) bool {
 
 	// 检查 FiveHour 使用率是否超过阈值
 	return usageInfo.FiveHour.Utilization < defaultQuotaThreshold
+}
+
+// RefreshAntigravityQuotaAsync 异步刷新 Antigravity 账号配额并更新健康状态
+// 用于粘性会话场景：请求完成后刷新当前账号配额
+func (s *GatewayService) RefreshAntigravityQuotaAsync(accountID int64) {
+	if s.accountUsageService == nil || s.usageCache == nil {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		healthy, err := s.accountUsageService.RefreshAndCheckQuotaHealth(ctx, accountID)
+		if err != nil {
+			log.Printf("[QuotaRefresh] account=%d refresh failed: %v", accountID, err)
+			return
+		}
+
+		if !healthy {
+			s.usageCache.MarkQuotaUnhealthy(accountID)
+			log.Printf("[QuotaRefresh] account=%d marked unhealthy (utilization >= %.0f%%)", accountID, quotaHealthyThreshold)
+		} else {
+			// 如果之前不健康，现在恢复了
+			if !s.usageCache.IsQuotaHealthy(accountID) {
+				s.usageCache.MarkQuotaHealthy(accountID)
+				log.Printf("[QuotaRefresh] account=%d recovered to healthy", accountID)
+			}
+		}
+	}()
+}
+
+// StartQuotaRecoveryTask 启动后台配额恢复任务
+// 每 30 分钟检查配额不健康的账号，刷新配额并尝试恢复
+func (s *GatewayService) StartQuotaRecoveryTask(ctx context.Context) {
+	if s.accountUsageService == nil || s.usageCache == nil {
+		return
+	}
+
+	ticker := time.NewTicker(30 * time.Minute)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				s.recoverUnhealthyAccounts(ctx)
+			}
+		}
+	}()
+}
+
+// recoverUnhealthyAccounts 恢复配额不健康的账号
+func (s *GatewayService) recoverUnhealthyAccounts(ctx context.Context) {
+	unhealthyIDs := s.usageCache.GetUnhealthyAccountIDs()
+	if len(unhealthyIDs) == 0 {
+		return
+	}
+
+	log.Printf("[QuotaRecovery] checking %d unhealthy accounts", len(unhealthyIDs))
+
+	healthMap := s.accountUsageService.RefreshQuotaBatch(ctx, unhealthyIDs)
+	recovered := 0
+	for accountID, healthy := range healthMap {
+		if healthy {
+			s.usageCache.MarkQuotaHealthy(accountID)
+			recovered++
+		}
+	}
+
+	if recovered > 0 {
+		log.Printf("[QuotaRecovery] recovered %d/%d accounts", recovered, len(unhealthyIDs))
+	}
 }
