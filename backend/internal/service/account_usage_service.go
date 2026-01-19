@@ -81,6 +81,9 @@ type antigravityUsageCache struct {
 const (
 	apiCacheTTL         = 3 * time.Minute
 	windowStatsCacheTTL = 1 * time.Minute
+
+	// quotaHealthyThreshold 配额健康阈值，超过此值的账号被标记为不健康
+	quotaHealthyThreshold = 85.0
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -88,11 +91,45 @@ type UsageCache struct {
 	apiCache         sync.Map // accountID -> *apiUsageCache
 	windowStatsCache sync.Map // accountID -> *windowStatsCache
 	antigravityCache sync.Map // accountID -> *antigravityUsageCache
+	quotaUnhealthy   sync.Map // accountID -> time.Time (标记时间)
 }
 
 // NewUsageCache 创建 UsageCache 实例
 func NewUsageCache() *UsageCache {
 	return &UsageCache{}
+}
+
+// IsQuotaHealthy 检查账号配额是否健康
+func (c *UsageCache) IsQuotaHealthy(accountID int64) bool {
+	_, unhealthy := c.quotaUnhealthy.Load(accountID)
+	return !unhealthy
+}
+
+// MarkQuotaUnhealthy 标记账号配额不健康
+func (c *UsageCache) MarkQuotaUnhealthy(accountID int64) {
+	c.quotaUnhealthy.Store(accountID, time.Now())
+}
+
+// MarkQuotaHealthy 标记账号配额恢复健康
+func (c *UsageCache) MarkQuotaHealthy(accountID int64) {
+	c.quotaUnhealthy.Delete(accountID)
+}
+
+// GetUnhealthyAccountIDs 获取所有配额不健康的账号ID
+func (c *UsageCache) GetUnhealthyAccountIDs() []int64 {
+	var ids []int64
+	c.quotaUnhealthy.Range(func(key, _ any) bool {
+		if id, ok := key.(int64); ok {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
+}
+
+// InvalidateAntigravityCache 使指定账号的 Antigravity 缓存失效
+func (c *UsageCache) InvalidateAntigravityCache(accountID int64) {
+	c.antigravityCache.Delete(accountID)
 }
 
 // WindowStats 窗口期统计
@@ -348,6 +385,84 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 	})
 
 	return result.UsageInfo, nil
+}
+
+// RefreshAntigravityQuota 强制刷新 Antigravity 账号配额（跳过缓存）
+// 返回 UsageInfo 和错误
+func (s *AccountUsageService) RefreshAntigravityQuota(ctx context.Context, accountID int64) (*UsageInfo, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account failed: %w", err)
+	}
+
+	if account.Platform != PlatformAntigravity {
+		return nil, fmt.Errorf("account %d is not antigravity platform", accountID)
+	}
+
+	if s.antigravityQuotaFetcher == nil || !s.antigravityQuotaFetcher.CanFetch(account) {
+		now := time.Now()
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	// 获取代理 URL
+	proxyURL := s.antigravityQuotaFetcher.GetProxyURL(ctx, account)
+
+	// 调用 API 获取额度
+	result, err := s.antigravityQuotaFetcher.FetchQuota(ctx, account, proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch antigravity quota failed: %w", err)
+	}
+
+	// 更新缓存
+	s.cache.antigravityCache.Store(account.ID, &antigravityUsageCache{
+		usageInfo: result.UsageInfo,
+		timestamp: time.Now(),
+	})
+
+	return result.UsageInfo, nil
+}
+
+// RefreshAndCheckQuotaHealth 刷新账号配额并检查健康状态
+// 返回: healthy=true 表示配额健康（Utilization < 85%）
+func (s *AccountUsageService) RefreshAndCheckQuotaHealth(ctx context.Context, accountID int64) (healthy bool, err error) {
+	usage, err := s.RefreshAntigravityQuota(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+
+	// 检查 FiveHour utilization
+	if usage.FiveHour != nil && usage.FiveHour.Utilization >= quotaHealthyThreshold {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// RefreshQuotaBatch 批量刷新账号配额（并发）
+// 返回 map[accountID]healthy
+func (s *AccountUsageService) RefreshQuotaBatch(ctx context.Context, accountIDs []int64) map[int64]bool {
+	result := make(map[int64]bool)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, id := range accountIDs {
+		wg.Add(1)
+		go func(accountID int64) {
+			defer wg.Done()
+			healthy, err := s.RefreshAndCheckQuotaHealth(ctx, accountID)
+			mu.Lock()
+			if err != nil {
+				// 刷新失败的账号暂时视为不健康
+				result[accountID] = false
+			} else {
+				result[accountID] = healthy
+			}
+			mu.Unlock()
+		}(id)
+	}
+
+	wg.Wait()
+	return result
 }
 
 // addWindowStats 为 usage 数据添加窗口期统计

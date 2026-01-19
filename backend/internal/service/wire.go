@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
@@ -192,6 +193,40 @@ func ProvideAPIKeyAuthCacheInvalidator(apiKeyService *APIKeyService) APIKeyAuthC
 	return apiKeyService
 }
 
+// ProvideGatewayService creates and starts GatewayService with background tasks.
+func ProvideGatewayService(
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	usageLogRepo UsageLogRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	identityService *IdentityService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	claudeTokenProvider *ClaudeTokenProvider,
+	sessionLimitCache SessionLimitCache,
+	usageCache *UsageCache,
+	accountUsageService *AccountUsageService,
+) *GatewayService {
+	svc := NewGatewayService(
+		accountRepo, groupRepo, usageLogRepo, userRepo, userSubRepo,
+		cache, cfg, schedulerSnapshot, concurrencyService, billingService,
+		rateLimitService, billingCacheService, identityService, httpUpstream,
+		deferredService, claudeTokenProvider, sessionLimitCache, usageCache,
+		accountUsageService,
+	)
+	// 启动后台配额恢复任务（每 30 分钟检查配额不健康的 Antigravity 账号）
+	svc.StartQuotaRecoveryTask(context.Background())
+	return svc
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -210,7 +245,7 @@ var ProviderSet = wire.NewSet(
 	NewBillingService,
 	NewBillingCacheService,
 	NewAdminService,
-	NewGatewayService,
+	ProvideGatewayService,
 	NewOpenAIGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
