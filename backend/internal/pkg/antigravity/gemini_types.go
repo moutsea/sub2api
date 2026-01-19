@@ -149,6 +149,14 @@ type GeminiCandidate struct {
 	GroundingMetadata *GeminiGroundingMetadata `json:"groundingMetadata,omitempty"`
 }
 
+// GeminiUsageMetadata Gemini 用量元数据
+type GeminiUsageMetadata struct {
+	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
+	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
+}
+
 // GeminiGroundingMetadata Gemini grounding 元数据（Web搜索结果）
 type GeminiGroundingMetadata struct {
 	WebSearchQueries []string               `json:"webSearchQueries,omitempty"`
@@ -164,14 +172,6 @@ type GeminiGroundingChunk struct {
 type GeminiGroundingWeb struct {
 	URI   string `json:"uri,omitempty"`
 	Title string `json:"title,omitempty"`
-}
-
-// GeminiUsageMetadata Gemini 用量元数据
-type GeminiUsageMetadata struct {
-	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
-	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
-	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
 }
 
 // DefaultSafetySettings 默认安全设置（关闭所有过滤）

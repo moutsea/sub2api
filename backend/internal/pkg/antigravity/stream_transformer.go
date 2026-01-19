@@ -173,15 +173,13 @@ type StreamingProcessor struct {
 	pendingSignature    string
 	trailingSignature   string
 	originalModel       string
+	webSearchQueries    []string
+	groundingChunks     []GeminiGroundingChunk
 
 	// 累计 usage
 	inputTokens     int
 	outputTokens    int
 	cacheReadTokens int
-
-	// Grounding metadata（Web搜索结果）
-	webSearchQuery  string
-	groundingChunks []GeminiGroundingChunk
 }
 
 // NewStreamingProcessor 创建流式响应处理器
@@ -245,14 +243,7 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 
 	// 捕获 groundingMetadata（Web搜索结果）
 	if len(geminiResp.Candidates) > 0 {
-		if grounding := geminiResp.Candidates[0].GroundingMetadata; grounding != nil {
-			if len(grounding.WebSearchQueries) > 0 {
-				p.webSearchQuery = grounding.WebSearchQueries[0]
-			}
-			if len(grounding.GroundingChunks) > 0 {
-				p.groundingChunks = grounding.GroundingChunks
-			}
-		}
+		p.captureGrounding(geminiResp.Candidates[0].GroundingMetadata)
 	}
 
 	// 检查是否结束
@@ -363,6 +354,20 @@ func (p *StreamingProcessor) processPart(part *GeminiPart) []byte {
 	}
 
 	return result.Bytes()
+}
+
+func (p *StreamingProcessor) captureGrounding(grounding *GeminiGroundingMetadata) {
+	if grounding == nil {
+		return
+	}
+
+	if len(grounding.WebSearchQueries) > 0 && len(p.webSearchQueries) == 0 {
+		p.webSearchQueries = append([]string(nil), grounding.WebSearchQueries...)
+	}
+
+	if len(grounding.GroundingChunks) > 0 && len(p.groundingChunks) == 0 {
+		p.groundingChunks = append([]GeminiGroundingChunk(nil), grounding.GroundingChunks...)
+	}
 }
 
 // processThinking 处理 thinking
@@ -639,37 +644,18 @@ func (p *StreamingProcessor) emitFinish(finishReason string) []byte {
 	}
 
 	// 处理 grounding metadata（Web搜索结果）-> 转换为 Markdown 文本块
-	if p.webSearchQuery != "" || len(p.groundingChunks) > 0 {
-		var groundingText strings.Builder
-
-		// 1. 处理搜索词
-		if p.webSearchQuery != "" {
-			groundingText.WriteString("\n\n---\n**🔍 已为您搜索：** ")
-			groundingText.WriteString(p.webSearchQuery)
-		}
-
-		// 2. 处理来源链接
-		if len(p.groundingChunks) > 0 {
-			groundingText.WriteString("\n\n**📚 来源：**\n")
-			for i, chunk := range p.groundingChunks {
-				if chunk.Web != nil && chunk.Web.URI != "" {
-					title := chunk.Web.Title
-					if title == "" {
-						title = chunk.Web.URI
-					}
-					groundingText.WriteString(fmt.Sprintf("%d. [%s](%s)\n", i+1, title, chunk.Web.URI))
-				}
-			}
-		}
-
-		// 发送新的 text 块
-		if groundingText.Len() > 0 {
+	if len(p.webSearchQueries) > 0 || len(p.groundingChunks) > 0 {
+		groundingText := buildGroundingText(&GeminiGroundingMetadata{
+			WebSearchQueries: p.webSearchQueries,
+			GroundingChunks:  p.groundingChunks,
+		})
+		if groundingText != "" {
 			_, _ = result.Write(p.startBlock(BlockTypeText, map[string]any{
 				"type": "text",
 				"text": "",
 			}))
 			_, _ = result.Write(p.emitDelta("text_delta", map[string]any{
-				"text": groundingText.String(),
+				"text": groundingText,
 			}))
 			_, _ = result.Write(p.endBlock())
 		}

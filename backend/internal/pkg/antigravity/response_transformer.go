@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	mathrand "math/rand"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,12 @@ func (p *NonStreamingProcessor) Process(geminiResp *GeminiResponse, responseID, 
 	// 处理所有 parts
 	for _, part := range parts {
 		p.processPart(&part)
+	}
+
+	if len(geminiResp.Candidates) > 0 {
+		if grounding := geminiResp.Candidates[0].GroundingMetadata; grounding != nil {
+			p.processGrounding(grounding)
+		}
 	}
 
 	// 刷新剩余内容
@@ -198,6 +205,18 @@ func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 	}
 }
 
+func (p *NonStreamingProcessor) processGrounding(grounding *GeminiGroundingMetadata) {
+	groundingText := buildGroundingText(grounding)
+	if groundingText == "" {
+		return
+	}
+
+	p.flushThinking()
+	p.flushText()
+	p.textBuilder += groundingText
+	p.flushText()
+}
+
 // flushText 刷新 text builder
 func (p *NonStreamingProcessor) flushText() {
 	if p.textBuilder == "" {
@@ -268,6 +287,44 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 		StopReason: stopReason,
 		Usage:      usage,
 	}
+}
+
+func buildGroundingText(grounding *GeminiGroundingMetadata) string {
+	if grounding == nil {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	if len(grounding.WebSearchQueries) > 0 {
+		builder.WriteString("\n\n---\nWeb search queries: ")
+		builder.WriteString(strings.Join(grounding.WebSearchQueries, ", "))
+	}
+
+	if len(grounding.GroundingChunks) > 0 {
+		var links []string
+		for i, chunk := range grounding.GroundingChunks {
+			if chunk.Web == nil {
+				continue
+			}
+			title := strings.TrimSpace(chunk.Web.Title)
+			if title == "" {
+				title = "Source"
+			}
+			uri := strings.TrimSpace(chunk.Web.URI)
+			if uri == "" {
+				uri = "#"
+			}
+			links = append(links, fmt.Sprintf("[%d] [%s](%s)", i+1, title, uri))
+		}
+
+		if len(links) > 0 {
+			builder.WriteString("\n\nSources:\n")
+			builder.WriteString(strings.Join(links, "\n"))
+		}
+	}
+
+	return builder.String()
 }
 
 // generateRandomID 生成随机 ID
