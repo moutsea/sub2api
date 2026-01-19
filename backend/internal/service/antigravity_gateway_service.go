@@ -109,11 +109,13 @@ var antigravityPrefixMapping = []struct {
 
 // AntigravityGatewayService 处理 Antigravity 平台的 API 转发
 type AntigravityGatewayService struct {
-	accountRepo      AccountRepository
-	tokenProvider    *AntigravityTokenProvider
-	rateLimitService *RateLimitService
-	httpUpstream     HTTPUpstream
-	settingService   *SettingService
+	accountRepo         AccountRepository
+	tokenProvider       *AntigravityTokenProvider
+	rateLimitService    *RateLimitService
+	httpUpstream        HTTPUpstream
+	settingService      *SettingService
+	accountUsageService *AccountUsageService
+	usageCache          *UsageCache
 }
 
 func NewAntigravityGatewayService(
@@ -123,19 +125,82 @@ func NewAntigravityGatewayService(
 	rateLimitService *RateLimitService,
 	httpUpstream HTTPUpstream,
 	settingService *SettingService,
+	accountUsageService *AccountUsageService,
+	usageCache *UsageCache,
 ) *AntigravityGatewayService {
 	return &AntigravityGatewayService{
-		accountRepo:      accountRepo,
-		tokenProvider:    tokenProvider,
-		rateLimitService: rateLimitService,
-		httpUpstream:     httpUpstream,
-		settingService:   settingService,
+		accountRepo:         accountRepo,
+		tokenProvider:       tokenProvider,
+		rateLimitService:    rateLimitService,
+		httpUpstream:        httpUpstream,
+		settingService:      settingService,
+		accountUsageService: accountUsageService,
+		usageCache:          usageCache,
 	}
 }
 
 // GetTokenProvider 返回 token provider
 func (s *AntigravityGatewayService) GetTokenProvider() *AntigravityTokenProvider {
 	return s.tokenProvider
+}
+
+// antigravity429RetryResult 429 重试的结果
+type antigravity429RetryResult struct {
+	shouldFailover bool // 是否应该触发 failover（切换账号）
+	shouldRetry    bool // 是否应该重试当前请求
+	waitDuration   time.Duration
+}
+
+// handle429WithQuotaCheck 处理 429 错误，使用配额感知的重试策略
+// 逻辑：
+// 1. 刷新账号配额
+// 2. 如果配额不健康（>= 90%），立即触发 failover
+// 3. 如果配额健康，等待后重试（第 1 次 2s，第 2/3 次 5s）
+// 4. 3 次都失败后，触发 failover
+func (s *AntigravityGatewayService) handle429WithQuotaCheck(ctx context.Context, accountID int64, retryCount int) antigravity429RetryResult {
+	const maxRetries = 3
+
+	// 已达到最大重试次数，触发 failover
+	if retryCount >= maxRetries {
+		log.Printf("[antigravity-429] account=%d retries_exhausted=%d, triggering failover", accountID, retryCount)
+		return antigravity429RetryResult{shouldFailover: true}
+	}
+
+	// 尝试刷新配额并检查健康状态
+	if s.accountUsageService != nil {
+		healthy, err := s.accountUsageService.RefreshAndCheckQuotaHealth(ctx, accountID)
+		if err != nil {
+			log.Printf("[antigravity-429] account=%d quota_check_failed error=%v, will retry", accountID, err)
+			// 检查失败时，假设健康并继续重试
+		} else if !healthy {
+			// 配额不健康（>= 90%），标记并触发 failover
+			log.Printf("[antigravity-429] account=%d quota_unhealthy, triggering failover", accountID)
+			if s.usageCache != nil {
+				s.usageCache.MarkQuotaUnhealthy(accountID)
+			}
+			return antigravity429RetryResult{shouldFailover: true}
+		} else {
+			// 配额健康，标记为健康（可能之前被标记为不健康）
+			log.Printf("[antigravity-429] account=%d quota_healthy, will retry", accountID)
+			if s.usageCache != nil {
+				s.usageCache.MarkQuotaHealthy(accountID)
+			}
+		}
+	}
+
+	// 计算等待时间：第 1 次 2s，第 2/3 次 5s
+	var waitDuration time.Duration
+	if retryCount == 0 {
+		waitDuration = 2 * time.Second
+	} else {
+		waitDuration = 5 * time.Second
+	}
+
+	log.Printf("[antigravity-429] account=%d retry=%d/%d wait=%v", accountID, retryCount+1, maxRetries, waitDuration)
+	return antigravity429RetryResult{
+		shouldRetry:  true,
+		waitDuration: waitDuration,
+	}
 }
 
 // getMappedModel 获取映射后的模型名
@@ -555,6 +620,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 
 	// 重试循环
 	var resp *http.Response
+	quotaAware429RetryCount := 0 // 429 配额感知重试计数（独立于 URL 重试）
 urlFallbackLoop:
 	for urlIdx, baseURL := range availableURLs {
 		for attempt := 1; attempt <= antigravityMaxRetries; attempt++ {
@@ -605,14 +671,10 @@ urlFallbackLoop:
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries")
 			}
 
-			// 检查 429 错误：账号级别限流，立即标记账号并触发 failover
-			// 429 是账号级别的限流，切换 URL 没有意义，应该直接切换账号
+			// 检查 429 错误：使用配额感知的重试策略
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
-
-				// 立即标记账号限流状态
-				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
 
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -625,25 +687,54 @@ urlFallbackLoop:
 				if logBody {
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-					Platform:           account.Platform,
-					AccountID:          account.ID,
-					AccountName:        account.Name,
-					UpstreamStatusCode: resp.StatusCode,
-					UpstreamRequestID:  resp.Header.Get("x-request-id"),
-					Kind:               "account_rate_limited",
-					Message:            upstreamMsg,
-					Detail:             upstreamDetail,
-				})
-				log.Printf("%s status=429 account_rate_limited body=%s", prefix, truncateForLog(respBody, 200))
 
-				// 包装响应并跳出循环，触发账号级别的 failover
-				resp = &http.Response{
-					StatusCode: resp.StatusCode,
-					Header:     resp.Header.Clone(),
-					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				// 使用配额感知的 429 重试策略
+				retryResult := s.handle429WithQuotaCheck(ctx, account.ID, quotaAware429RetryCount)
+
+				if retryResult.shouldFailover {
+					// 配额不健康或重试次数用尽，触发 failover
+					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:           account.Platform,
+						AccountID:          account.ID,
+						AccountName:        account.Name,
+						UpstreamStatusCode: resp.StatusCode,
+						UpstreamRequestID:  resp.Header.Get("x-request-id"),
+						Kind:               "account_rate_limited",
+						Message:            upstreamMsg,
+						Detail:             upstreamDetail,
+					})
+					log.Printf("%s status=429 failover quota_unhealthy_or_retries_exhausted body=%s", prefix, truncateForLog(respBody, 200))
+
+					// 包装响应并跳出循环，触发账号级别的 failover
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break urlFallbackLoop
 				}
-				break urlFallbackLoop
+
+				if retryResult.shouldRetry {
+					// 配额健康，等待后重试
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:           account.Platform,
+						AccountID:          account.ID,
+						AccountName:        account.Name,
+						UpstreamStatusCode: resp.StatusCode,
+						UpstreamRequestID:  resp.Header.Get("x-request-id"),
+						Kind:               "429_quota_retry",
+						Message:            upstreamMsg,
+						Detail:             upstreamDetail,
+					})
+					quotaAware429RetryCount++
+
+					if err := sleepWithContext(ctx, retryResult.waitDuration); err != nil {
+						log.Printf("%s status=context_canceled_during_429_wait", prefix)
+						return nil, err
+					}
+					continue urlFallbackLoop // 从第一个 URL 重新开始
+				}
 			}
 
 			if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
@@ -1489,6 +1580,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 	// 重试循环
 	var resp *http.Response
+	quotaAware429RetryCount := 0 // 429 配额感知重试计数（独立于 URL 重试）
 urlFallbackLoop:
 	for urlIdx, baseURL := range availableURLs {
 		for attempt := 1; attempt <= antigravityMaxRetries; attempt++ {
@@ -1535,14 +1627,10 @@ urlFallbackLoop:
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed after retries")
 			}
 
-			// 检查 429 错误：账号级别限流，立即标记账号并触发 failover
-			// 429 是账号级别的限流，切换 URL 没有意义，应该直接切换账号
+			// 检查 429 错误：使用配额感知的重试策略
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
-
-				// 立即标记账号限流状态
-				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
 
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1555,25 +1643,54 @@ urlFallbackLoop:
 				if logBody {
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-					Platform:           account.Platform,
-					AccountID:          account.ID,
-					AccountName:        account.Name,
-					UpstreamStatusCode: resp.StatusCode,
-					UpstreamRequestID:  resp.Header.Get("x-request-id"),
-					Kind:               "account_rate_limited",
-					Message:            upstreamMsg,
-					Detail:             upstreamDetail,
-				})
-				log.Printf("%s status=429 account_rate_limited body=%s", prefix, truncateForLog(respBody, 200))
 
-				// 包装响应并跳出循环，触发账号级别的 failover
-				resp = &http.Response{
-					StatusCode: resp.StatusCode,
-					Header:     resp.Header.Clone(),
-					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				// 使用配额感知的 429 重试策略
+				retryResult := s.handle429WithQuotaCheck(ctx, account.ID, quotaAware429RetryCount)
+
+				if retryResult.shouldFailover {
+					// 配额不健康或重试次数用尽，触发 failover
+					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:           account.Platform,
+						AccountID:          account.ID,
+						AccountName:        account.Name,
+						UpstreamStatusCode: resp.StatusCode,
+						UpstreamRequestID:  resp.Header.Get("x-request-id"),
+						Kind:               "account_rate_limited",
+						Message:            upstreamMsg,
+						Detail:             upstreamDetail,
+					})
+					log.Printf("%s status=429 failover quota_unhealthy_or_retries_exhausted body=%s", prefix, truncateForLog(respBody, 200))
+
+					// 包装响应并跳出循环，触发账号级别的 failover
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break urlFallbackLoop
 				}
-				break urlFallbackLoop
+
+				if retryResult.shouldRetry {
+					// 配额健康，等待后重试
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:           account.Platform,
+						AccountID:          account.ID,
+						AccountName:        account.Name,
+						UpstreamStatusCode: resp.StatusCode,
+						UpstreamRequestID:  resp.Header.Get("x-request-id"),
+						Kind:               "429_quota_retry",
+						Message:            upstreamMsg,
+						Detail:             upstreamDetail,
+					})
+					quotaAware429RetryCount++
+
+					if err := sleepWithContext(ctx, retryResult.waitDuration); err != nil {
+						log.Printf("%s status=context_canceled_during_429_wait", prefix)
+						return nil, err
+					}
+					continue urlFallbackLoop // 从第一个 URL 重新开始
+				}
 			}
 
 			if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {

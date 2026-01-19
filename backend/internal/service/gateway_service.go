@@ -546,6 +546,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	if len(routingAccountIDs) > 0 && s.concurrencyService != nil {
 		// 1. 过滤出路由列表中可调度的账号
 		var routingCandidates []*Account
+		var quotaUnhealthyCandidates []*Account // 配额不健康但其他条件满足的账号（用于兜底）
 		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost, filteredQuota int
 		for _, routingAccountID := range routingAccountIDs {
 			if isExcluded(routingAccountID) {
@@ -578,12 +579,22 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				filteredWindowCost++
 				continue
 			}
-			// 配额检查（Antigravity 账号）
+			// 配额检查（Antigravity 账号）- 软过滤，不健康的账号保留用于兜底
 			if !s.isAccountQuotaAvailable(account) {
 				filteredQuota++
+				quotaUnhealthyCandidates = append(quotaUnhealthyCandidates, account)
 				continue
 			}
 			routingCandidates = append(routingCandidates, account)
+		}
+
+		// 如果所有健康账号都被过滤掉，使用配额不健康的账号作为兜底
+		if len(routingCandidates) == 0 && len(quotaUnhealthyCandidates) > 0 {
+			routingCandidates = quotaUnhealthyCandidates
+			if s.debugModelRoutingEnabled() {
+				log.Printf("[ModelRoutingDebug] routed fallback to quota-unhealthy accounts: group_id=%v model=%s count=%d",
+					derefGroupID(groupID), requestedModel, len(quotaUnhealthyCandidates))
+			}
 		}
 
 		if s.debugModelRoutingEnabled() {
@@ -669,7 +680,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
-				// 排序：优先级 > 负载率 > 最后使用时间
+				// 排序：优先级 > 负载率 > 重置时间（临近重置优先） > 最后使用时间
 				sort.SliceStable(routingAvailable, func(i, j int) bool {
 					a, b := routingAvailable[i], routingAvailable[j]
 					if a.account.Priority != b.account.Priority {
@@ -678,6 +689,20 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 					}
+					// 重置时间比较：临近重置的账号优先使用
+					aReset := s.getAccountResetTime(a.account.ID)
+					bReset := s.getAccountResetTime(b.account.ID)
+					switch {
+					case aReset != nil && bReset != nil:
+						if !aReset.Equal(*bReset) {
+							return aReset.Before(*bReset) // 更早重置的优先
+						}
+					case aReset != nil && bReset == nil:
+						return true // 有重置时间的优先
+					case aReset == nil && bReset != nil:
+						return false
+					}
+					// 最后使用时间比较
 					switch {
 					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
 						return true
@@ -777,6 +802,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// ============ Layer 2: 负载感知选择 ============
 	candidates := make([]*Account, 0, len(accounts))
+	var layer2QuotaUnhealthy []*Account // 配额不健康但其他条件满足的账号（用于兜底）
 	for i := range accounts {
 		acc := &accounts[i]
 		if isExcluded(acc.ID) {
@@ -801,11 +827,21 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
 			continue
 		}
-		// 配额检查（Antigravity 账号）
+		// 配额检查（Antigravity 账号）- 软过滤，不健康的账号保留用于兜底
 		if !s.isAccountQuotaAvailable(acc) {
+			layer2QuotaUnhealthy = append(layer2QuotaUnhealthy, acc)
 			continue
 		}
 		candidates = append(candidates, acc)
+	}
+
+	// 如果所有健康账号都被过滤掉，使用配额不健康的账号作为兜底
+	if len(candidates) == 0 && len(layer2QuotaUnhealthy) > 0 {
+		candidates = layer2QuotaUnhealthy
+		if s.debugModelRoutingEnabled() {
+			log.Printf("[ModelRoutingDebug] layer2 fallback to quota-unhealthy accounts: group_id=%v model=%s count=%d",
+				derefGroupID(groupID), requestedModel, len(layer2QuotaUnhealthy))
+		}
 	}
 
 	if len(candidates) == 0 {
@@ -853,6 +889,20 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 				}
+				// 重置时间比较：临近重置的账号优先使用
+				aReset := s.getAccountResetTime(a.account.ID)
+				bReset := s.getAccountResetTime(b.account.ID)
+				switch {
+				case aReset != nil && bReset != nil:
+					if !aReset.Equal(*bReset) {
+						return aReset.Before(*bReset) // 更早重置的优先
+					}
+				case aReset != nil && bReset == nil:
+					return true // 有重置时间的优先
+				case aReset == nil && bReset != nil:
+					return false
+				}
+				// 最后使用时间比较
 				switch {
 				case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
 					return true
@@ -890,7 +940,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 3: 兜底排队 ============
-	sortAccountsByPriorityAndLastUsed(candidates, preferOAuth)
+	s.sortAccountsByPriorityAndLastUsed(candidates, preferOAuth)
 	for _, acc := range candidates {
 		return &AccountSelectionResult{
 			Account: acc,
@@ -907,7 +957,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, sessionUUID string) (*AccountSelectionResult, bool) {
 	ordered := append([]*Account(nil), candidates...)
-	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	s.sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -1256,12 +1306,26 @@ func (s *GatewayService) getSchedulableAccount(ctx context.Context, accountID in
 	return s.accountRepo.GetByID(ctx, accountID)
 }
 
-func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
+func (s *GatewayService) sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
 		}
+		// 重置时间比较：临近重置的账号优先使用
+		aReset := s.getAccountResetTime(a.ID)
+		bReset := s.getAccountResetTime(b.ID)
+		switch {
+		case aReset != nil && bReset != nil:
+			if !aReset.Equal(*bReset) {
+				return aReset.Before(*bReset) // 更早重置的优先
+			}
+		case aReset != nil && bReset == nil:
+			return true // 有重置时间的优先
+		case aReset == nil && bReset != nil:
+			return false
+		}
+		// 最后使用时间比较
 		switch {
 		case a.LastUsedAt == nil && b.LastUsedAt != nil:
 			return true
@@ -1427,6 +1491,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	// 3. 按优先级+最久未用选择（考虑模型支持）
 	var selected *Account
+	var singlePlatformQuotaUnhealthy *Account // 配额不健康但其他条件满足的账号（用于兜底）
 	for i := range accounts {
 		acc := &accounts[i]
 		if _, excluded := excludedIDs[acc.ID]; excluded {
@@ -1443,8 +1508,20 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
 			continue
 		}
-		// 配额检查（Antigravity 账号）
+		// 配额检查（Antigravity 账号）- 软过滤，不健康的账号保留用于兜底
 		if !s.isAccountQuotaAvailable(acc) {
+			// 仅保留一个最优的不健康账号用于兜底
+			if singlePlatformQuotaUnhealthy == nil {
+				singlePlatformQuotaUnhealthy = acc
+			} else if acc.Priority < singlePlatformQuotaUnhealthy.Priority {
+				singlePlatformQuotaUnhealthy = acc
+			} else if acc.Priority == singlePlatformQuotaUnhealthy.Priority {
+				if acc.LastUsedAt == nil && singlePlatformQuotaUnhealthy.LastUsedAt != nil {
+					singlePlatformQuotaUnhealthy = acc
+				} else if acc.LastUsedAt != nil && singlePlatformQuotaUnhealthy.LastUsedAt != nil && acc.LastUsedAt.Before(*singlePlatformQuotaUnhealthy.LastUsedAt) {
+					singlePlatformQuotaUnhealthy = acc
+				}
+			}
 			continue
 		}
 		if selected == nil {
@@ -1469,6 +1546,12 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				}
 			}
 		}
+	}
+
+	// 如果没有健康账号，使用不健康账号作为兜底
+	if selected == nil && singlePlatformQuotaUnhealthy != nil {
+		selected = singlePlatformQuotaUnhealthy
+		log.Printf("[ModelRouting] Fallback to quota-unhealthy account: account=%d model=%s", selected.ID, requestedModel)
 	}
 
 	if selected == nil {
@@ -1636,6 +1719,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	// 3. 按优先级+最久未用选择（考虑模型支持和混合调度）
 	var selected *Account
+	var mixedQuotaUnhealthy *Account // 配额不健康但其他条件满足的账号（用于兜底）
 	for i := range accounts {
 		acc := &accounts[i]
 		if _, excluded := excludedIDs[acc.ID]; excluded {
@@ -1656,8 +1740,20 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
 			continue
 		}
-		// 配额检查（Antigravity 账号）
+		// 配额检查（Antigravity 账号）- 软过滤，不健康的账号保留用于兜底
 		if !s.isAccountQuotaAvailable(acc) {
+			// 仅保留一个最优的不健康账号用于兜底
+			if mixedQuotaUnhealthy == nil {
+				mixedQuotaUnhealthy = acc
+			} else if acc.Priority < mixedQuotaUnhealthy.Priority {
+				mixedQuotaUnhealthy = acc
+			} else if acc.Priority == mixedQuotaUnhealthy.Priority {
+				if acc.LastUsedAt == nil && mixedQuotaUnhealthy.LastUsedAt != nil {
+					mixedQuotaUnhealthy = acc
+				} else if acc.LastUsedAt != nil && mixedQuotaUnhealthy.LastUsedAt != nil && acc.LastUsedAt.Before(*mixedQuotaUnhealthy.LastUsedAt) {
+					mixedQuotaUnhealthy = acc
+				}
+			}
 			continue
 		}
 		if selected == nil {
@@ -1682,6 +1778,12 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				}
 			}
 		}
+	}
+
+	// 如果没有健康账号，使用不健康账号作为兜底
+	if selected == nil && mixedQuotaUnhealthy != nil {
+		selected = mixedQuotaUnhealthy
+		log.Printf("[ModelRouting] Mixed fallback to quota-unhealthy account: account=%d model=%s", selected.ID, requestedModel)
 	}
 
 	if selected == nil {
@@ -3757,6 +3859,15 @@ func (s *GatewayService) isAccountQuotaAvailable(account *Account) bool {
 
 	// 检查 FiveHour 使用率是否超过阈值
 	return usageInfo.FiveHour.Utilization < defaultQuotaThreshold
+}
+
+// getAccountResetTime 获取账号的配额重置时间
+// 用于排序时优先选择临近重置的账号（重置时间越近越优先）
+func (s *GatewayService) getAccountResetTime(accountID int64) *time.Time {
+	if s.usageCache == nil {
+		return nil
+	}
+	return s.usageCache.GetResetTime(accountID)
 }
 
 // RefreshAntigravityQuotaAsync 异步刷新 Antigravity 账号配额并更新健康状态

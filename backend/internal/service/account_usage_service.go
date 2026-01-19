@@ -83,7 +83,7 @@ const (
 	windowStatsCacheTTL = 1 * time.Minute
 
 	// quotaHealthyThreshold 配额健康阈值，超过此值的账号被标记为不健康
-	quotaHealthyThreshold = 85.0
+	quotaHealthyThreshold = 90.0
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -130,6 +130,33 @@ func (c *UsageCache) GetUnhealthyAccountIDs() []int64 {
 // InvalidateAntigravityCache 使指定账号的 Antigravity 缓存失效
 func (c *UsageCache) InvalidateAntigravityCache(accountID int64) {
 	c.antigravityCache.Delete(accountID)
+}
+
+// GetResetTime 获取账号的配额重置时间（用于优先调度临近重置的账号）
+// 返回：重置时间指针，如果无法获取则返回 nil
+// 逻辑：临近重置的账号应该优先使用，因为它们的配额即将恢复
+func (c *UsageCache) GetResetTime(accountID int64) *time.Time {
+	// 优先从 Antigravity 缓存获取
+	if cached, ok := c.antigravityCache.Load(accountID); ok {
+		if cache, ok := cached.(*antigravityUsageCache); ok && cache.usageInfo != nil {
+			if cache.usageInfo.FiveHour != nil && cache.usageInfo.FiveHour.ResetsAt != nil {
+				return cache.usageInfo.FiveHour.ResetsAt
+			}
+		}
+	}
+
+	// 尝试从 Claude OAuth API 缓存获取
+	if cached, ok := c.apiCache.Load(accountID); ok {
+		if cache, ok := cached.(*apiUsageCache); ok && cache.response != nil {
+			if cache.response.FiveHour.ResetsAt != "" {
+				if t, err := time.Parse(time.RFC3339, cache.response.FiveHour.ResetsAt); err == nil {
+					return &t
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // WindowStats 窗口期统计
