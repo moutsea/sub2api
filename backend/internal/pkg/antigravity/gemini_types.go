@@ -143,9 +143,27 @@ type GeminiResponse struct {
 
 // GeminiCandidate Gemini 候选响应
 type GeminiCandidate struct {
-	Content      *GeminiContent `json:"content,omitempty"`
-	FinishReason string         `json:"finishReason,omitempty"`
-	Index        int            `json:"index,omitempty"`
+	Content           *GeminiContent           `json:"content,omitempty"`
+	FinishReason      string                   `json:"finishReason,omitempty"`
+	Index             int                      `json:"index,omitempty"`
+	GroundingMetadata *GeminiGroundingMetadata `json:"groundingMetadata,omitempty"`
+}
+
+// GeminiGroundingMetadata Gemini grounding 元数据（Web搜索结果）
+type GeminiGroundingMetadata struct {
+	WebSearchQueries []string               `json:"webSearchQueries,omitempty"`
+	GroundingChunks  []GeminiGroundingChunk `json:"groundingChunks,omitempty"`
+}
+
+// GeminiGroundingChunk Gemini grounding chunk（搜索结果项）
+type GeminiGroundingChunk struct {
+	Web *GeminiGroundingWeb `json:"web,omitempty"`
+}
+
+// GeminiGroundingWeb Gemini web grounding 详情
+type GeminiGroundingWeb struct {
+	URI   string `json:"uri,omitempty"`
+	Title string `json:"title,omitempty"`
 }
 
 // GeminiUsageMetadata Gemini 用量元数据

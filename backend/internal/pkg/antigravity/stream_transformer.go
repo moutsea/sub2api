@@ -164,19 +164,24 @@ const (
 
 // StreamingProcessor 流式响应处理器
 type StreamingProcessor struct {
-	blockType         BlockType
-	blockIndex        int
-	messageStartSent  bool
-	messageStopSent   bool
-	usedTool          bool
-	pendingSignature  string
-	trailingSignature string
-	originalModel     string
+	blockType           BlockType
+	blockIndex          int
+	messageStartSent    bool
+	messageStopSent     bool
+	usedTool            bool
+	hadNonThinkingBlock bool // [FIX] 跟踪是否已发送过非 thinking 块（text 或 tool_use）
+	pendingSignature    string
+	trailingSignature   string
+	originalModel       string
 
 	// 累计 usage
 	inputTokens     int
 	outputTokens    int
 	cacheReadTokens int
+
+	// Grounding metadata（Web搜索结果）
+	webSearchQuery  string
+	groundingChunks []GeminiGroundingChunk
 }
 
 // NewStreamingProcessor 创建流式响应处理器
@@ -235,6 +240,18 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 	if len(geminiResp.Candidates) > 0 && geminiResp.Candidates[0].Content != nil {
 		for _, part := range geminiResp.Candidates[0].Content.Parts {
 			_, _ = result.Write(p.processPart(&part))
+		}
+	}
+
+	// 捕获 groundingMetadata（Web搜索结果）
+	if len(geminiResp.Candidates) > 0 {
+		if grounding := geminiResp.Candidates[0].GroundingMetadata; grounding != nil {
+			if len(grounding.WebSearchQueries) > 0 {
+				p.webSearchQuery = grounding.WebSearchQueries[0]
+			}
+			if len(grounding.GroundingChunks) > 0 {
+				p.groundingChunks = grounding.GroundingChunks
+			}
 		}
 	}
 
@@ -316,9 +333,12 @@ func (p *StreamingProcessor) processPart(part *GeminiPart) []byte {
 	// 1. FunctionCall 处理
 	if part.FunctionCall != nil {
 		// 先处理 trailingSignature
+		// [FIX] 只有当还没有发送过非 thinking 块时，才能发送 thinking 块
 		if p.trailingSignature != "" {
 			_, _ = result.Write(p.endBlock())
-			_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+			if !p.hadNonThinkingBlock {
+				_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+			}
 			p.trailingSignature = ""
 		}
 
@@ -350,9 +370,12 @@ func (p *StreamingProcessor) processThinking(text, signature string) []byte {
 	var result bytes.Buffer
 
 	// 处理之前的 trailingSignature
+	// [FIX] 只有当还没有发送过非 thinking 块时，才能发送 thinking 块
 	if p.trailingSignature != "" {
 		_, _ = result.Write(p.endBlock())
-		_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+		if !p.hadNonThinkingBlock {
+			_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+		}
 		p.trailingSignature = ""
 	}
 
@@ -391,13 +414,19 @@ func (p *StreamingProcessor) processText(text, signature string) []byte {
 	}
 
 	// 处理之前的 trailingSignature
+	// [FIX] 只有当还没有发送过非 thinking 块时，才能发送 thinking 块
+	// 否则直接丢弃签名，因为 Claude 协议不允许在 text/tool_use 块之后追加 thinking 块
 	if p.trailingSignature != "" {
 		_, _ = result.Write(p.endBlock())
-		_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+		if !p.hadNonThinkingBlock {
+			_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+		}
 		p.trailingSignature = ""
 	}
 
 	// 非空 text 带签名 - 特殊处理
+	// [FIX] 不再在 text 块后发送 thinking 块，只暂存签名供后续使用
+	// Claude 协议不允许在 text 块之后追加 thinking 块
 	if signature != "" {
 		_, _ = result.Write(p.startBlock(BlockTypeText, map[string]any{
 			"type": "text",
@@ -407,7 +436,7 @@ func (p *StreamingProcessor) processText(text, signature string) []byte {
 			"text": text,
 		}))
 		_, _ = result.Write(p.endBlock())
-		_, _ = result.Write(p.emitEmptyThinkingWithSignature(signature))
+		// 不再发送 thinking 块，签名被丢弃
 		return result.Bytes()
 	}
 
@@ -515,6 +544,12 @@ func (p *StreamingProcessor) startBlock(blockType BlockType, contentBlock map[st
 	_, _ = result.Write(p.formatSSE("content_block_start", event))
 	p.blockType = blockType
 
+	// [FIX] 跟踪是否已发送过非 thinking 块
+	// 一旦发送了 text 或 tool_use 块，就不能再发送 thinking 块
+	if blockType == BlockTypeText || blockType == BlockTypeFunction {
+		p.hadNonThinkingBlock = true
+	}
+
 	return result.Bytes()
 }
 
@@ -592,9 +627,52 @@ func (p *StreamingProcessor) emitFinish(finishReason string) []byte {
 	_, _ = result.Write(p.endBlock())
 
 	// 处理 trailingSignature
+	// [FIX] 根据 Claude 协议，如果已经发送过非 thinking 块，就不能再追加 thinking 块
+	// 参考 antigravity-manager 的实现：只存储签名，不再发送非法的末尾 Thinking 块
 	if p.trailingSignature != "" {
-		_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+		if !p.hadNonThinkingBlock {
+			// 还没有发送过任何块，可以安全地发送 thinking 块承载签名
+			_, _ = result.Write(p.emitEmptyThinkingWithSignature(p.trailingSignature))
+		}
+		// 无论是否发送，都要清空 trailingSignature
 		p.trailingSignature = ""
+	}
+
+	// 处理 grounding metadata（Web搜索结果）-> 转换为 Markdown 文本块
+	if p.webSearchQuery != "" || len(p.groundingChunks) > 0 {
+		var groundingText strings.Builder
+
+		// 1. 处理搜索词
+		if p.webSearchQuery != "" {
+			groundingText.WriteString("\n\n---\n**🔍 已为您搜索：** ")
+			groundingText.WriteString(p.webSearchQuery)
+		}
+
+		// 2. 处理来源链接
+		if len(p.groundingChunks) > 0 {
+			groundingText.WriteString("\n\n**📚 来源：**\n")
+			for i, chunk := range p.groundingChunks {
+				if chunk.Web != nil && chunk.Web.URI != "" {
+					title := chunk.Web.Title
+					if title == "" {
+						title = chunk.Web.URI
+					}
+					groundingText.WriteString(fmt.Sprintf("%d. [%s](%s)\n", i+1, title, chunk.Web.URI))
+				}
+			}
+		}
+
+		// 发送新的 text 块
+		if groundingText.Len() > 0 {
+			_, _ = result.Write(p.startBlock(BlockTypeText, map[string]any{
+				"type": "text",
+				"text": "",
+			}))
+			_, _ = result.Write(p.emitDelta("text_delta", map[string]any{
+				"text": groundingText.String(),
+			}))
+			_, _ = result.Write(p.endBlock())
+		}
 	}
 
 	// 确定 stop_reason
