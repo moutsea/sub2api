@@ -56,6 +56,16 @@ func shouldAntigravityFallbackToNextURL(err error, statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests
 }
 
+// isURLLevelRateLimit 判断是否为 URL 级别的限流（应切换 URL 重试）
+// "Resource has been exhausted" 是 URL/节点级别限流，切换 URL 可能成功
+// "exhausted your capacity on this model" 是账户/模型配额限流，切换 URL 无效
+func isURLLevelRateLimit(body []byte) bool {
+	// 快速检查：包含 "Resource has been exhausted" 且不包含 "capacity on this model"
+	bodyStr := string(body)
+	return strings.Contains(bodyStr, "Resource has been exhausted") &&
+		!strings.Contains(bodyStr, "capacity on this model")
+}
+
 // getSessionID 从 gin.Context 获取 session_id（用于日志追踪）
 func getSessionID(c *gin.Context) string {
 	if c == nil {
@@ -671,10 +681,17 @@ urlFallbackLoop:
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries")
 			}
 
-			// 检查 429 错误：使用配额感知的重试策略
+			// 检查 429 错误：先判断是否为 URL 级别限流，再使用配额感知的重试策略
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+
+				// 优先检查 URL 级别限流：如果是 URL 级别限流且有其他 URL 可用，立即切换 URL
+				if isURLLevelRateLimit(respBody) && urlIdx < len(availableURLs)-1 {
+					antigravity.DefaultURLAvailability.MarkUnavailable(baseURL)
+					log.Printf("%s status=429 url_level_rate_limit, switching URL: %s -> %s", prefix, baseURL, availableURLs[urlIdx+1])
+					continue urlFallbackLoop
+				}
 
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -688,7 +705,7 @@ urlFallbackLoop:
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
 
-				// 使用配额感知的 429 重试策略
+				// 使用配额感知的 429 重试策略（非 URL 级别限流，或者 URL 都试过了）
 				retryResult := s.handle429WithQuotaCheck(ctx, account.ID, quotaAware429RetryCount)
 
 				if retryResult.shouldFailover {
@@ -783,6 +800,8 @@ urlFallbackLoop:
 				break urlFallbackLoop
 			}
 
+			// 请求成功，标记当前 URL 为成功（动态优先级排序）
+			antigravity.DefaultURLAvailability.MarkSuccess(baseURL)
 			break urlFallbackLoop
 		}
 	}
@@ -1627,10 +1646,17 @@ urlFallbackLoop:
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed after retries")
 			}
 
-			// 检查 429 错误：使用配额感知的重试策略
+			// 检查 429 错误：先判断是否为 URL 级别限流，再使用配额感知的重试策略
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+
+				// 优先检查 URL 级别限流：如果是 URL 级别限流且有其他 URL 可用，立即切换 URL
+				if isURLLevelRateLimit(respBody) && urlIdx < len(availableURLs)-1 {
+					antigravity.DefaultURLAvailability.MarkUnavailable(baseURL)
+					log.Printf("%s status=429 url_level_rate_limit, switching URL: %s -> %s", prefix, baseURL, availableURLs[urlIdx+1])
+					continue urlFallbackLoop
+				}
 
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1644,7 +1670,7 @@ urlFallbackLoop:
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
 
-				// 使用配额感知的 429 重试策略
+				// 使用配额感知的 429 重试策略（非 URL 级别限流，或者 URL 都试过了）
 				retryResult := s.handle429WithQuotaCheck(ctx, account.ID, quotaAware429RetryCount)
 
 				if retryResult.shouldFailover {
@@ -1738,6 +1764,8 @@ urlFallbackLoop:
 				break urlFallbackLoop
 			}
 
+			// 请求成功，标记当前 URL 为成功（动态优先级排序）
+			antigravity.DefaultURLAvailability.MarkSuccess(baseURL)
 			break urlFallbackLoop
 		}
 	}
