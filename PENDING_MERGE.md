@@ -52,10 +52,10 @@
 ### 1.4 429 限流策略
 | 提交 | 描述 | 状态 |
 |------|------|------|
-| `cc89274` | fix(antigravity): 429 fallback 改为 5 分钟并限流整个账户 | 待合并 |
-| `2055a60` | fix(antigravity): 429 重试3次后限流账户 | 待合并 |
-| `ac7503d` | fix(antigravity): 429 时也切换 URL 重试 | 待合并 |
-| `5a6f60a` | fix(antigravity): 区分 URL 级别和账户配额级别的 429 限流 | 待合并 |
+| `cc89274` | fix(antigravity): 429 fallback 改为 5 分钟并限流整个账户 | 已跳过 (liang 分支有配额感知的 handle429WithQuotaCheck) |
+| `2055a60` | fix(antigravity): 429 重试3次后限流账户 | 已跳过 (同上) |
+| `ac7503d` | fix(antigravity): 429 时也切换 URL 重试 | 已跳过 (同上) |
+| `5a6f60a` | fix(antigravity): 区分 URL 级别和账户配额级别的 429 限流 | 已跳过 (同上) |
 
 ### 1.5 URL 动态排序和重试
 | 提交 | 描述 | 状态 |
