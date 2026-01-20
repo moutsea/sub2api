@@ -2143,7 +2143,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 }
 
 // handleGeminiStreamToNonStreaming 读取上游流式响应，合并为非流式响应返回给客户端
-// Gemini 流式响应中每个 chunk 都包含累积的完整文本，只需保留最后一个有效响应
+// Gemini 流式响应是增量的，需要累积所有 chunk 的内容
 func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -2157,6 +2157,8 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	var last map[string]any
 	var lastWithParts map[string]any
 	var lastUsageMetadata map[string]any // 单独追踪 usageMetadata，因为它通常在最后一个 chunk 中
+	var collectedImageParts []map[string]any // 收集所有包含图片的 parts
+	var collectedTextParts []string          // 收集所有文本片段
 
 	type scanEvent struct {
 		line string
@@ -2264,6 +2266,16 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 			// 保留最后一个有 parts 的响应
 			if parts := extractGeminiParts(parsed); len(parts) > 0 {
 				lastWithParts = parsed
+				// 收集包含图片和文本的 parts
+				for _, part := range parts {
+					if inlineData, ok := part["inlineData"].(map[string]any); ok {
+						collectedImageParts = append(collectedImageParts, part)
+						_ = inlineData // 避免 unused 警告
+					}
+					if text, ok := part["text"].(string); ok && text != "" {
+						collectedTextParts = append(collectedTextParts, text)
+					}
+				}
 			}
 
 		case <-intervalCh:
@@ -2294,6 +2306,16 @@ returnResponse:
 		log.Printf("[antigravity-Forward] warning: empty stream response, no valid chunks received")
 	}
 
+	// 如果收集到了图片 parts，需要合并到最终响应中
+	if len(collectedImageParts) > 0 {
+		finalResponse = mergeImagePartsToResponse(finalResponse, collectedImageParts)
+	}
+
+	// 如果收集到了文本，需要合并到最终响应中
+	if len(collectedTextParts) > 0 {
+		finalResponse = mergeTextPartsToResponse(finalResponse, collectedTextParts)
+	}
+
 	respBody, err := json.Marshal(finalResponse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal response: %w", err)
@@ -2301,6 +2323,144 @@ returnResponse:
 	c.Data(http.StatusOK, "application/json", respBody)
 
 	return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
+}
+
+// mergeImagePartsToResponse 将收集到的图片 parts 合并到 Gemini 响应中
+// 这是因为流式响应中，图片可能在某个 chunk 返回，而最终 chunk 可能不包含图片
+func mergeImagePartsToResponse(response map[string]any, imageParts []map[string]any) map[string]any {
+	if len(imageParts) == 0 {
+		return response
+	}
+
+	// 深拷贝 response 避免修改原始数据
+	result := make(map[string]any)
+	for k, v := range response {
+		result[k] = v
+	}
+
+	// 获取或创建 candidates
+	candidates, ok := result["candidates"].([]any)
+	if !ok || len(candidates) == 0 {
+		candidates = []any{map[string]any{}}
+	}
+
+	// 获取第一个 candidate
+	candidate, ok := candidates[0].(map[string]any)
+	if !ok {
+		candidate = make(map[string]any)
+		candidates[0] = candidate
+	}
+
+	// 获取或创建 content
+	content, ok := candidate["content"].(map[string]any)
+	if !ok {
+		content = map[string]any{"role": "model"}
+		candidate["content"] = content
+	}
+
+	// 获取现有 parts
+	existingParts, ok := content["parts"].([]any)
+	if !ok {
+		existingParts = []any{}
+	}
+
+	// 检查现有 parts 中是否已经有图片
+	hasExistingImage := false
+	for _, p := range existingParts {
+		if pm, ok := p.(map[string]any); ok {
+			if _, hasInline := pm["inlineData"]; hasInline {
+				hasExistingImage = true
+				break
+			}
+		}
+	}
+
+	// 如果没有现有图片，添加收集到的图片 parts
+	if !hasExistingImage {
+		for _, imgPart := range imageParts {
+			existingParts = append(existingParts, imgPart)
+		}
+		content["parts"] = existingParts
+	}
+
+	result["candidates"] = candidates
+	return result
+}
+
+// mergeTextPartsToResponse 将收集到的文本合并到 Gemini 响应中
+// 流式响应是增量的，需要累积所有文本片段
+func mergeTextPartsToResponse(response map[string]any, textParts []string) map[string]any {
+	if len(textParts) == 0 {
+		return response
+	}
+
+	// 合并所有文本
+	mergedText := strings.Join(textParts, "")
+
+	// 深拷贝 response 避免修改原始数据
+	result := make(map[string]any)
+	for k, v := range response {
+		result[k] = v
+	}
+
+	// 获取或创建 candidates
+	candidates, ok := result["candidates"].([]any)
+	if !ok || len(candidates) == 0 {
+		candidates = []any{map[string]any{}}
+	}
+
+	// 获取第一个 candidate
+	candidate, ok := candidates[0].(map[string]any)
+	if !ok {
+		candidate = make(map[string]any)
+		candidates[0] = candidate
+	}
+
+	// 获取或创建 content
+	content, ok := candidate["content"].(map[string]any)
+	if !ok {
+		content = map[string]any{"role": "model"}
+		candidate["content"] = content
+	}
+
+	// 获取现有 parts
+	existingParts, ok := content["parts"].([]any)
+	if !ok {
+		existingParts = []any{}
+	}
+
+	// 查找并更新第一个 text part，或创建新的
+	textUpdated := false
+	newParts := make([]any, 0, len(existingParts)+1)
+	for _, p := range existingParts {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			newParts = append(newParts, p)
+			continue
+		}
+		// 跳过空文本的 part（可能只有 thoughtSignature）
+		if _, hasText := pm["text"]; hasText && !textUpdated {
+			// 用累积的文本替换
+			newPart := make(map[string]any)
+			for k, v := range pm {
+				newPart[k] = v
+			}
+			newPart["text"] = mergedText
+			newParts = append(newParts, newPart)
+			textUpdated = true
+		} else {
+			newParts = append(newParts, pm)
+		}
+	}
+
+	// 如果没有找到 text part，添加一个新的
+	if !textUpdated {
+		newParts = append([]any{map[string]any{"text": mergedText}}, newParts...)
+	}
+
+	content["parts"] = newParts
+	result["candidates"] = candidates
+	return result
 }
 
 func (s *AntigravityGatewayService) writeClaudeError(c *gin.Context, status int, errType, message string) error {
