@@ -29,7 +29,7 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 			name: "Claude model - preserve thinking block with signature",
 			content: `[
 				{"type": "text", "text": "Hello"},
-				{"type": "thinking", "thinking": "Let me think...", "signature": "sig_real_123"},
+				{"type": "thinking", "thinking": "Let me think...", "signature": "sig_real_123456789012345678901234567890123456789012345678901234567890"},
 				{"type": "text", "text": "World"}
 			]`,
 			allowDummyThought: false,
@@ -67,8 +67,8 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
-				if !parts[1].Thought || parts[1].ThoughtSignature != "sig_real_123" {
-					t.Fatalf("expected thought part with signature sig_real_123, got thought=%v signature=%q",
+				if !parts[1].Thought || parts[1].ThoughtSignature != "sig_real_123456789012345678901234567890123456789012345678901234567890" {
+					t.Fatalf("expected thought part with valid signature, got thought=%v signature=%q",
 						parts[1].Thought, parts[1].ThoughtSignature)
 				}
 			case "Claude model - downgrade thinking to text when signature missing":
@@ -97,13 +97,18 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 }
 
 func TestBuildParts_ToolUseSignatureHandling(t *testing.T) {
-	content := `[
+	// 有效签名（长度 >= 50）
+	validSigContent := `[
+		{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}, "signature": "sig_tool_abc123456789012345678901234567890123456789012345678901234567890"}
+	]`
+	// 无效签名（长度 < 50）
+	invalidSigContent := `[
 		{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}, "signature": "sig_tool_abc"}
 	]`
 
-	t.Run("Gemini uses dummy tool_use signature", func(t *testing.T) {
+	t.Run("Gemini uses dummy tool_use signature when signature invalid", func(t *testing.T) {
 		toolIDToName := make(map[string]string)
-		parts, _, err := buildParts(json.RawMessage(content), toolIDToName, true)
+		parts, _, err := buildParts(json.RawMessage(invalidSigContent), toolIDToName, true)
 		if err != nil {
 			t.Fatalf("buildParts() error = %v", err)
 		}
@@ -117,7 +122,7 @@ func TestBuildParts_ToolUseSignatureHandling(t *testing.T) {
 
 	t.Run("Claude model - preserve valid signature for tool_use", func(t *testing.T) {
 		toolIDToName := make(map[string]string)
-		parts, _, err := buildParts(json.RawMessage(content), toolIDToName, false)
+		parts, _, err := buildParts(json.RawMessage(validSigContent), toolIDToName, false)
 		if err != nil {
 			t.Fatalf("buildParts() error = %v", err)
 		}
@@ -125,12 +130,12 @@ func TestBuildParts_ToolUseSignatureHandling(t *testing.T) {
 			t.Fatalf("expected 1 functionCall part, got %+v", parts)
 		}
 		// Claude 模型应透传有效的 signature（Vertex/Google 需要完整签名链路）
-		if parts[0].ThoughtSignature != "sig_tool_abc" {
-			t.Fatalf("expected preserved tool signature %q, got %q", "sig_tool_abc", parts[0].ThoughtSignature)
+		if parts[0].ThoughtSignature != "sig_tool_abc123456789012345678901234567890123456789012345678901234567890" {
+			t.Fatalf("expected preserved tool signature, got %q", parts[0].ThoughtSignature)
 		}
 	})
 
-	t.Run("Claude model - use dummy signature when tool_use lacks signature", func(t *testing.T) {
+	t.Run("Claude model - no signature when tool_use lacks valid signature", func(t *testing.T) {
 		contentWithoutSig := `[
 			{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
 		]`
@@ -142,9 +147,10 @@ func TestBuildParts_ToolUseSignatureHandling(t *testing.T) {
 		if len(parts) != 1 || parts[0].FunctionCall == nil {
 			t.Fatalf("expected 1 functionCall part, got %+v", parts)
 		}
-		// Claude 模型缺少 signature 时应使用 dummy signature 避免上游报错
-		if parts[0].ThoughtSignature != dummyThoughtSignature {
-			t.Fatalf("expected dummy signature %q when signature missing, got %q", dummyThoughtSignature, parts[0].ThoughtSignature)
+		// Claude 模型（Vertex AI）缺少有效 signature 时不设置 ThoughtSignature
+		// 这样可以避免 "Invalid signature in thinking block" 错误
+		if parts[0].ThoughtSignature != "" {
+			t.Fatalf("expected empty signature when signature missing (Claude model), got %q", parts[0].ThoughtSignature)
 		}
 	})
 }
