@@ -17,6 +17,18 @@ func remapFunctionCallArgs(toolName string, args map[string]any) {
 
 	toolNameLower := strings.ToLower(toolName)
 
+	// [FIX] 去除 MCP 工具前缀 (mcp__servername__toolname → toolname)
+	// 这样 mcp__filesystem__grep 可以匹配到 grep 的处理逻辑
+	if strings.HasPrefix(toolNameLower, "mcp__") {
+		// 去除 "mcp__" 前缀
+		toolNameLower = strings.TrimPrefix(toolNameLower, "mcp__")
+		// 如果还有第二个 "__"，取最后一部分作为工具名
+		// 例如 mcp__filesystem__grep → filesystem__grep → grep
+		if idx := strings.LastIndex(toolNameLower, "__"); idx != -1 {
+			toolNameLower = toolNameLower[idx+2:]
+		}
+	}
+
 	switch toolNameLower {
 	case "grep", "search", "search_files", "searchfiles", "search_code_definitions", "search_code_snippets":
 		// [FIX] Gemini 可能使用 "description" 字段而不是 "pattern"
