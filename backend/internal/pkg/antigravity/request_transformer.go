@@ -256,34 +256,44 @@ Do not respond to nor acknowledge those messages, but do follow them strictly.
 </communication_style>`
 )
 
-// buildAntigravityPrompt 根据场景动态组装 Antigravity 提示词（已废弃，请使用 BuildAntigravityPrompt）
-// Deprecated: 使用 prompt_loader.go 中的 BuildAntigravityPrompt 替代
+// buildAntigravityPrompt 根据场景动态组装 Antigravity 提示词
 // hasTools: 是否包含工具定义（决定是否添加 tool_calling 部分）
 // includeWebDev: 是否包含 Web 开发指导（可选，默认不包含以减少 token 消耗）
 func buildAntigravityPrompt(hasTools bool, includeWebDev bool) string {
-	// 委托给新的实现
-	hasMCPTools := false // 旧版本不检测 MCP 工具
-	ignoreMode := false  // 旧版本不使用忽略模式
-	return BuildAntigravityPrompt(hasTools, hasMCPTools, includeWebDev, ignoreMode)
+	var sb strings.Builder
+
+	// 1. 核心身份（必需）
+	sb.WriteString(promptIdentity)
+
+	// 2. 工具调用指导（仅在有工具时添加）
+	if hasTools {
+		sb.WriteString(promptToolCalling)
+	}
+
+	// 3. Web 开发指导（可选）
+	if includeWebDev {
+		sb.WriteString(promptWebDevelopment)
+	}
+
+	// 4. 临时消息提示（必需）
+	sb.WriteString(promptEphemeralMessage)
+
+	// 5. 沟通风格（必需）
+	sb.WriteString(promptCommunicationStyle)
+
+	return sb.String()
 }
 
-// defaultIdentityPatch 生成默认的身份补丁（根据是否有工具和MCP工具动态组装）
-func defaultIdentityPatch(hasTools bool, hasMCPTools bool) string {
+// defaultIdentityPatch 生成默认的身份补丁（根据是否有工具动态组装）
+func defaultIdentityPatch(hasTools bool) string {
 	// 默认不包含 Web 开发指导，以减少 token 消耗
 	// 如果需要 Web 开发指导，可以通过 TransformOptions.IdentityPatch 自定义
-	includeWebDev := false
-	ignoreMode := false
-	return BuildAntigravityPrompt(hasTools, hasMCPTools, includeWebDev, ignoreMode)
+	return buildAntigravityPrompt(hasTools, false)
 }
 
 // GetDefaultIdentityPatch 返回默认的 Antigravity 身份提示词（包含所有模块）
-// 用于外部调用，例如测试或调试
 func GetDefaultIdentityPatch() string {
-	hasTools := true       // 包含工具调用模块
-	hasMCPTools := true    // 包含 MCP XML 协议
-	includeWebDev := true  // 包含 Web 开发模块
-	ignoreMode := false    // 不使用忽略模式
-	return BuildAntigravityPrompt(hasTools, hasMCPTools, includeWebDev, ignoreMode)
+	return buildAntigravityPrompt(true, true)
 }
 
 // mcpXMLProtocol MCP XML 工具调用协议（与 Antigravity-Manager 保持一致）
@@ -362,12 +372,12 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 		}
 	}
 
-	// 注入身份提示词（根据是否有工具和MCP工具动态组装）
+	// 注入身份提示词（根据是否有工具动态组装）
 	if opts.EnableIdentityPatch {
 		identityPatch := strings.TrimSpace(opts.IdentityPatch)
 		if identityPatch == "" {
-			// 根据是否有工具定义和MCP工具，动态生成提示词
-			identityPatch = defaultIdentityPatch(hasTools, hasMCPTools(tools))
+			// 根据是否有工具定义，动态生成提示词
+			identityPatch = defaultIdentityPatch(hasTools)
 		}
 		// 添加 Antigravity 身份提示词
 		parts = append(parts, GeminiPart{Text: identityPatch})
@@ -376,8 +386,10 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 	// 添加用户的 system prompt
 	parts = append(parts, userSystemParts...)
 
-	// [已移除] MCP XML 协议注入已整合到 defaultIdentityPatch 中
-	// 如果使用自定义 IdentityPatch 且需要 MCP 协议，请在自定义提示词中包含
+	// 检测是否有 MCP 工具，如有则注入 XML 调用协议
+	if hasMCPTools(tools) {
+		parts = append(parts, GeminiPart{Text: mcpXMLProtocol})
+	}
 
 	// 如果用户没有提供 Antigravity 身份，添加结束标记
 	if !userHasAntigravityIdentity {
