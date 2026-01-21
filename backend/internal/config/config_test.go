@@ -791,7 +791,7 @@ func TestValidateConfigErrors(t *testing.T) {
 		},
 		{
 			name:    "gateway max line size",
-			mutate:  func(c *Config) { c.Gateway.MaxLineSize = 1024 },
+			mutate:  func(c *Config) { c.Gateway.MaxLineSize = 1024 * 1024 }, // 1MB, 低于 2MB 最小值
 			wantErr: "gateway.max_line_size must be at least",
 		},
 		{

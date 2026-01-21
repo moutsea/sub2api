@@ -618,6 +618,27 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// Safety net: ensure no cache_control leaked into Gemini request
 	geminiBody = cleanCacheControlFromGeminiJSON(geminiBody)
 
+	// [请求体大小检查] 防止过大的请求导致 400 错误
+	const maxRequestBodySize = 10 << 20 // 10MB
+	originalBodySize := len(body)
+	geminiBodySize := len(geminiBody)
+
+	if geminiBodySize > maxRequestBodySize {
+		log.Printf("%s [REQUEST-SIZE-ERROR] Request body too large: gemini=%d bytes (%.2f MB), original=%d bytes, max=%d MB, model=%s",
+			prefix, geminiBodySize, float64(geminiBodySize)/(1<<20), originalBodySize, maxRequestBodySize/(1<<20), originalModel)
+		return nil, s.writeClaudeError(c, http.StatusRequestEntityTooLarge,
+			"invalid_request_error",
+			fmt.Sprintf("Request body too large (%d bytes, max %d MB). Consider reducing context length or splitting the request.",
+				geminiBodySize, maxRequestBodySize/(1<<20)))
+	}
+
+	// [请求体大小日志] 记录请求大小，帮助诊断 400 错误
+	compressionRatio := float64(originalBodySize) / float64(geminiBodySize)
+	log.Printf("%s [REQUEST-SIZE] original=%d bytes (%.2f KB), gemini=%d bytes (%.2f KB), compression_ratio=%.2f, model=%s, message_count=%d",
+		prefix, originalBodySize, float64(originalBodySize)/1024,
+		geminiBodySize, float64(geminiBodySize)/1024,
+		compressionRatio, originalModel, len(claudeReq.Messages))
+
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
 	// 如果客户端请求非流式，在响应处理阶段会收集完整流式响应后转换返回
 	action := "streamGenerateContent"

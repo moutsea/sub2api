@@ -1095,8 +1095,10 @@ func (c *Config) Validate() error {
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")
 	}
-	if c.Gateway.MaxLineSize != 0 && c.Gateway.MaxLineSize < 1024*1024 {
-		return fmt.Errorf("gateway.max_line_size must be at least 1MB")
+	// [提升最小限制] 从 1MB 提升到 2MB，以支持更大的 SSE 响应行
+	// 参考: Antigravity-Manager 项目的改进建议，防止 OOM 和 scanning 错误
+	if c.Gateway.MaxLineSize != 0 && c.Gateway.MaxLineSize < 2*1024*1024 {
+		return fmt.Errorf("gateway.max_line_size must be at least 2MB")
 	}
 	if c.Gateway.Scheduling.StickySessionMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.sticky_session_max_waiting must be positive")
