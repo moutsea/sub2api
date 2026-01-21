@@ -579,6 +579,23 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		return nil, fmt.Errorf("missing model")
 	}
 
+	// [WARMUP INTERCEPTOR] Detect and handle warmup requests
+	// Reference: Antigravity-Manager warmup detection
+	// This saves API tokens by simulating responses for Claude Code heartbeat requests
+	if isWarmupRequest(&claudeReq) {
+		log.Printf("%s [Warmup] Detected warmup request, returning simulated response", prefix)
+		simulateWarmupResponse(c, claudeReq.Model)
+
+		// Return minimal usage (simulated)
+		return &ForwardResult{
+			Usage: ClaudeUsage{
+				InputTokens:  1,
+				OutputTokens: 1,
+			},
+			Duration: time.Since(startTime),
+		}, nil
+	}
+
 	originalModel := claudeReq.Model
 	mappedModel := s.getMappedModel(account, claudeReq.Model)
 	quotaScope, _ := resolveAntigravityQuotaScope(originalModel)
@@ -1308,6 +1325,18 @@ func sanitizeThinkingBlocks(req *antigravity.ClaudeRequest) {
 			}
 		}
 
+		// 3. [NEW] Three-stage sorting for assistant messages
+		// Reference: Antigravity-Manager sort_thinking_blocks_first
+		// Ensures: [Thinking, Text, ToolUse] order for protocol compliance
+		if req.Messages[msgIdx].Role == "assistant" && len(blocks) > 1 {
+			sortedBlocks := sortBlocksThreeStage(blocks)
+			if sortedBlocks != nil {
+				blocks = sortedBlocks
+				cleaned = true
+				log.Printf("[Antigravity] Applied three-stage sorting to assistant message at messages[%d]", msgIdx)
+			}
+		}
+
 		// Marshal back if modified
 		if cleaned {
 			if marshaled, err := json.Marshal(blocks); err == nil {
@@ -1315,6 +1344,71 @@ func sanitizeThinkingBlocks(req *antigravity.ClaudeRequest) {
 			}
 		}
 	}
+}
+
+// sortBlocksThreeStage sorts blocks in three-stage order: [Thinking, Text, ToolUse]
+// Reference: Antigravity-Manager sort_thinking_blocks_first
+// Returns nil if no sorting was needed
+func sortBlocksThreeStage(blocks []map[string]any) []map[string]any {
+	// Separate blocks into three categories
+	var thinking []map[string]any
+	var text []map[string]any
+	var toolUse []map[string]any
+	var other []map[string]any
+
+	needsSorting := false
+	lastCategory := "" // Track order to detect if sorting is needed
+
+	for _, block := range blocks {
+		blockType, _ := block["type"].(string)
+
+		switch blockType {
+		case "thinking":
+			thinking = append(thinking, block)
+			if lastCategory != "" && lastCategory != "thinking" {
+				needsSorting = true
+			}
+			lastCategory = "thinking"
+
+		case "text":
+			text = append(text, block)
+			if lastCategory == "tool_use" {
+				needsSorting = true
+			}
+			lastCategory = "text"
+
+		case "tool_use":
+			toolUse = append(toolUse, block)
+			lastCategory = "tool_use"
+
+		default:
+			// Handle blocks with "thinking" field but no type
+			if block["thinking"] != nil {
+				thinking = append(thinking, block)
+				if lastCategory != "" && lastCategory != "thinking" {
+					needsSorting = true
+				}
+				lastCategory = "thinking"
+			} else {
+				// Unknown block types go to "other" (preserve at end)
+				other = append(other, block)
+			}
+		}
+	}
+
+	// If already in correct order, return nil (no change needed)
+	if !needsSorting {
+		return nil
+	}
+
+	// Reconstruct in correct order: [Thinking, Text, ToolUse, Other]
+	result := make([]map[string]any, 0, len(blocks))
+	result = append(result, thinking...)
+	result = append(result, text...)
+	result = append(result, toolUse...)
+	result = append(result, other...)
+
+	return result
 }
 
 // stripThinkingFromClaudeRequest converts thinking blocks to text blocks in a Claude Messages request.
@@ -2940,4 +3034,101 @@ func isImageGenerationModel(model string) bool {
 		modelLower == "gemini-2.5-flash-image" ||
 		modelLower == "gemini-2.5-flash-image-preview" ||
 		strings.HasPrefix(modelLower, "gemini-2.5-flash-image-")
+}
+
+// ==============================================================================
+// Warmup Request Detection and Simulation
+// Reference: Antigravity-Manager warmup detection logic
+// ==============================================================================
+
+// isWarmupRequest detects if the request is a Claude Code warmup/heartbeat request
+// These requests are used by Claude Code to pre-warm connections and check availability
+// Characteristics:
+// 1. Single "user" message with content "Say hi" or "ping"
+// 2. Very small max_tokens (1 or 10)
+// 3. Optional: session_id starting with "warmup_"
+func isWarmupRequest(req *antigravity.ClaudeRequest) bool {
+	// Check 1: Must have exactly one message
+	if len(req.Messages) != 1 {
+		return false
+	}
+
+	msg := req.Messages[0]
+	if msg.Role != "user" {
+		return false
+	}
+
+	// Check 2: Extract text content
+	var textContent string
+	if err := json.Unmarshal(msg.Content, &textContent); err != nil {
+		// Try parsing as array
+		var blocks []map[string]any
+		if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+			return false
+		}
+		// Extract text from first block
+		if len(blocks) == 0 {
+			return false
+		}
+		if text, ok := blocks[0]["text"].(string); ok {
+			textContent = text
+		} else {
+			return false
+		}
+	}
+
+	// Check warmup text patterns
+	textLower := strings.ToLower(strings.TrimSpace(textContent))
+	if textLower != "say hi" && textLower != "ping" && textLower != "hi" {
+		return false
+	}
+
+	// Check 3: Very small max_tokens (typical warmup characteristic)
+	// MaxTokens is int, so 0 means not set (default)
+	if req.MaxTokens > 10 {
+		return false
+	}
+
+	// All checks passed - this is a warmup request
+	return true
+}
+
+// simulateWarmupResponse returns a minimal SSE response for warmup requests
+// This avoids consuming actual API tokens while satisfying the client
+// Reference: Antigravity-Manager warmup response simulation
+func simulateWarmupResponse(c *gin.Context, model string) {
+	// Set SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Warmup-Response", "true") // Custom header for debugging
+
+	// Write message_start event
+	fmt.Fprintf(c.Writer, "event: message_start\n")
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"warmup-%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\"}}\n\n",
+		uuid.New().String(), model)
+
+	// Write content_block_start event
+	fmt.Fprintf(c.Writer, "event: content_block_start\n")
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+
+	// Write content_block_delta event with "Hi"
+	fmt.Fprintf(c.Writer, "event: content_block_delta\n")
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n")
+
+	// Write content_block_stop event
+	fmt.Fprintf(c.Writer, "event: content_block_stop\n")
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+	// Write message_delta event with usage (minimal)
+	fmt.Fprintf(c.Writer, "event: message_delta\n")
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n")
+
+	// Write message_stop event
+	fmt.Fprintf(c.Writer, "event: message_stop\n")
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"message_stop\"}\n\n")
+
+	c.Writer.Flush()
+
+	log.Printf("[Warmup] Simulated warmup response for model %s (zero API tokens consumed)", model)
 }

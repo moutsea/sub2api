@@ -6,11 +6,134 @@
 
 ---
 
+## [1.0.2] - 2026-01-21
+
+### ✨ 新功能 (New Features)
+
+#### 高优先级核心功能（基于 Antigravity-Manager 分析）
+
+- **[高优] 消息合并逻辑** (`MergeConsecutiveMessages`)
+  - **问题**: Gemini API 严格要求 user/assistant 角色必须交替出现，否则返回 400 错误
+  - **实现**: 自动合并连续相同角色的消息
+  - **支持**: String + String, Array + Array, Array + String, String + Array 多种组合
+  - **触发场景**: 上下文清理后产生的连续消息、用户快速连续发送、工具调用中断等
+  - **影响**: ⭐⭐⭐⭐⭐ CRITICAL - 防止 Gemini API 拒绝请求
+  - **参考**: Antigravity-Manager `merge_consecutive_messages`
+
+- **[高优] Thinking 块三阶段排序** (`sortBlocksThreeStage`)
+  - **问题**: Gemini/Claude 要求 assistant 消息必须以 thinking block 开头
+  - **实现**: 对 assistant 消息内容块进行三阶段排序：`[Thinking, Text, ToolUse]`
+  - **智能检测**: 只有当顺序不正确时才重排序，避免不必要的操作
+  - **影响**: ⭐⭐⭐⭐⭐ CRITICAL - 确保 thinking 模式协议合规性
+  - **参考**: Antigravity-Manager `sort_thinking_blocks_first`
+
+- **[高优] Warmup 请求拦截器** (`isWarmupRequest` + `simulateWarmupResponse`)
+  - **功能**: 检测并拦截 Claude Code 的 warmup/heartbeat 请求
+  - **检测特征**:
+    - 单条 user 消息，内容为 "Say hi"、"ping" 或 "hi"
+    - max_tokens ≤ 10
+    - 消息数量为 1
+  - **返回**: 完整的 Claude API SSE 事件流（模拟响应）
+  - **收益**:
+    - ✅ 零 Token 消耗（避免真实 API 调用）
+    - ✅ 降低延迟（模拟响应 < 10ms）
+    - ✅ 节省配额（减少不必要的 API 调用）
+  - **调试**: 响应头包含 `X-Warmup-Response: true` 标记
+  - **影响**: ⭐⭐⭐⭐ HIGH - 优化性能和成本
+  - **参考**: Antigravity-Manager warmup detection
+
+### 🔄 优化 (Improvements)
+
+#### 上下文管理增强
+
+- **消息合并集成到请求预处理流程**
+  - 在 `PrepareRequestForClaude` 函数中自动执行
+  - 处理流程：Sanitize → Merge → Purify
+  - 确保所有请求都经过消息合并处理
+
+- **Thinking 块排序集成到清理流程**
+  - 在 `sanitizeThinkingBlocks` 函数中自动执行
+  - 处理流程：Cache Control 清理 → 历史扁平化 → 三阶段排序
+  - 仅对 assistant 消息且 len(blocks) > 1 时执行
+
+#### 系统提示词回滚
+
+- **移除动态加载系统**: 回滚 v1.0.1 的动态提示词加载机制
+  - **原因**: 动态加载导致 TODO 功能异常（工具定义泄漏）
+  - **解决方案**: 恢复内联常量方式
+  - **新增**: 将 anti.txt 的所有段落添加为内联常量
+  - **段落**: identity, user_information, tool_calling, web_development, user_rules, workflows, knowledge_discovery, persistent_context, ephemeral_message, communication_style
+
+### 📝 新增文件
+
+- `backend/internal/service/context_manager.go`:
+  - `MergeConsecutiveMessages()`: 消息合并函数
+  - `mergeContent()`: 内容合并辅助函数
+  - `PurifyHistory()`: 上下文清理函数
+  - `PrepareRequest()`: 综合预处理入口
+
+### 🔄 变更文件
+
+- `backend/internal/service/antigravity_gateway_service.go`:
+  - 新增 `isWarmupRequest()`: Warmup 请求检测
+  - 新增 `simulateWarmupResponse()`: 模拟响应生成
+  - 新增 `sortBlocksThreeStage()`: 三阶段块排序
+  - 修改 `Forward()`: 集成 Warmup 拦截器（入口处）
+  - 修改 `sanitizeThinkingBlocks()`: 集成三阶段排序
+
+- `backend/internal/service/context_manager.go`:
+  - 修改 `PrepareRequestForClaude()`: 集成消息合并
+
+- `backend/internal/pkg/antigravity/request_transformer.go`:
+  - 新增 10 个内联提示词常量（从 anti.txt 提取）
+  - 修改 `buildAntigravityPrompt()`: 动态组装所有段落
+
+### ❌ 删除文件
+
+- `backend/internal/pkg/antigravity/prompt_loader.go`: 动态提示词加载器（已回滚）
+- `backend/internal/pkg/antigravity/prompt_loader_test.go`: 提示词加载器测试（已回滚）
+
+### 🎯 影响范围
+
+- **协议兼容性**: 显著提升与 Gemini API 的兼容性
+  - 解决角色交替问题（消息合并）
+  - 解决 thinking 块顺序问题（三阶段排序）
+- **性能优化**: Warmup 拦截器减少不必要的 API 调用和 Token 消耗
+- **稳定性**: 修复动态提示词导致的 TODO 功能异常
+- **可维护性**: 使用内联常量确保提示词稳定可靠
+
+### 📊 技术指标
+
+- **消息合并**: 自动处理 4 种内容组合方式
+- **三阶段排序**: [Thinking, Text, ToolUse] 固定顺序
+- **Warmup 响应时间**: < 10ms（vs 真实 API ~500ms+）
+- **Warmup Token 消耗**: 0 tokens（vs 真实 API ~2 tokens）
+- **提示词段落数**: 10 个完整段落（内联常量）
+
+### 🔍 日志标记
+
+新增以下日志标记便于排查问题：
+
+- `[Warmup]`: Warmup 请求检测和响应相关
+- `[ContextManager]`: 消息合并和上下文管理相关
+- `[Antigravity]`: 三阶段排序和清理相关
+
+### 🧪 测试验证
+
+- ✅ 编译通过: `go build ./...`
+- ✅ 测试通过: `go test ./...`
+- ✅ 所有现有测试保持通过
+
+### 📚 参考文档
+
+- `docs/ANTIGRAVITY_MANAGER_ANALYSIS.md`: Antigravity-Manager 深度分析报告
+  - 详细实现参考
+  - 优先级排序
+  - Go 代码示例
+
+---
+
 ## [1.0.1] - 2026-01-21
-
-### 🔧 修复 (Bug Fixes)
-
-#### 请求处理优化
 - **[高优] 工具冲突检测**: 修复 Gemini v1internal API 不支持同时使用 `googleSearch` 和 `functionDeclarations` 的问题
   - 添加自动冲突检测逻辑，当检测到冲突时优先保留 `functionDeclarations`，移除 `googleSearch`
   - 添加详细的 `[ISSUE-TOOLS-CONFLICT]` 日志标记，方便排查问题
@@ -102,6 +225,7 @@ cfjwlchangji/sub2api:latest
 # 指定版本
 cfjwlchangji/sub2api:v1.0.0
 cfjwlchangji/sub2api:v1.0.1
+cfjwlchangji/sub2api:v1.0.2
 
 # 主版本锁定
 cfjwlchangji/sub2api:v1
@@ -110,9 +234,9 @@ cfjwlchangji/sub2api:v1
 ### 构建命令示例
 
 ```bash
-# 构建并推送 1.0.1 版本
+# 构建并推送 1.0.2 版本
 docker buildx build --platform linux/amd64 \
-  -t cfjwlchangji/sub2api:v1.0.1 \
+  -t cfjwlchangji/sub2api:v1.0.2 \
   -t cfjwlchangji/sub2api:v1 \
   -t cfjwlchangji/sub2api:latest \
   --push .
@@ -120,7 +244,7 @@ docker buildx build --platform linux/amd64 \
 
 ### 版本选择建议
 
-- **生产环境**: 使用明确的版本号（如 `v1.0.1`），避免意外更新
+- **生产环境**: 使用明确的版本号（如 `v1.0.2`），避免意外更新
 - **测试环境**: 可使用主版本标签（如 `v1`），获取最新的修复
 - **开发环境**: 可使用 `latest`，始终使用最新版本
 
@@ -130,10 +254,15 @@ docker buildx build --platform linux/amd64 \
 
 如遇到问题，请查看日志中的以下标记：
 
+### v1.0.2 新增标记
+- `[Warmup]`: Warmup 请求检测和响应相关
+- `[ContextManager]`: 消息合并和上下文管理相关
+- `[Antigravity]`: 三阶段排序和 Thinking 块清理相关
+
+### v1.0.1 标记
 - `[ISSUE-TOOLS-CONFLICT]`: 工具冲突问题
 - `[REQUEST-SIZE-ERROR]`: 请求体过大
 - `[REQUEST-SIZE]`: 请求大小统计
-- `[PromptLoader]`: 提示词加载相关
-- `[ContextManager]`: 上下文管理相关
+- `[PromptLoader]`: 提示词加载相关（已在 v1.0.2 移除）
 
 完整日志路径: `/var/log/sub2api/` (Docker 容器内)

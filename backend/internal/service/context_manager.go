@@ -247,6 +247,8 @@ func (cm *ContextManager) PrepareRequest(body []byte, tokenLimit int) []byte {
 // PrepareRequestForClaude applies comprehensive request preparation
 // This includes: thinking block sanitization, message merging, and purification
 func PrepareRequestForClaude(body []byte, strategy PurificationStrategy) []byte {
+	cm := NewContextManager()
+
 	// 1. Parse the request
 	var req antigravity.ClaudeRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -258,17 +260,23 @@ func PrepareRequestForClaude(body []byte, strategy PurificationStrategy) []byte 
 	// This is always needed regardless of purification strategy
 	sanitizeThinkingBlocks(&req)
 
-	// 3. Apply purification if needed
-	if strategy != PurificationNone {
-		// Re-marshal to apply purification on the sanitized request
-		sanitizedBody, err := json.Marshal(req)
-		if err != nil {
-			log.Printf("[ContextManager] Failed to marshal sanitized request: %v", err)
-			return body
-		}
+	// 3. Re-marshal for message merging
+	sanitizedBody, err := json.Marshal(req)
+	if err != nil {
+		log.Printf("[ContextManager] Failed to marshal sanitized request: %v", err)
+		return body
+	}
 
+	// 4. CRITICAL: Merge consecutive messages with same role
+	// This is required for Gemini API compatibility (strict user/assistant alternation)
+	mergedBody, wasMerged := cm.MergeConsecutiveMessages(sanitizedBody)
+	if wasMerged {
+		sanitizedBody = mergedBody
+	}
+
+	// 5. Apply purification if needed
+	if strategy != PurificationNone {
 		// Apply purification
-		cm := NewContextManager()
 		purifiedBody, modified := cm.PurifyHistory(sanitizedBody, strategy)
 		if modified {
 			return purifiedBody
@@ -276,13 +284,7 @@ func PrepareRequestForClaude(body []byte, strategy PurificationStrategy) []byte 
 		return sanitizedBody
 	}
 
-	// 4. Return sanitized body (no purification)
-	sanitizedBody, err := json.Marshal(req)
-	if err != nil {
-		log.Printf("[ContextManager] Failed to marshal sanitized request: %v", err)
-		return body
-	}
-
+	// 6. Return sanitized + merged body (no purification)
 	return sanitizedBody
 }
 
@@ -293,4 +295,121 @@ func GetModelTokenLimit(model string) int {
 	// Claude 3.5 Sonnet and Opus support up to 200k
 	// Haiku models have similar limits
 	return 200000
+}
+
+// MergeConsecutiveMessages merges consecutive messages with the same role
+// This is CRITICAL for Gemini API compatibility - it strictly requires user/assistant alternation
+// Reference: Antigravity-Manager merge_consecutive_messages
+func (cm *ContextManager) MergeConsecutiveMessages(body []byte) ([]byte, bool) {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false
+	}
+
+	messages, ok := req["messages"].([]any)
+	if !ok || len(messages) <= 1 {
+		return body, false
+	}
+
+	merged := make([]any, 0, len(messages))
+	var current map[string]any
+	modified := false
+
+	for i, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			merged = append(merged, msg)
+			continue
+		}
+
+		role, _ := msgMap["role"].(string)
+
+		if i == 0 {
+			// First message - just set as current
+			current = msgMap
+			continue
+		}
+
+		currentRole, _ := current["role"].(string)
+
+		if currentRole == role {
+			// Same role - merge content
+			modified = true
+			currentContent := current["content"]
+			msgContent := msgMap["content"]
+
+			mergedContent := mergeContent(currentContent, msgContent)
+			current["content"] = mergedContent
+		} else {
+			// Different role - save current and start new
+			merged = append(merged, current)
+			current = msgMap
+		}
+	}
+
+	// Don't forget the last message
+	if current != nil {
+		merged = append(merged, current)
+	}
+
+	if !modified {
+		return body, false
+	}
+
+	req["messages"] = merged
+
+	newBody, err := json.Marshal(req)
+	if err != nil {
+		log.Printf("[ContextManager] Failed to marshal merged request: %v", err)
+		return body, false
+	}
+
+	log.Printf("[ContextManager] Merged consecutive messages: %d -> %d messages", len(messages), len(merged))
+	return newBody, true
+}
+
+// mergeContent merges two content values (supports string, array, mixed combinations)
+// Handles: Array + Array, String + String, Array + String, String + Array
+func mergeContent(content1, content2 any) any {
+	// Case 1: Both are strings
+	str1, isStr1 := content1.(string)
+	str2, isStr2 := content2.(string)
+	if isStr1 && isStr2 {
+		return str1 + "\n\n" + str2
+	}
+
+	// Case 2: Both are arrays
+	arr1, isArr1 := content1.([]any)
+	arr2, isArr2 := content2.([]any)
+	if isArr1 && isArr2 {
+		result := make([]any, 0, len(arr1)+len(arr2))
+		result = append(result, arr1...)
+		result = append(result, arr2...)
+		return result
+	}
+
+	// Case 3: Array + String - convert string to text block and append
+	if isArr1 && isStr2 {
+		result := make([]any, 0, len(arr1)+1)
+		result = append(result, arr1...)
+		result = append(result, map[string]any{
+			"type": "text",
+			"text": str2,
+		})
+		return result
+	}
+
+	// Case 4: String + Array - convert string to text block and prepend
+	if isStr1 && isArr2 {
+		result := make([]any, 0, len(arr2)+1)
+		result = append(result, map[string]any{
+			"type": "text",
+			"text": str1,
+		})
+		result = append(result, arr2...)
+		return result
+	}
+
+	// Fallback: return first content if types don't match expectations
+	return content1
 }
