@@ -192,6 +192,10 @@ type StreamingProcessor struct {
 	inputTokens     int
 	outputTokens    int
 	cacheReadTokens int
+
+	// [NEW] MCP XML Bridge 状态
+	inMCPXML     bool   // 是否正在解析 MCP XML 标签
+	mcpXMLBuffer string // MCP XML 标签缓冲区
 }
 
 // NewStreamingProcessor 创建流式响应处理器
@@ -441,6 +445,17 @@ func (p *StreamingProcessor) processText(text, signature string) []byte {
 		p.trailingSignature = ""
 	}
 
+	// [NEW] MCP XML Bridge: 拦截并解析 <mcp__...> 标签
+	// 当模型在文本中输出 XML 格式的 MCP 工具调用时，将其转换为标准的 function call
+	if strings.Contains(text, "<mcp__") || p.inMCPXML {
+		xmlResult := p.processMCPXML(text)
+		if xmlResult != nil || p.inMCPXML {
+			// 如果成功解析或正在缓冲，返回解析结果（可能为空）
+			return xmlResult
+		}
+		// 如果不包含有效的 MCP XML，继续正常处理
+	}
+
 	// 非空 text 带签名 - 特殊处理
 	// [FIX] 不再在 text 块后发送 thinking 块，只暂存签名供后续使用
 	// Claude 协议不允许在 text 块之后追加 thinking 块
@@ -470,6 +485,108 @@ func (p *StreamingProcessor) processText(text, signature string) []byte {
 	}))
 
 	return result.Bytes()
+}
+
+// processMCPXML 处理 MCP XML Bridge
+// 当模型输出 <mcp__toolname>{"arg":"value"}</mcp__toolname> 格式时，
+// 将其转换为标准的 function call 格式
+func (p *StreamingProcessor) processMCPXML(text string) []byte {
+	p.inMCPXML = true
+	p.mcpXMLBuffer += text
+
+	// 检查是否有完整的标签
+	if !strings.Contains(p.mcpXMLBuffer, "</mcp__") {
+		// 还没有结束标签，继续缓冲
+		return nil
+	}
+
+	buffer := p.mcpXMLBuffer
+
+	// 查找开始标签 <mcp__...>
+	startIdx := strings.Index(buffer, "<mcp__")
+	if startIdx == -1 {
+		p.resetMCPXML()
+		return nil
+	}
+
+	// 查找开始标签的结束位置
+	tagEndIdx := strings.Index(buffer[startIdx:], ">")
+	if tagEndIdx == -1 {
+		p.resetMCPXML()
+		return nil
+	}
+	actualTagEnd := startIdx + tagEndIdx
+
+	// 提取工具名称 (不包含 < 和 >)
+	toolName := buffer[startIdx+1 : actualTagEnd]
+
+	// 构造结束标签
+	endTag := "</" + toolName + ">"
+
+	// 查找结束标签
+	closeIdx := strings.Index(buffer, endTag)
+	if closeIdx == -1 {
+		// 结束标签不完整，继续缓冲
+		return nil
+	}
+
+	// 提取输入参数 (开始标签和结束标签之间的内容)
+	inputStr := strings.TrimSpace(buffer[actualTagEnd+1 : closeIdx])
+
+	// 解析 JSON 参数
+	var inputJSON map[string]any
+	if err := json.Unmarshal([]byte(inputStr), &inputJSON); err != nil {
+		// 如果不是有效 JSON，将其作为 input 字段
+		inputJSON = map[string]any{"input": inputStr}
+	}
+
+	// 构造 FunctionCall
+	fc := &GeminiFunctionCall{
+		Name: toolName,
+		Args: inputJSON,
+		ID:   fmt.Sprintf("%s-xml-%s", toolName, generateRandomID()),
+	}
+
+	var result bytes.Buffer
+
+	// 处理标签之前的文本（如果有）
+	if startIdx > 0 {
+		prefixText := buffer[:startIdx]
+		if strings.TrimSpace(prefixText) != "" {
+			if p.blockType != BlockTypeText {
+				_, _ = result.Write(p.startBlock(BlockTypeText, map[string]any{
+					"type": "text",
+					"text": "",
+				}))
+			}
+			_, _ = result.Write(p.emitDelta("text_delta", map[string]any{
+				"text": prefixText,
+			}))
+		}
+	}
+
+	// 处理 function call
+	_, _ = result.Write(p.processFunctionCall(fc, ""))
+
+	// 重置 MCP XML 状态（必须在递归调用之前，否则会无限循环）
+	p.resetMCPXML()
+
+	log.Printf("[StreamTransformer] MCP XML Bridge: converted <%s> to function call", toolName)
+
+	// 处理标签之后的文本（如果有）
+	suffix := buffer[closeIdx+len(endTag):]
+	if strings.TrimSpace(suffix) != "" {
+		// 递归处理后缀内容
+		_, _ = result.Write(p.processText(suffix, ""))
+	}
+
+	return result.Bytes()
+}
+
+// resetMCPXML 重置 MCP XML Bridge 状态
+func (p *StreamingProcessor) resetMCPXML() {
+	p.inMCPXML = false
+	p.mcpXMLBuffer = ""
 }
 
 // processFunctionCall 处理 function call
