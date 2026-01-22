@@ -3803,8 +3803,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 // 配额检查阈值常量
 const (
-	// defaultQuotaThreshold 默认配额阈值，超过此值的账号将被过滤（百分比，90 表示 90%）
-	defaultQuotaThreshold = 90
+	// defaultQuotaThreshold 默认配额阈值，超过此值的账号将被过滤（百分比，80 表示 80%）
+	// 注意：此值应与 account_usage_service.go 中的 quotaHealthyThreshold 保持一致
+	defaultQuotaThreshold = 80
 )
 
 // isAccountQuotaAvailable 检查账号配额是否可用
