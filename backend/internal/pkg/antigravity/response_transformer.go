@@ -122,11 +122,42 @@ func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 			toolID = fmt.Sprintf("%s-%s", part.FunctionCall.Name, generateRandomID())
 		}
 
+		// [FIX] 工具名称规范化：search → grep（与 StreamingProcessor 保持一致）
+		toolName := part.FunctionCall.Name
+		if strings.ToLower(toolName) == "search" {
+			toolName = "grep"
+		}
+
+		// [FIX] 参数重映射（与 StreamingProcessor 保持一致）
+		var inputArgs any = part.FunctionCall.Args
+		if part.FunctionCall.Args != nil {
+			var remappedArgs map[string]any
+			switch v := part.FunctionCall.Args.(type) {
+			case map[string]any:
+				remappedArgs = make(map[string]any)
+				for k, val := range v {
+					remappedArgs[k] = val
+				}
+			default:
+				// 如果不是 map 类型，尝试通过 JSON 序列化/反序列化转换
+				argsBytes, err := json.Marshal(part.FunctionCall.Args)
+				if err == nil {
+					if err := json.Unmarshal(argsBytes, &remappedArgs); err != nil {
+						remappedArgs = nil
+					}
+				}
+			}
+			if remappedArgs != nil {
+				remapFunctionCallArgs(toolName, remappedArgs)
+				inputArgs = remappedArgs
+			}
+		}
+
 		item := ClaudeContentItem{
 			Type:  "tool_use",
 			ID:    toolID,
-			Name:  part.FunctionCall.Name,
-			Input: part.FunctionCall.Args,
+			Name:  toolName,
+			Input: inputArgs,
 		}
 
 		if signature != "" {
