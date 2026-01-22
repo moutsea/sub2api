@@ -988,9 +988,18 @@ urlFallbackLoop:
 
 		// 处理错误响应（重试后仍失败或不触发重试）
 		if resp.StatusCode >= 400 {
-			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+			// URL 级别 429 不应标记账户限流，也不应触发 failover
+			urlLevelRateLimit := resp.StatusCode == http.StatusTooManyRequests && isURLLevelRateLimit(respBody)
+			if !urlLevelRateLimit {
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+			}
 
 			if s.shouldFailoverUpstreamError(resp.StatusCode) {
+				// URL 级别 429 直接返回错误，不触发 failover
+				if urlLevelRateLimit {
+					log.Printf("%s status=429 url_level_rate_limit returning_error", prefix)
+					return nil, s.writeMappedClaudeError(c, account, resp.StatusCode, resp.Header.Get("x-request-id"), respBody)
+				}
 				upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 				logBody := s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.LogUpstreamErrorBody
@@ -1925,7 +1934,11 @@ urlFallbackLoop:
 			goto handleSuccess
 		}
 
-		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+		// URL 级别 429 不应标记账户限流，也不应触发 failover
+		urlLevelRateLimit := resp.StatusCode == http.StatusTooManyRequests && isURLLevelRateLimit(respBody)
+		if !urlLevelRateLimit {
+			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, quotaScope)
+		}
 
 		requestID := resp.Header.Get("x-request-id")
 		if requestID != "" {
@@ -1954,6 +1967,11 @@ urlFallbackLoop:
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+			// URL 级别 429 直接返回错误，不触发 failover
+			if urlLevelRateLimit {
+				log.Printf("%s status=429 url_level_rate_limit returning_error", prefix)
+				return nil, s.writeGoogleError(c, resp.StatusCode, upstreamMsg)
+			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
