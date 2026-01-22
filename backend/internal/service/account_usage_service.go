@@ -83,7 +83,7 @@ const (
 	windowStatsCacheTTL = 1 * time.Minute
 
 	// quotaHealthyThreshold 配额健康阈值，超过此值的账号被标记为不健康
-	quotaHealthyThreshold = 90.0
+	quotaHealthyThreshold = 80.0
 )
 
 // UsageCache 封装账户使用量相关的缓存
