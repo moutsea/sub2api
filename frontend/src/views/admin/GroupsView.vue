@@ -80,7 +80,9 @@
                     ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
                     : value === 'antigravity'
                       ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                      : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                      : value === 'kiro'
+                        ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400'
+                        : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
               ]"
             >
               <PlatformIcon :platform="value" size="xs" />
@@ -1152,7 +1154,8 @@ const platformOptions = computed(() => [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
-  { value: 'antigravity', label: 'Antigravity' }
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'kiro', label: 'Kiro' }
 ])
 
 const platformFilterOptions = computed(() => [
@@ -1160,7 +1163,8 @@ const platformFilterOptions = computed(() => [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
-  { value: 'antigravity', label: 'Antigravity' }
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'kiro', label: 'Kiro' }
 ])
 
 const editStatusOptions = computed(() => [

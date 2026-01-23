@@ -935,7 +935,8 @@ export default {
         anthropic: 'Anthropic',
         openai: 'OpenAI',
         gemini: 'Gemini',
-        antigravity: 'Antigravity'
+        antigravity: 'Antigravity',
+        kiro: 'Kiro'
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -1181,7 +1182,8 @@ export default {
         openai: 'OpenAI',
         anthropic: 'Anthropic',
         gemini: 'Gemini',
-        antigravity: 'Antigravity'
+        antigravity: 'Antigravity',
+        kiro: 'Kiro'
       },
       types: {
         oauth: 'OAuth',
@@ -1190,6 +1192,7 @@ export default {
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
         antigravityOauth: 'Antigravity OAuth',
+        kiroRefreshToken: 'AWS CodeWhisperer Refresh Token',
         api_key: 'API Key',
         cookie: 'Cookie'
       },
@@ -1705,6 +1708,48 @@ export default {
           limited: '限流 {time}',
           now: '现在'
         }
+      },
+      // Kiro specific (platform-wide)
+      kiro: {
+        refreshToken: 'Refresh Token',
+        refreshTokenPlaceholder: '粘贴从 Kiro 获取的 refresh_token...',
+        refreshTokenHint: '从 Kiro 桌面应用或浏览器开发者工具中获取的 refresh_token',
+        pleaseEnterRefreshToken: '请输入 Refresh Token',
+        howToGetToken: '如何获取 Refresh Token？',
+        step1: '打开 Kiro 桌面应用并登录',
+        step2: '打开开发者工具 (F12)，切换到 Application 标签',
+        step3: '在 Local Storage 中找到 refresh_token 并复制',
+        // Auth types
+        socialDesc: 'Kiro 桌面应用',
+        idcDesc: 'AWS IAM Identity Center',
+        // Input modes
+        singleAdd: '单个添加',
+        batchImport: '批量导入',
+        // Batch import
+        batchNamePrefix: '批次名称',
+        batchNamePrefixPlaceholder: '例如：fromqq',
+        batchNamePrefixHint: '账号将自动命名为 批次名称_1, 批次名称_2, ... 如不填写则默认为 Kiro',
+        dragDropJson: '拖拽 JSON 文件到此处',
+        selectFile: '选择文件',
+        orPasteJson: '或粘贴 JSON',
+        batchJsonPlaceholderSocial: '[{\'{\'}\"refreshToken\": \"...\"{\'}\'}] 或 {\'{\'}\"tokens\": [{\'{\'}\"refreshToken\": \"...\"{\'}\'}]{\'}\'}',
+        batchJsonPlaceholderIdc: '[{\'{\'}\"refreshToken\": \"...\", \"clientId\": \"...\", \"clientSecret\": \"...\"{\'}\'}]',
+        defaultClientId: '默认 Client ID（可选）',
+        defaultClientIdHint: '用于补全 JSON 中缺失的 clientId',
+        defaultClientSecret: '默认 Client Secret（可选）',
+        defaultClientSecretHint: '用于补全 JSON 中缺失的 clientSecret',
+        parseJson: '解析 JSON',
+        parsedTokens: '已解析 {count} 个 Token',
+        // Errors
+        pleaseSelectJson: '请选择 JSON 文件',
+        fileReadError: '文件读取失败',
+        noValidTokens: '未找到有效的 Token（支持 refreshToken/refresh_token 字段）',
+        jsonParseError: 'JSON 解析失败，请检查格式',
+        pleaseParseFirst: '请先解析 JSON',
+        pleaseEnterIdcCredentials: '请输入 Client ID 和 Client Secret',
+        // Success messages
+        batchImportSuccess: '成功导入 {count} 个账号',
+        batchImportPartial: '导入完成：{success} 成功，{fail} 失败'
       },
       // Re-Auth Modal
       reAuthorizeAccount: '重新授权账号',

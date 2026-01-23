@@ -47,6 +47,7 @@ type AccountTestService struct {
 	accountRepo               AccountRepository
 	geminiTokenProvider       *GeminiTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
+	kiroGatewayService        *KiroGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 }
@@ -56,6 +57,7 @@ func NewAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
+	kiroGatewayService *KiroGatewayService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 ) *AccountTestService {
@@ -63,6 +65,7 @@ func NewAccountTestService(
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
+		kiroGatewayService:        kiroGatewayService,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 	}
@@ -161,6 +164,10 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 
 	if account.Platform == PlatformAntigravity {
 		return s.testAntigravityAccountConnection(c, account, modelID)
+	}
+
+	if account.Platform == PlatformKiro {
+		return s.testKiroAccountConnection(c, account, modelID)
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
@@ -493,6 +500,46 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	}
 
 	// 发送响应内容
+	if result.Text != "" {
+		s.sendEvent(c, TestEvent{Type: "content", Text: result.Text})
+	}
+
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
+// testKiroAccountConnection tests a Kiro account's connection
+// Uses non-streaming request via KiroGatewayService.TestConnection
+func (s *AccountTestService) testKiroAccountConnection(c *gin.Context, account *Account, modelID string) error {
+	ctx := c.Request.Context()
+
+	// Default model for Kiro testing
+	testModelID := modelID
+	if testModelID == "" {
+		testModelID = "claude-3-5-sonnet-20241022"
+	}
+
+	if s.kiroGatewayService == nil {
+		return s.sendErrorAndEnd(c, "Kiro gateway service not configured")
+	}
+
+	// Set SSE headers
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	// Send test_start event
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	// Call KiroGatewayService.TestConnection
+	result, err := s.kiroGatewayService.TestConnection(ctx, account)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+
+	// Send response content
 	if result.Text != "" {
 		s.sendEvent(c, TestEvent{Type: "content", Text: result.Text})
 	}

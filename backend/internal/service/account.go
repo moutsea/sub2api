@@ -712,3 +712,90 @@ func parseExtraInt(value any) int {
 	}
 	return 0
 }
+
+// ========================
+// Kiro Platform Methods
+// ========================
+
+// IsKiro 判断是否为 Kiro 平台账号
+func (a *Account) IsKiro() bool {
+	return a.Platform == PlatformKiro
+}
+
+// GetKiroAuthType 获取 Kiro 账号的认证类型 (social/idc)
+func (a *Account) GetKiroAuthType() string {
+	if !a.IsKiro() {
+		return ""
+	}
+	return a.GetCredential("auth_type")
+}
+
+// GetKiroRefreshToken 获取 Kiro 账号的 refresh token
+func (a *Account) GetKiroRefreshToken() string {
+	if !a.IsKiro() {
+		return ""
+	}
+	return a.GetCredential("refresh_token")
+}
+
+// GetKiroAccessToken 获取 Kiro 账号的 access token
+func (a *Account) GetKiroAccessToken() string {
+	if !a.IsKiro() {
+		return ""
+	}
+	return a.GetCredential("access_token")
+}
+
+// GetKiroClientID 获取 Kiro IdC 账号的 client ID
+func (a *Account) GetKiroClientID() string {
+	if !a.IsKiro() || a.GetKiroAuthType() != KiroAuthMethodIdC {
+		return ""
+	}
+	return a.GetCredential("client_id")
+}
+
+// GetKiroClientSecret 获取 Kiro IdC 账号的 client secret
+func (a *Account) GetKiroClientSecret() string {
+	if !a.IsKiro() || a.GetKiroAuthType() != KiroAuthMethodIdC {
+		return ""
+	}
+	return a.GetCredential("client_secret")
+}
+
+// GetKiroRegion 获取 Kiro 账号的 AWS 区域
+func (a *Account) GetKiroRegion() string {
+	if !a.IsKiro() {
+		return ""
+	}
+	region := a.GetCredential("region")
+	if region == "" {
+		return "us-east-1" // 默认区域
+	}
+	return region
+}
+
+// GetKiroProfileArn 获取 Kiro 账号的 Profile ARN
+func (a *Account) GetKiroProfileArn() string {
+	if !a.IsKiro() {
+		return ""
+	}
+	return a.GetCredential("profile_arn")
+}
+
+// GetKiroTokenExpiresAt 获取 Kiro 账号 token 过期时间
+func (a *Account) GetKiroTokenExpiresAt() *time.Time {
+	if !a.IsKiro() {
+		return nil
+	}
+	return a.GetCredentialAsTime("expires_at")
+}
+
+// IsKiroTokenExpired 检查 Kiro 账号 token 是否已过期
+// 提前 60 秒判定过期，以留出刷新缓冲时间
+func (a *Account) IsKiroTokenExpired() bool {
+	expiresAt := a.GetKiroTokenExpiresAt()
+	if expiresAt == nil {
+		return true // 无过期时间，视为过期
+	}
+	return time.Now().Add(60 * time.Second).After(*expiresAt)
+}

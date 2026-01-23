@@ -28,6 +28,7 @@ type GatewayHandler struct {
 	gatewayService            *service.GatewayService
 	geminiCompatService       *service.GeminiMessagesCompatService
 	antigravityGatewayService *service.AntigravityGatewayService
+	kiroGatewayService        *service.KiroGatewayService
 	userService               *service.UserService
 	billingCacheService       *service.BillingCacheService
 	concurrencyHelper         *ConcurrencyHelper
@@ -38,6 +39,7 @@ func NewGatewayHandler(
 	gatewayService *service.GatewayService,
 	geminiCompatService *service.GeminiMessagesCompatService,
 	antigravityGatewayService *service.AntigravityGatewayService,
+	kiroGatewayService *service.KiroGatewayService,
 	userService *service.UserService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
@@ -51,6 +53,7 @@ func NewGatewayHandler(
 		gatewayService:            gatewayService,
 		geminiCompatService:       geminiCompatService,
 		antigravityGatewayService: antigravityGatewayService,
+		kiroGatewayService:        kiroGatewayService,
 		userService:               userService,
 		billingCacheService:       billingCacheService,
 		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
@@ -397,9 +400,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 		// 转发请求 - 根据账号平台分流
 		var result *service.ForwardResult
-		if account.Platform == service.PlatformAntigravity {
+		switch account.Platform {
+		case service.PlatformAntigravity:
 			result, err = h.antigravityGatewayService.Forward(c.Request.Context(), c, account, body)
-		} else {
+		case service.PlatformKiro:
+			result, err = h.kiroGatewayService.Forward(c.Request.Context(), c, account, body)
+		default:
 			result, err = h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
 		}
 		if accountReleaseFunc != nil {

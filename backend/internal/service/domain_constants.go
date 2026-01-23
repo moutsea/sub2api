@@ -22,6 +22,13 @@ const (
 	PlatformOpenAI      = "openai"
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
+	PlatformKiro        = "kiro"
+)
+
+// Kiro auth method constants
+const (
+	KiroAuthMethodSocial = "social"
+	KiroAuthMethodIdC    = "idc"
 )
 
 // Account type constants

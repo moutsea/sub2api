@@ -889,7 +889,8 @@ export default {
         anthropic: 'Anthropic',
         openai: 'OpenAI',
         gemini: 'Gemini',
-        antigravity: 'Antigravity'
+        antigravity: 'Antigravity',
+        kiro: 'Kiro'
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -1061,7 +1062,8 @@ export default {
         claude: 'Claude',
         openai: 'OpenAI',
         gemini: 'Gemini',
-        antigravity: 'Antigravity'
+        antigravity: 'Antigravity',
+        kiro: 'Kiro'
       },
       types: {
         oauth: 'OAuth',
@@ -1069,7 +1071,8 @@ export default {
         responsesApi: 'Responses API',
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
-        antigravityOauth: 'Antigravity OAuth'
+        antigravityOauth: 'Antigravity OAuth',
+        kiroRefreshToken: 'AWS CodeWhisperer Refresh Token'
       },
       status: {
         active: 'Active',
@@ -1590,6 +1593,48 @@ export default {
           limited: 'Rate limited {time}',
           now: 'now'
         }
+      },
+      // Kiro specific (platform-wide)
+      kiro: {
+        refreshToken: 'Refresh Token',
+        refreshTokenPlaceholder: 'Paste the refresh_token from Kiro...',
+        refreshTokenHint: 'The refresh_token obtained from Kiro desktop app or browser developer tools',
+        pleaseEnterRefreshToken: 'Please enter Refresh Token',
+        howToGetToken: 'How to get Refresh Token?',
+        step1: 'Open Kiro desktop app and sign in',
+        step2: 'Open Developer Tools (F12), switch to Application tab',
+        step3: 'Find refresh_token in Local Storage and copy it',
+        // Auth types
+        socialDesc: 'Kiro Desktop App',
+        idcDesc: 'AWS IAM Identity Center',
+        // Input modes
+        singleAdd: 'Single Add',
+        batchImport: 'Batch Import',
+        // Batch import
+        batchNamePrefix: 'Batch Name',
+        batchNamePrefixPlaceholder: 'e.g., fromqq',
+        batchNamePrefixHint: 'Accounts will be named as BatchName_1, BatchName_2, ... Defaults to Kiro if empty',
+        dragDropJson: 'Drag and drop JSON file here',
+        selectFile: 'Select File',
+        orPasteJson: 'Or paste JSON',
+        batchJsonPlaceholderSocial: '[{\'{\'}\"refreshToken\": \"...\"{\'}\'}] or {\'{\'}\"tokens\": [{\'{\'}\"refreshToken\": \"...\"{\'}\'}]{\'}\'}',
+        batchJsonPlaceholderIdc: '[{\'{\'}\"refreshToken\": \"...\", \"clientId\": \"...\", \"clientSecret\": \"...\"{\'}\'}]',
+        defaultClientId: 'Default Client ID (Optional)',
+        defaultClientIdHint: 'Used to fill missing clientId in JSON',
+        defaultClientSecret: 'Default Client Secret (Optional)',
+        defaultClientSecretHint: 'Used to fill missing clientSecret in JSON',
+        parseJson: 'Parse JSON',
+        parsedTokens: 'Parsed {count} tokens',
+        // Errors
+        pleaseSelectJson: 'Please select a JSON file',
+        fileReadError: 'Failed to read file',
+        noValidTokens: 'No valid tokens found (supports refreshToken/refresh_token fields)',
+        jsonParseError: 'JSON parse error, please check format',
+        pleaseParseFirst: 'Please parse JSON first',
+        pleaseEnterIdcCredentials: 'Please enter Client ID and Client Secret',
+        // Success messages
+        batchImportSuccess: 'Successfully imported {count} accounts',
+        batchImportPartial: 'Import completed: {success} succeeded, {fail} failed'
       },
       // Re-Auth Modal
       reAuthorizeAccount: 'Re-Authorize Account',

@@ -6,6 +6,148 @@
 
 ---
 
+## [1.0.3] - 2026-01-22
+
+### ✨ 新功能 (New Features)
+
+#### Kiro 平台支持 (AWS CodeWhisperer)
+
+新增 **Kiro** 平台支持，通过 AWS CodeWhisperer API 提供 Claude 模型访问能力。
+
+- **双认证模式支持**
+  - **Social 认证**: 使用 Kiro 桌面应用的 refresh_token（desktop.kiro.dev）
+  - **IdC 认证**: 使用 AWS IAM Identity Center 的 OIDC 认证（企业级）
+
+- **完整的 Token 生命周期管理** (`KiroTokenProvider`)
+  - 自动 Token 刷新（按需刷新，请求时检查过期）
+  - Cooldown 机制（429/529 错误后自动冷却）
+  - 指数退避重试（刷新失败时自动退避）
+  - 账号状态管理（active/cooldown/exhausted/banned）
+
+- **请求转换** (Claude → CodeWhisperer)
+  - 完整的消息格式转换（user/assistant 历史）
+  - 工具调用支持（function tools + web_search）
+  - 图片支持（base64 内联）
+  - System prompt 注入（结构化标签包裹）
+  - 长工具描述截断（>500 字符自动截断，完整描述移至 system prompt）
+  - Thinking blocks 处理
+
+- **响应转换** (AWS EventStream → Claude SSE)
+  - AWS EventStream 二进制流解析
+  - 实时流式事件转换
+  - Tool use 事件处理（支持并发/交错工具调用）
+  - Usage/Credits 信息提取
+
+- **Gateway Service** (`KiroGatewayService`)
+  - 请求重试机制（最多 3 次，指数退避）
+  - 错误分类和处理（429/401/403/529）
+  - 流式/非流式响应支持
+  - 连接测试功能
+
+- **前端支持**
+  - 账号创建 UI（Kiro 平台按钮，青色主题）
+  - Refresh Token 输入表单
+  - 平台图标（代码括号样式）
+  - 平台类型徽章
+  - 中英文 i18n 支持
+
+### 🐛 修复 (Bug Fixes)
+
+- **fix(antigravity)**: URL 级别 429 不触发账户限流和 failover
+  - 区分 URL 级别限流和账户级别限流
+  - URL 限流只降低该 URL 优先级，不影响账户状态
+
+- **fix(quota)**: 统一配额阈值为 80%
+  - 将账号配额健康阈值从 90% 调整为 80%
+  - 避免过早触发配额不健康状态
+
+- **revert(antigravity)**: 回滚提示词改动以修复频繁 429 问题
+  - 恢复稳定的提示词配置
+
+- **revert**: 移除代理 URL 中的默认国家代码
+  - 修复代理配置兼容性问题
+
+### 🔄 优化 (Improvements)
+
+- **chore**: 提升 SSE 单行上限到 40MB
+  - 支持更大的流式响应数据块
+
+### 📝 新增文件
+
+**Backend:**
+- `backend/internal/pkg/kiro/types.go`: CodeWhisperer 请求/响应类型定义
+- `backend/internal/pkg/kiro/request_transformer.go`: Claude → CodeWhisperer 请求转换
+- `backend/internal/pkg/kiro/response_transformer.go`: EventStream → Claude SSE 响应转换
+- `backend/internal/service/kiro_token_provider.go`: Token 管理（刷新/cooldown/backoff）
+- `backend/internal/service/kiro_gateway_service.go`: Kiro 平台网关服务
+
+**Frontend:**
+- Kiro 平台 UI 组件和 i18n 翻译
+
+### 🔄 变更文件
+
+**Backend:**
+- `backend/internal/service/domain_constants.go`: 新增 `PlatformKiro`, `KiroAuthMethodSocial`, `KiroAuthMethodIdC` 常量
+- `backend/internal/service/account.go`: 新增 Kiro 账号 helper 方法（`IsKiro()`, `GetKiroRefreshToken()`, `GetKiroProfileArn()` 等）
+- `backend/internal/service/gateway_service.go`: 新增 `IsKiroModelSupported()`, 集成 Kiro 模型支持检查
+- `backend/internal/handler/gateway_handler.go`: 新增 Kiro 平台路由
+- `backend/internal/service/wire.go`: 新增 `KiroTokenProvider`, `KiroGatewayService` 依赖注入
+- `backend/internal/service/account_test_service.go`: 新增 Kiro 账号连接测试
+
+**Frontend:**
+- `frontend/src/types/index.ts`: 新增 `'kiro'` 到 `AccountPlatform` 和 `GroupPlatform` 类型
+- `frontend/src/components/account/CreateAccountModal.vue`: 新增 Kiro 平台创建表单
+- `frontend/src/components/common/PlatformIcon.vue`: 新增 Kiro 图标
+- `frontend/src/components/common/PlatformTypeBadge.vue`: 新增 Kiro 徽章样式
+- `frontend/src/components/account/OAuthAuthorizationFlow.vue`: 支持 Kiro 平台
+- `frontend/src/i18n/locales/zh.ts`: 新增 Kiro 中文翻译
+- `frontend/src/i18n/locales/en.ts`: 新增 Kiro 英文翻译
+
+### 🎯 影响范围
+
+- **新平台支持**: 通过 Kiro/CodeWhisperer 访问 Claude 模型
+- **认证方式**: 支持 Social（个人）和 IdC（企业）两种认证
+- **模型兼容**: Kiro 平台支持所有 `claude-*` 模型
+- **前端体验**: 完整的账号创建和管理 UI
+
+### 📊 技术指标
+
+- **代码量**: ~3,600 行新增代码（后端 ~2,600 行，前端 ~1,000 行）
+- **新增文件**: 5 个后端核心文件
+- **Token 刷新**: 支持 Social 和 IdC 两种刷新方式
+- **重试策略**: 最多 3 次，基础延迟 1s，最大延迟 16s
+- **Cooldown 默认时长**: 429 → 30s, 529 → 60s
+
+### 🔍 日志标记
+
+新增以下日志标记便于排查问题：
+
+- `[kiro-Forward]`: Kiro 请求转发相关
+- `[kiro-token]`: Token 刷新和管理相关
+- `[kiro-refresh]`: Token 刷新详情
+
+### 🧪 测试验证
+
+- ✅ 编译通过: `go build ./...`
+- ✅ 前端构建通过: `npm run build`
+- ✅ TypeScript 类型检查通过
+
+### 📚 Kiro 账号配置示例
+
+```json
+{
+  "platform": "kiro",
+  "type": "oauth",
+  "credentials": {
+    "auth_type": "social",
+    "refresh_token": "your-refresh-token-from-kiro-app",
+    "region": "us-east-1"
+  }
+}
+```
+
+---
+
 ## [1.0.2] - 2026-01-21
 
 ### ✨ 新功能 (New Features)
@@ -226,6 +368,7 @@ cfjwlchangji/sub2api:latest
 cfjwlchangji/sub2api:v1.0.0
 cfjwlchangji/sub2api:v1.0.1
 cfjwlchangji/sub2api:v1.0.2
+cfjwlchangji/sub2api:v1.0.3
 
 # 主版本锁定
 cfjwlchangji/sub2api:v1
@@ -234,9 +377,9 @@ cfjwlchangji/sub2api:v1
 ### 构建命令示例
 
 ```bash
-# 构建并推送 1.0.2 版本
+# 构建并推送 1.0.3 版本
 docker buildx build --platform linux/amd64 \
-  -t cfjwlchangji/sub2api:v1.0.2 \
+  -t cfjwlchangji/sub2api:v1.0.3 \
   -t cfjwlchangji/sub2api:v1 \
   -t cfjwlchangji/sub2api:latest \
   --push .
@@ -244,7 +387,7 @@ docker buildx build --platform linux/amd64 \
 
 ### 版本选择建议
 
-- **生产环境**: 使用明确的版本号（如 `v1.0.2`），避免意外更新
+- **生产环境**: 使用明确的版本号（如 `v1.0.3`），避免意外更新
 - **测试环境**: 可使用主版本标签（如 `v1`），获取最新的修复
 - **开发环境**: 可使用 `latest`，始终使用最新版本
 
@@ -253,6 +396,11 @@ docker buildx build --platform linux/amd64 \
 ## 问题反馈
 
 如遇到问题，请查看日志中的以下标记：
+
+### v1.0.3 新增标记
+- `[kiro-Forward]`: Kiro 请求转发相关
+- `[kiro-token]`: Token 刷新和管理相关
+- `[kiro-refresh]`: Token 刷新详情
 
 ### v1.0.2 新增标记
 - `[Warmup]`: Warmup 请求检测和响应相关

@@ -46,15 +46,26 @@
       class="space-y-5"
     >
       <div>
-        <label class="input-label">{{ t('admin.accounts.accountName') }}</label>
+        <label class="input-label">{{
+          form.platform === 'kiro' && kiroInputMode === 'batch'
+            ? t('admin.accounts.kiro.batchNamePrefix')
+            : t('admin.accounts.accountName')
+        }}</label>
         <input
           v-model="form.name"
           type="text"
-          required
+          :required="!(form.platform === 'kiro' && kiroInputMode === 'batch')"
           class="input"
-          :placeholder="t('admin.accounts.enterAccountName')"
+          :placeholder="
+            form.platform === 'kiro' && kiroInputMode === 'batch'
+              ? t('admin.accounts.kiro.batchNamePrefixPlaceholder')
+              : t('admin.accounts.enterAccountName')
+          "
           data-tour="account-form-name"
         />
+        <p v-if="form.platform === 'kiro' && kiroInputMode === 'batch'" class="input-hint">
+          {{ t('admin.accounts.kiro.batchNamePrefixHint') }}
+        </p>
       </div>
       <div>
         <label class="input-label">{{ t('admin.accounts.notes') }}</label>
@@ -67,87 +78,15 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
-      <!-- Platform Selection - Segmented Control Style -->
+      <!-- Platform Selection - Dropdown -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
-        <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-tour="account-form-platform">
-          <button
-            type="button"
-            @click="form.platform = 'anthropic'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'anthropic'
-                ? 'bg-white text-orange-600 shadow-sm dark:bg-dark-600 dark:text-orange-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <Icon name="sparkles" size="sm" />
-            Anthropic
-          </button>
-          <button
-            type="button"
-            @click="form.platform = 'openai'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'openai'
-                ? 'bg-white text-green-600 shadow-sm dark:bg-dark-600 dark:text-green-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <svg
-              class="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
-              />
-            </svg>
-            OpenAI
-          </button>
-          <button
-            type="button"
-            @click="form.platform = 'gemini'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'gemini'
-                ? 'bg-white text-blue-600 shadow-sm dark:bg-dark-600 dark:text-blue-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <svg
-              class="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M12 2l1.5 6.5L20 10l-6.5 1.5L12 18l-1.5-6.5L4 10l6.5-1.5L12 2z"
-              />
-            </svg>
-            Gemini
-          </button>
-          <button
-            type="button"
-            @click="form.platform = 'antigravity'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'antigravity'
-                ? 'bg-white text-purple-600 shadow-sm dark:bg-dark-600 dark:text-purple-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <Icon name="cloud" size="sm" />
-            Antigravity
-          </button>
-        </div>
+        <Select
+          :model-value="form.platform"
+          @update:model-value="form.platform = $event as AccountPlatform"
+          :options="platformOptions"
+          data-tour="account-form-platform"
+        />
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
@@ -627,6 +566,230 @@
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.antigravityOauth') }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Account Type Selection (Kiro) -->
+      <div v-if="form.platform === 'kiro'">
+        <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
+        <div class="mt-2 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            @click="kiroAuthType = 'social'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              kiroAuthType === 'social'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                kiroAuthType === 'social'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="user" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">Social</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.kiro.socialDesc') }}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            @click="kiroAuthType = 'idc'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              kiroAuthType === 'idc'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                kiroAuthType === 'idc'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="shield" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">IdC</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.kiro.idcDesc') }}</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Kiro Input Mode Selection -->
+        <div class="mt-4">
+          <div class="flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              @click.stop="kiroInputMode = 'single'"
+              :class="[
+                'flex-1 rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroInputMode === 'single'
+                  ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              ]"
+            >
+              {{ t('admin.accounts.kiro.singleAdd') }}
+            </button>
+            <button
+              type="button"
+              @click.stop="kiroInputMode = 'batch'"
+              :class="[
+                'flex-1 rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroInputMode === 'batch'
+                  ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              ]"
+            >
+              {{ t('admin.accounts.kiro.batchImport') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Single Token Input -->
+        <div v-if="kiroInputMode === 'single'" class="mt-4 space-y-4">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
+            <textarea
+              v-model="kiroRefreshToken"
+              rows="3"
+              class="input font-mono text-sm"
+              :placeholder="t('admin.accounts.kiro.refreshTokenPlaceholder')"
+            ></textarea>
+            <p class="input-hint">{{ t('admin.accounts.kiro.refreshTokenHint') }}</p>
+          </div>
+
+          <!-- IdC specific fields -->
+          <div v-if="kiroAuthType === 'idc'" class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="input-label">Client ID *</label>
+              <input
+                v-model="kiroClientId"
+                type="text"
+                class="input font-mono text-sm"
+                placeholder="BuilderId Client ID"
+              />
+            </div>
+            <div>
+              <label class="input-label">Client Secret *</label>
+              <input
+                v-model="kiroClientSecret"
+                type="password"
+                class="input font-mono text-sm"
+                placeholder="BuilderId Client Secret"
+              />
+            </div>
+          </div>
+        </div>
+
+        <!-- Batch Import -->
+        <div v-else class="mt-4 space-y-4">
+          <!-- File Upload Area -->
+          <div
+            class="relative rounded-lg border-2 border-dashed p-6 text-center transition-colors"
+            :class="[
+              kiroIsDragging
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-300 hover:border-cyan-400 dark:border-dark-600'
+            ]"
+            @dragover.prevent="kiroIsDragging = true"
+            @dragleave.prevent="kiroIsDragging = false"
+            @drop.prevent="handleKiroFileDrop"
+          >
+            <Icon name="upload" size="lg" class="mx-auto mb-2 text-gray-400" />
+            <p class="text-sm text-gray-600 dark:text-gray-400">
+              {{ t('admin.accounts.kiro.dragDropJson') }}
+            </p>
+            <label class="mt-2 inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-600 transition-colors hover:bg-cyan-500/20 dark:text-cyan-400">
+              <Icon name="document" size="xs" />
+              {{ t('admin.accounts.kiro.selectFile') }}
+              <input type="file" accept=".json" class="hidden" @change="handleKiroFileSelect" />
+            </label>
+          </div>
+
+          <!-- Or paste JSON -->
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.orPasteJson') }}</label>
+            <textarea
+              v-model="kiroBatchJson"
+              rows="4"
+              class="input font-mono text-xs"
+              :placeholder="kiroAuthType === 'idc' ? t('admin.accounts.kiro.batchJsonPlaceholderIdc') : t('admin.accounts.kiro.batchJsonPlaceholderSocial')"
+            ></textarea>
+          </div>
+
+          <!-- IdC default credentials for batch -->
+          <div v-if="kiroAuthType === 'idc'" class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.defaultClientId') }}</label>
+              <input
+                v-model="kiroClientId"
+                type="text"
+                class="input font-mono text-sm"
+                :placeholder="t('admin.accounts.kiro.defaultClientIdHint')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.defaultClientSecret') }}</label>
+              <input
+                v-model="kiroClientSecret"
+                type="password"
+                class="input font-mono text-sm"
+                :placeholder="t('admin.accounts.kiro.defaultClientSecretHint')"
+              />
+            </div>
+          </div>
+
+          <!-- Parsed tokens count -->
+          <div v-if="kiroParsedTokens.length > 0" class="rounded-lg bg-green-50 p-3 dark:bg-green-900/20">
+            <div class="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
+              <Icon name="check" size="sm" />
+              <span>{{ t('admin.accounts.kiro.parsedTokens', { count: kiroParsedTokens.length }) }}</span>
+            </div>
+          </div>
+
+          <!-- Parse error -->
+          <div v-if="kiroParseError" class="rounded-lg bg-red-50 p-3 dark:bg-red-900/20">
+            <div class="flex items-center gap-2 text-sm text-red-700 dark:text-red-400">
+              <Icon name="exclamationTriangle" size="sm" />
+              <span>{{ kiroParseError }}</span>
+            </div>
+          </div>
+
+          <!-- Parse button -->
+          <button
+            type="button"
+            class="btn btn-secondary w-full"
+            :disabled="!kiroBatchJson.trim()"
+            @click="parseKiroBatchJson"
+          >
+            {{ t('admin.accounts.kiro.parseJson') }}
+          </button>
+        </div>
+
+        <!-- Help section -->
+        <div class="mt-4 rounded-lg bg-cyan-50 p-4 dark:bg-cyan-900/20">
+          <div class="flex items-start gap-3">
+            <Icon name="infoCircle" size="md" class="flex-shrink-0 text-cyan-600 dark:text-cyan-400" />
+            <div class="text-sm text-cyan-700 dark:text-cyan-300">
+              <p class="font-medium">{{ t('admin.accounts.kiro.howToGetToken') }}</p>
+              <ol class="mt-2 list-inside list-decimal space-y-1 text-xs">
+                <li>{{ t('admin.accounts.kiro.step1') }}</li>
+                <li>{{ t('admin.accounts.kiro.step2') }}</li>
+                <li>{{ t('admin.accounts.kiro.step3') }}</li>
+              </ol>
             </div>
           </div>
         </div>
@@ -1634,6 +1797,7 @@ import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import type { Proxy, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -1674,6 +1838,15 @@ const apiKeyHint = computed(() => {
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   return t('admin.accounts.apiKeyHint')
 })
+
+// Platform options for dropdown
+const platformOptions = computed(() => [
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'kiro', label: 'Kiro' }
+])
 
 interface Props {
   show: boolean
@@ -1756,6 +1929,15 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
+const kiroRefreshToken = ref('') // For kiro accounts: refresh token
+const kiroAuthType = ref<'social' | 'idc'>('social') // Kiro auth type
+const kiroInputMode = ref<'single' | 'batch'>('single') // Kiro input mode
+const kiroClientId = ref('') // For IdC auth
+const kiroClientSecret = ref('') // For IdC auth
+const kiroBatchJson = ref('') // For batch import
+const kiroIsDragging = ref(false) // For drag-drop
+const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }>>([])
+const kiroParseError = ref('')
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
@@ -1842,8 +2024,8 @@ const form = reactive({
   expires_at: null as number | null
 })
 
-// Helper to check if current type needs OAuth flow
-const isOAuthFlow = computed(() => accountCategory.value === 'oauth-based')
+// Helper to check if current type needs OAuth flow (Kiro uses direct refresh token, not OAuth flow)
+const isOAuthFlow = computed(() => accountCategory.value === 'oauth-based' && form.platform !== 'kiro')
 
 const isManualInputMethod = computed(() => {
   return oauthFlowRef.value?.inputMethod === 'manual'
@@ -1914,9 +2096,20 @@ watch(
     if (newPlatform !== 'anthropic') {
       interceptWarmupRequests.value = false
     }
-    // Antigravity only supports OAuth
-    if (newPlatform === 'antigravity') {
+    // Antigravity and Kiro only support OAuth-based
+    if (newPlatform === 'antigravity' || newPlatform === 'kiro') {
       accountCategory.value = 'oauth-based'
+    }
+    // Reset Kiro refresh token when switching platforms
+    if (newPlatform !== 'kiro') {
+      kiroRefreshToken.value = ''
+      kiroAuthType.value = 'social'
+      kiroInputMode.value = 'single'
+      kiroClientId.value = ''
+      kiroClientSecret.value = ''
+      kiroBatchJson.value = ''
+      kiroParsedTokens.value = []
+      kiroParseError.value = ''
     }
     // Reset OAuth states
     oauth.resetState()
@@ -2140,6 +2333,14 @@ const resetForm = () => {
   customErrorCodeInput.value = null
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
+  kiroRefreshToken.value = ''
+  kiroAuthType.value = 'social'
+  kiroInputMode.value = 'single'
+  kiroClientId.value = ''
+  kiroClientSecret.value = ''
+  kiroBatchJson.value = ''
+  kiroParsedTokens.value = []
+  kiroParseError.value = ''
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -2157,6 +2358,70 @@ const handleClose = () => {
   emit('close')
 }
 
+// Kiro file handling methods
+const handleKiroFileDrop = (e: DragEvent) => {
+  kiroIsDragging.value = false
+  const file = e.dataTransfer?.files[0]
+  if (file) readKiroJsonFile(file)
+}
+
+const handleKiroFileSelect = (e: Event) => {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) readKiroJsonFile(file)
+  input.value = ''
+}
+
+const readKiroJsonFile = (file: File) => {
+  if (!file.name.endsWith('.json')) {
+    kiroParseError.value = t('admin.accounts.kiro.pleaseSelectJson')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    kiroBatchJson.value = (e.target?.result as string) || ''
+    parseKiroBatchJson()
+  }
+  reader.onerror = () => {
+    kiroParseError.value = t('admin.accounts.kiro.fileReadError')
+  }
+  reader.readAsText(file)
+}
+
+const parseKiroBatchJson = () => {
+  kiroParseError.value = ''
+  kiroParsedTokens.value = []
+
+  const jsonText = kiroBatchJson.value.trim()
+  if (!jsonText) {
+    kiroParseError.value = t('admin.accounts.kiro.jsonParseError')
+    return
+  }
+
+  try {
+    const data = JSON.parse(jsonText)
+    const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
+
+    for (const item of items) {
+      const rt = item?.refreshToken || item?.refresh_token || item?.RefreshToken
+      if (rt && typeof rt === 'string') {
+        kiroParsedTokens.value.push({
+          refreshToken: rt,
+          clientId: item?.clientId || item?.client_id,
+          clientSecret: item?.clientSecret || item?.client_secret,
+          name: item?.name
+        })
+      }
+    }
+
+    if (kiroParsedTokens.value.length === 0) {
+      kiroParseError.value = t('admin.accounts.kiro.noValidTokens')
+    }
+  } catch {
+    kiroParseError.value = t('admin.accounts.kiro.jsonParseError')
+  }
+}
+
 const handleSubmit = async () => {
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
@@ -2165,6 +2430,131 @@ const handleSubmit = async () => {
       return
     }
     step.value = 2
+    return
+  }
+
+  // For Kiro platform, create account with refresh token directly
+  if (form.platform === 'kiro') {
+    if (!form.name.trim() && kiroInputMode.value === 'single') {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+
+    // Batch import mode
+    if (kiroInputMode.value === 'batch') {
+      if (kiroParsedTokens.value.length === 0) {
+        appStore.showError(t('admin.accounts.kiro.pleaseParseFirst'))
+        return
+      }
+
+      // Batch name prefix (default to 'Kiro' if not provided)
+      const batchPrefix = form.name.trim() || 'Kiro'
+      const totalCount = kiroParsedTokens.value.length
+
+      submitting.value = true
+      let successCount = 0
+      let failCount = 0
+
+      try {
+        for (let i = 0; i < totalCount; i++) {
+          const token = kiroParsedTokens.value[i]
+          const credentials: Record<string, unknown> = {
+            auth_type: kiroAuthType.value,
+            refresh_token: token.refreshToken
+          }
+
+          // Add IdC credentials if applicable
+          if (kiroAuthType.value === 'idc') {
+            credentials.client_id = token.clientId || kiroClientId.value.trim()
+            credentials.client_secret = token.clientSecret || kiroClientSecret.value.trim()
+          }
+
+          // Generate account name: batchPrefix_1, batchPrefix_2, ...
+          const accountName = `${batchPrefix}_${i + 1}`
+
+          try {
+            await adminAPI.accounts.create({
+              name: accountName,
+              notes: form.notes,
+              platform: 'kiro',
+              type: 'oauth',
+              credentials,
+              proxy_id: form.proxy_id,
+              concurrency: form.concurrency,
+              priority: form.priority,
+              rate_multiplier: form.rate_multiplier,
+              group_ids: form.group_ids,
+              expires_at: form.expires_at,
+              auto_pause_on_expired: autoPauseOnExpired.value
+            })
+            successCount++
+          } catch {
+            failCount++
+          }
+        }
+
+        if (failCount === 0) {
+          appStore.showSuccess(t('admin.accounts.kiro.batchImportSuccess', { count: successCount }))
+        } else {
+          appStore.showWarning(t('admin.accounts.kiro.batchImportPartial', { success: successCount, fail: failCount }))
+        }
+        emit('created')
+        handleClose()
+      } finally {
+        submitting.value = false
+      }
+      return
+    }
+
+    // Single token mode
+    if (!kiroRefreshToken.value.trim()) {
+      appStore.showError(t('admin.accounts.kiro.pleaseEnterRefreshToken'))
+      return
+    }
+
+    // Validate IdC fields
+    if (kiroAuthType.value === 'idc') {
+      if (!kiroClientId.value.trim() || !kiroClientSecret.value.trim()) {
+        appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcCredentials'))
+        return
+      }
+    }
+
+    const credentials: Record<string, unknown> = {
+      auth_type: kiroAuthType.value,
+      refresh_token: kiroRefreshToken.value.trim()
+    }
+
+    // Add IdC credentials if applicable
+    if (kiroAuthType.value === 'idc') {
+      credentials.client_id = kiroClientId.value.trim()
+      credentials.client_secret = kiroClientSecret.value.trim()
+    }
+
+    submitting.value = true
+    try {
+      await adminAPI.accounts.create({
+        name: form.name,
+        notes: form.notes,
+        platform: 'kiro',
+        type: 'oauth',
+        credentials,
+        proxy_id: form.proxy_id,
+        concurrency: form.concurrency,
+        priority: form.priority,
+        rate_multiplier: form.rate_multiplier,
+        group_ids: form.group_ids,
+        expires_at: form.expires_at,
+        auto_pause_on_expired: autoPauseOnExpired.value
+      })
+      appStore.showSuccess(t('admin.accounts.accountCreated'))
+      emit('created')
+      handleClose()
+    } catch (error: any) {
+      appStore.showError(error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    } finally {
+      submitting.value = false
+    }
     return
   }
 

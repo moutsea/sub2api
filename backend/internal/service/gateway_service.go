@@ -1805,6 +1805,10 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 		// Antigravity 平台使用专门的模型支持检查
 		return IsAntigravityModelSupported(requestedModel)
 	}
+	if account.Platform == PlatformKiro {
+		// Kiro 平台支持 Claude 模型
+		return IsKiroModelSupported(requestedModel)
+	}
 	// 其他平台使用账户的模型支持检查
 	return account.IsModelSupported(requestedModel)
 }
@@ -1814,6 +1818,12 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 func IsAntigravityModelSupported(requestedModel string) bool {
 	return strings.HasPrefix(requestedModel, "claude-") ||
 		strings.HasPrefix(requestedModel, "gemini-")
+}
+
+// IsKiroModelSupported 检查 Kiro 平台是否支持指定模型
+// Kiro 通过 CodeWhisperer 支持 Claude 模型
+func IsKiroModelSupported(requestedModel string) bool {
+	return strings.HasPrefix(requestedModel, "claude-")
 }
 
 // GetAccessToken 获取账号凭证
