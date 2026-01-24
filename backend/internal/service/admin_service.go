@@ -806,6 +806,19 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	// For Kiro accounts, check if refresh_token already exists
+	if input.Platform == PlatformKiro {
+		if refreshToken, ok := input.Credentials["refresh_token"].(string); ok && refreshToken != "" {
+			existing, err := s.accountRepo.FindByKiroRefreshToken(ctx, refreshToken)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check for duplicate Kiro account: %w", err)
+			}
+			if existing != nil {
+				return nil, fmt.Errorf("Kiro account with this refresh_token already exists (Account ID: %d, Name: %s)", existing.ID, existing.Name)
+			}
+		}
+	}
+
 	// 绑定分组
 	groupIDs := input.GroupIDs
 	// 如果没有指定分组,自动绑定对应平台的默认分组

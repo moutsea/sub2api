@@ -276,6 +276,39 @@ func (r *accountRepository) GetByCRSAccountID(ctx context.Context, crsAccountID 
 	return &accounts[0], nil
 }
 
+// FindByKiroRefreshToken finds a Kiro account by refresh_token.
+// Returns (nil, nil) if not found.
+func (r *accountRepository) FindByKiroRefreshToken(ctx context.Context, refreshToken string) (*service.Account, error) {
+	if refreshToken == "" {
+		return nil, nil
+	}
+
+	// Query Kiro account with matching refresh_token
+	m, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(service.PlatformKiro),
+			func(s *entsql.Selector) {
+				s.Where(sqljson.ValueEQ(dbaccount.FieldCredentials, refreshToken, sqljson.Path("refresh_token")))
+			},
+		).
+		Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	accounts, err := r.accountsToService(ctx, []*dbent.Account{m})
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	return &accounts[0], nil
+}
+
 func (r *accountRepository) Update(ctx context.Context, account *service.Account) error {
 	if account == nil {
 		return nil

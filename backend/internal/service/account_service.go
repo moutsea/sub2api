@@ -25,6 +25,9 @@ type AccountRepository interface {
 	// GetByCRSAccountID finds an account previously synced from CRS.
 	// Returns (nil, nil) if not found.
 	GetByCRSAccountID(ctx context.Context, crsAccountID string) (*Account, error)
+	// FindByKiroRefreshToken finds a Kiro account by refresh_token.
+	// Returns (nil, nil) if not found.
+	FindByKiroRefreshToken(ctx context.Context, refreshToken string) (*Account, error)
 	Update(ctx context.Context, account *Account) error
 	Delete(ctx context.Context, id int64) error
 
