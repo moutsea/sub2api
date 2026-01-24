@@ -40,28 +40,34 @@ const (
 
 // Kiro configuration constants
 const (
-	kiroDefaultRegion         = "us-east-1"
-	kiroDefaultCooldown       = 30 * time.Second
-	kiroRefreshBackoffBase    = time.Minute
-	kiroRefreshBackoffMax     = 30 * time.Minute
-	kiroTokenRefreshBuffer    = 60 * time.Second // Refresh token 60s before expiry
+	kiroDefaultRegion           = "us-east-1"
+	kiroDefaultCooldown         = 30 * time.Second
+	kiroRefreshBackoffBase      = time.Minute
+	kiroRefreshBackoffMax       = 30 * time.Minute
+	kiroTokenRefreshBuffer      = 60 * time.Second // Refresh token 60s before expiry
+	kiroCooldownRecoveryInterval = 30 * time.Second // Check cooldown accounts every 30s
+	kiroBannedRecoveryInterval   = 15 * time.Minute // Check banned accounts every 15min
+	kiroMaxRefreshFailures       = 3                // Mark as banned after 3 consecutive failures
 )
 
 // KiroTokenState represents the runtime state of a Kiro account token
 type KiroTokenState struct {
-	AccountID     int64
-	AccessToken   string
-	ExpiresAt     time.Time
-	Status        KiroTokenStatus
-	CooldownUntil time.Time
-	LastRefreshed time.Time
-	mu            sync.Mutex
+	AccountID       int64
+	AccessToken     string
+	ExpiresAt       time.Time
+	Status          KiroTokenStatus
+	CooldownUntil   time.Time
+	LastRefreshed   time.Time
+	RefreshFailures int    // Track consecutive refresh failures
+	ErrorMsg        string // Last error message
+	mu              sync.Mutex
 }
 
 // kiroRefreshBackoffState tracks backoff state for failed refreshes
 type kiroRefreshBackoffState struct {
 	failures    int
 	nextAttempt time.Time
+	mu          sync.Mutex
 }
 
 // KiroTokenInfo represents token information returned from refresh
@@ -133,6 +139,11 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	// Initialize state from account if this is the first access
+	if state.AccessToken == "" && state.ExpiresAt.IsZero() {
+		p.initializeStateFromAccount(state, account)
+	}
+
 	// Check if in cooldown
 	if state.Status == KiroTokenStatusCooldown && time.Now().Before(state.CooldownUntil) {
 		return "", fmt.Errorf("account %d is in cooldown until %v", account.ID, state.CooldownUntil)
@@ -164,6 +175,8 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 	state.ExpiresAt = tokenInfo.ExpiresAt
 	state.LastRefreshed = time.Now()
 	state.Status = KiroTokenStatusActive
+	state.RefreshFailures = 0
+	state.ErrorMsg = ""
 
 	// Clear backoff on success
 	p.refreshBackoff.Delete(account.ID)
@@ -186,6 +199,36 @@ func (p *KiroTokenProvider) getOrCreateState(accountID int64) *KiroTokenState {
 	}
 	actual, _ := p.cache.LoadOrStore(accountID, state)
 	return actual.(*KiroTokenState)
+}
+
+// initializeStateFromAccount initializes token state from account credentials and status
+func (p *KiroTokenProvider) initializeStateFromAccount(state *KiroTokenState, account *Account) {
+	// Load access token from database if available
+	if accessToken := account.GetKiroAccessToken(); accessToken != "" {
+		state.AccessToken = accessToken
+	}
+
+	// Load expires_at from database if available
+	if expiresAt := account.GetKiroTokenExpiresAt(); expiresAt != nil {
+		state.ExpiresAt = *expiresAt
+	}
+
+	// Load status from database - map database status to internal status
+	// Database uses "error" while internal state uses "banned"
+	switch account.Status {
+	case StatusError:
+		state.Status = KiroTokenStatusBanned
+		state.ErrorMsg = account.ErrorMessage
+	case StatusDisabled:
+		// Treat disabled as banned
+		state.Status = KiroTokenStatusBanned
+		state.ErrorMsg = account.ErrorMessage
+	case StatusActive:
+		state.Status = KiroTokenStatusActive
+	default:
+		// Default to active for unknown statuses
+		state.Status = KiroTokenStatusActive
+	}
 }
 
 // refreshToken refreshes the access token based on auth type
@@ -428,19 +471,29 @@ func (p *KiroTokenProvider) handleRefreshError(accountID int64, state *KiroToken
 	switch errType {
 	case KiroRefreshErrorBanned, KiroRefreshErrorSuspended, KiroRefreshErrorExpired:
 		state.Status = KiroTokenStatusBanned
+		state.ErrorMsg = err.Error()
 		log.Printf("[KiroToken] Account %d marked as banned: %v", accountID, err)
+		// Sync status to database
+		go p.updateAccountStatus(accountID, KiroTokenStatusBanned, err.Error())
 
 	case KiroRefreshErrorExhausted:
 		state.Status = KiroTokenStatusExhausted
+		state.ErrorMsg = err.Error()
 		log.Printf("[KiroToken] Account %d marked as exhausted: %v", accountID, err)
+		// Sync status to database
+		go p.updateAccountStatus(accountID, KiroTokenStatusExhausted, err.Error())
 
 	case KiroRefreshErrorRateLimit, KiroRefreshErrorTemporary:
 		state.Status = KiroTokenStatusCooldown
 		state.CooldownUntil = time.Now().Add(p.cooldownDuration)
+		state.ErrorMsg = err.Error() // Keep error message for debugging
 		log.Printf("[KiroToken] Account %d entered cooldown until %v: %v", accountID, state.CooldownUntil, err)
+		// Sync status to database (cooldown maps to active in DB)
+		go p.updateAccountStatus(accountID, KiroTokenStatusCooldown, err.Error())
 
 	case KiroRefreshErrorNetwork, KiroRefreshErrorUnknown:
 		// Don't change status, but apply backoff for background refresh
+		// Keep existing error message if any
 		p.scheduleRefreshBackoff(accountID)
 		log.Printf("[KiroToken] Account %d refresh failed (network/unknown), backoff applied: %v", accountID, err)
 	}
@@ -480,7 +533,11 @@ func (p *KiroTokenProvider) MarkCooldown(accountID int64, duration time.Duration
 
 	state.Status = KiroTokenStatusCooldown
 	state.CooldownUntil = time.Now().Add(duration)
+	state.ErrorMsg = "Rate limited"
 	log.Printf("[KiroToken] Account %d marked cooldown for %v", accountID, duration)
+
+	// Sync status to database (cooldown maps to active in DB)
+	go p.updateAccountStatus(accountID, KiroTokenStatusCooldown, "Rate limited")
 }
 
 // MarkExhausted marks an account as exhausted
@@ -490,7 +547,11 @@ func (p *KiroTokenProvider) MarkExhausted(accountID int64) {
 	defer state.mu.Unlock()
 
 	state.Status = KiroTokenStatusExhausted
+	state.ErrorMsg = "Quota exhausted"
 	log.Printf("[KiroToken] Account %d marked as exhausted", accountID)
+
+	// Sync status to database
+	go p.updateAccountStatus(accountID, KiroTokenStatusExhausted, "Quota exhausted")
 }
 
 // MarkBanned marks an account as banned
@@ -500,7 +561,11 @@ func (p *KiroTokenProvider) MarkBanned(accountID int64, reason string) {
 	defer state.mu.Unlock()
 
 	state.Status = KiroTokenStatusBanned
+	state.ErrorMsg = reason
 	log.Printf("[KiroToken] Account %d marked as banned: %s", accountID, reason)
+
+	// Sync status to database
+	go p.updateAccountStatus(accountID, KiroTokenStatusBanned, reason)
 }
 
 // MarkAvailable recovers an account to available state
@@ -510,8 +575,13 @@ func (p *KiroTokenProvider) MarkAvailable(accountID int64) {
 	defer state.mu.Unlock()
 
 	state.Status = KiroTokenStatusActive
+	state.RefreshFailures = 0
+	state.ErrorMsg = ""
 	p.refreshBackoff.Delete(accountID)
 	log.Printf("[KiroToken] Account %d recovered to available", accountID)
+
+	// Sync status to database
+	go p.updateAccountStatus(accountID, KiroTokenStatusActive, "")
 }
 
 // IsAvailable checks if an account is available for use
@@ -569,8 +639,50 @@ func (p *KiroTokenProvider) updateAccountCredentials(accountID int64, tokenInfo 
 		account.Credentials["profile_arn"] = tokenInfo.ProfileArn
 	}
 
+	// Update status to active and clear error message on successful refresh
+	account.Status = StatusActive
+	account.ErrorMessage = ""
+
 	if err := p.accountRepo.Update(ctx, account); err != nil {
 		log.Printf("[KiroToken] Failed to update account %d credentials: %v", accountID, err)
+	}
+}
+
+// updateAccountStatus updates account status in database
+func (p *KiroTokenProvider) updateAccountStatus(accountID int64, status KiroTokenStatus, errorMsg string) {
+	if p.accountRepo == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	account, err := p.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		log.Printf("[KiroToken] Failed to get account %d for status update: %v", accountID, err)
+		return
+	}
+
+	// Map internal status to database status
+	switch status {
+	case KiroTokenStatusBanned:
+		account.Status = StatusError
+		account.ErrorMessage = errorMsg
+	case KiroTokenStatusExhausted:
+		account.Status = StatusError
+		account.ErrorMessage = errorMsg
+	case KiroTokenStatusCooldown:
+		// Cooldown is a temporary state, keep as active in database
+		account.Status = StatusActive
+		// Clear error message for cooldown (it's temporary, not an error)
+		account.ErrorMessage = ""
+	case KiroTokenStatusActive:
+		account.Status = StatusActive
+		account.ErrorMessage = ""
+	}
+
+	if err := p.accountRepo.Update(ctx, account); err != nil {
+		log.Printf("[KiroToken] Failed to update account %d status: %v", accountID, err)
 	}
 }
 
@@ -587,4 +699,220 @@ func (p *KiroTokenProvider) SetCooldownDuration(d time.Duration) {
 func (p *KiroTokenProvider) ClearState(accountID int64) {
 	p.cache.Delete(accountID)
 	p.refreshBackoff.Delete(accountID)
+}
+
+// ForceRefreshToken forces a token refresh regardless of current state
+// This is used for manual refresh operations from admin panel
+func (p *KiroTokenProvider) ForceRefreshToken(ctx context.Context, account *Account) error {
+	if account == nil || !account.IsKiro() {
+		return fmt.Errorf("invalid Kiro account")
+	}
+
+	// Get or create token state
+	state := p.getOrCreateState(account.ID)
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	// Attempt refresh regardless of current status
+	tokenInfo, err := p.refreshToken(ctx, account)
+	if err != nil {
+		errType := p.classifyRefreshError(err)
+		p.handleRefreshError(account.ID, state, errType, err)
+		return fmt.Errorf("refresh token failed: %w", err)
+	}
+
+	// Update state with new token
+	state.AccessToken = tokenInfo.AccessToken
+	state.ExpiresAt = tokenInfo.ExpiresAt
+	state.LastRefreshed = time.Now()
+	state.Status = KiroTokenStatusActive
+	state.RefreshFailures = 0
+	state.ErrorMsg = ""
+
+	// Clear backoff on success
+	p.refreshBackoff.Delete(account.ID)
+
+	// Update account credentials in database (async)
+	go p.updateAccountCredentials(account.ID, tokenInfo)
+
+	return nil
+}
+
+// Start starts background recovery tasks
+func (p *KiroTokenProvider) Start() {
+	log.Println("[KiroToken] Starting background recovery tasks...")
+	go p.cooldownRecoveryLoop()
+	go p.bannedRecoveryLoop()
+	log.Println("[KiroToken] Background recovery tasks started")
+}
+
+// Stop stops background recovery tasks
+func (p *KiroTokenProvider) Stop() {
+	// TODO: Implement graceful shutdown using context.Context
+	// Currently no cleanup needed as goroutines will exit when program exits
+	log.Println("[KiroToken] Stopping background recovery tasks...")
+}
+
+// cooldownRecoveryLoop periodically checks cooldown accounts and attempts to recover them
+func (p *KiroTokenProvider) cooldownRecoveryLoop() {
+	ticker := time.NewTicker(kiroCooldownRecoveryInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		var cooldownAccounts []int64
+
+		// Collect cooldown accounts whose cooldown period has expired
+		p.cache.Range(func(key, value any) bool {
+			accountID := key.(int64)
+			state := value.(*KiroTokenState)
+			state.mu.Lock()
+			if state.Status == KiroTokenStatusCooldown && time.Now().After(state.CooldownUntil) {
+				cooldownAccounts = append(cooldownAccounts, accountID)
+			}
+			state.mu.Unlock()
+			return true
+		})
+
+		if len(cooldownAccounts) > 0 {
+			log.Printf("[KiroToken] Attempting to recover %d cooldown accounts", len(cooldownAccounts))
+			for _, accountID := range cooldownAccounts {
+				p.attemptRecovery(accountID)
+			}
+		}
+	}
+}
+
+// bannedRecoveryLoop periodically checks banned accounts and attempts to recover them
+func (p *KiroTokenProvider) bannedRecoveryLoop() {
+	ticker := time.NewTicker(kiroBannedRecoveryInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		var bannedAccounts []int64
+
+		// Collect banned accounts (excluding exhausted - those need manual intervention)
+		p.cache.Range(func(key, value any) bool {
+			accountID := key.(int64)
+			state := value.(*KiroTokenState)
+			state.mu.Lock()
+			if state.Status == KiroTokenStatusBanned {
+				bannedAccounts = append(bannedAccounts, accountID)
+			}
+			state.mu.Unlock()
+			return true
+		})
+
+		if len(bannedAccounts) > 0 {
+			log.Printf("[KiroToken] Attempting to recover %d banned accounts", len(bannedAccounts))
+			for _, accountID := range bannedAccounts {
+				p.attemptRecovery(accountID)
+			}
+		}
+	}
+}
+
+// attemptRecovery attempts to refresh token for an account and recover it
+func (p *KiroTokenProvider) attemptRecovery(accountID int64) {
+	// Check backoff state
+	if existing, ok := p.refreshBackoff.Load(accountID); ok {
+		st := existing.(*kiroRefreshBackoffState)
+		st.mu.Lock()
+		shouldSkip := time.Now().Before(st.nextAttempt)
+		st.mu.Unlock()
+		if shouldSkip {
+			return // Still in backoff
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get account from database
+	account, err := p.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		log.Printf("[KiroToken] Failed to get account %d for recovery: %v", accountID, err)
+		return
+	}
+
+	if account == nil || !account.IsKiro() {
+		// Account no longer exists or is not Kiro, remove from cache
+		p.cache.Delete(accountID)
+		p.refreshBackoff.Delete(accountID)
+		return
+	}
+
+	// Get state
+	stateVal, ok := p.cache.Load(accountID)
+	if !ok {
+		return
+	}
+	state := stateVal.(*KiroTokenState)
+
+	// Attempt refresh
+	tokenInfo, err := p.refreshToken(ctx, account)
+	if err != nil {
+		errType := p.classifyRefreshError(err)
+		state.mu.Lock()
+		state.RefreshFailures++
+
+		// Handle based on error type
+		switch errType {
+		case KiroRefreshErrorBanned, KiroRefreshErrorSuspended, KiroRefreshErrorExpired:
+			// Permanent error, keep banned
+			state.Status = KiroTokenStatusBanned
+			state.ErrorMsg = err.Error()
+			log.Printf("[KiroToken] Account %d recovery failed (permanent): %v", accountID, err)
+			// Sync status to database
+			errMsg := state.ErrorMsg
+			state.mu.Unlock()
+			go p.updateAccountStatus(accountID, KiroTokenStatusBanned, errMsg)
+			return
+		case KiroRefreshErrorNetwork, KiroRefreshErrorUnknown:
+			// Temporary error, check failure count
+			if state.RefreshFailures >= kiroMaxRefreshFailures {
+				state.Status = KiroTokenStatusBanned
+				state.ErrorMsg = fmt.Sprintf("recovery failed %d times: %v", state.RefreshFailures, err)
+				log.Printf("[KiroToken] Account %d marked banned after %d refresh failures", accountID, state.RefreshFailures)
+				// Sync status to database
+				errMsg := state.ErrorMsg
+				state.mu.Unlock()
+				go p.updateAccountStatus(accountID, KiroTokenStatusBanned, errMsg)
+				return
+			} else {
+				p.scheduleRefreshBackoff(accountID)
+				log.Printf("[KiroToken] Account %d recovery attempt %d failed: %v", accountID, state.RefreshFailures, err)
+			}
+		default:
+			// Rate limit or temporary, back to cooldown
+			state.Status = KiroTokenStatusCooldown
+			state.CooldownUntil = time.Now().Add(p.cooldownDuration)
+			log.Printf("[KiroToken] Account %d back to cooldown: %v", accountID, err)
+			// Sync status to database
+			errMsg := err.Error()
+			state.mu.Unlock()
+			go p.updateAccountStatus(accountID, KiroTokenStatusCooldown, errMsg)
+			return
+		}
+		state.mu.Unlock()
+		return
+	}
+
+	// Success! Update state
+	state.mu.Lock()
+	state.AccessToken = tokenInfo.AccessToken
+	state.ExpiresAt = tokenInfo.ExpiresAt
+	state.Status = KiroTokenStatusActive
+	state.LastRefreshed = time.Now()
+	state.RefreshFailures = 0
+	state.ErrorMsg = ""
+	state.mu.Unlock()
+
+	// Clear backoff
+	p.refreshBackoff.Delete(accountID)
+
+	// Update database
+	go p.updateAccountCredentials(accountID, tokenInfo)
+
+	log.Printf("[KiroToken] Account %d recovered successfully", accountID)
 }
