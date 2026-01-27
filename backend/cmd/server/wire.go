@@ -78,7 +78,11 @@ func provideCleanup(
 	openaiOAuth *service.OpenAIOAuthService,
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
+	kiroTokenProvider *service.KiroTokenProvider,
 ) func() {
+	// Start KiroTokenProvider background tasks
+	kiroTokenProvider.Start()
+
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -88,6 +92,12 @@ func provideCleanup(
 			name string
 			fn   func() error
 		}{
+			{"KiroTokenProvider", func() error {
+				if kiroTokenProvider != nil {
+					kiroTokenProvider.Stop()
+				}
+				return nil
+			}},
 			{"OpsScheduledReportService", func() error {
 				if opsScheduledReport != nil {
 					opsScheduledReport.Stop()

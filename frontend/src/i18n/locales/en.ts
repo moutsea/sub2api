@@ -1165,6 +1165,7 @@ export default {
       testConnection: 'Test Connection',
       reAuthorize: 'Re-Authorize',
       refreshToken: 'Refresh Token',
+      refreshKiroStates: 'Refresh Kiro States',
       noAccountsYet: 'No accounts yet',
       createFirstAccount: 'Create your first account to start using AI services.',
       tokenRefreshed: 'Token refreshed successfully',
@@ -1604,6 +1605,9 @@ export default {
         step1: 'Open Kiro desktop app and sign in',
         step2: 'Open Developer Tools (F12), switch to Application tab',
         step3: 'Find refresh_token in Local Storage and copy it',
+        // Credits display
+        credits: 'Credits',
+        resetIn: 'Resets in {days}d',
         // Auth types
         socialDesc: 'Kiro Desktop App',
         idcDesc: 'AWS IAM Identity Center',

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
@@ -78,6 +79,12 @@ type antigravityUsageCache struct {
 	timestamp time.Time
 }
 
+// kiroCreditsCache 缓存 Kiro 积分数据
+type kiroCreditsCache struct {
+	creditsInfo *KiroCreditsInfo
+	timestamp   time.Time
+}
+
 const (
 	apiCacheTTL         = 3 * time.Minute
 	windowStatsCacheTTL = 1 * time.Minute
@@ -91,6 +98,7 @@ type UsageCache struct {
 	apiCache         sync.Map // accountID -> *apiUsageCache
 	windowStatsCache sync.Map // accountID -> *windowStatsCache
 	antigravityCache sync.Map // accountID -> *antigravityUsageCache
+	kiroCreditsCache sync.Map // accountID -> *kiroCreditsCache
 	quotaUnhealthy   sync.Map // accountID -> time.Time (标记时间)
 }
 
@@ -159,6 +167,18 @@ func (c *UsageCache) GetResetTime(accountID int64) *time.Time {
 	return nil
 }
 
+// GetKiroAvailableCredits 获取 Kiro 账号的可用积分余额
+// 返回：可用积分数，-1 表示无法获取（缓存未命中或不是 Kiro 账号）
+// 用于：负载均衡时优先选择积分余额较多的账号
+func (c *UsageCache) GetKiroAvailableCredits(accountID int64) float64 {
+	if cached, ok := c.kiroCreditsCache.Load(accountID); ok {
+		if cache, ok := cached.(*kiroCreditsCache); ok && cache.creditsInfo != nil {
+			return cache.creditsInfo.AvailableCredits
+		}
+	}
+	return -1 // 缓存未命中，返回 -1 表示无法获取
+}
+
 // WindowStats 窗口期统计
 //
 // cost: 账号口径费用（total_cost * account_rate_multiplier）
@@ -203,6 +223,20 @@ type UsageInfo struct {
 
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
+
+	// Kiro 积分余额
+	KiroCredits *KiroCreditsInfo `json:"kiro_credits,omitempty"`
+}
+
+// KiroCreditsInfo represents the credits information for a Kiro account
+type KiroCreditsInfo struct {
+	AvailableCredits float64    `json:"available_credits"` // Available credits balance
+	UsedCredits      float64    `json:"used_credits"`      // Used credits
+	TotalCredits     float64    `json:"total_credits"`     // Total credits limit
+	DaysUntilReset   int        `json:"days_until_reset"`  // Days until reset
+	NextResetAt      *time.Time `json:"next_reset_at"`     // Next reset time
+	UserEmail        string     `json:"user_email"`        // User email
+	SubscriptionType string     `json:"subscription_type"` // Subscription type
 }
 
 // ClaudeUsageResponse Anthropic API返回的usage结构
@@ -233,6 +267,7 @@ type AccountUsageService struct {
 	usageFetcher            ClaudeUsageFetcher
 	geminiQuotaService      *GeminiQuotaService
 	antigravityQuotaFetcher *AntigravityQuotaFetcher
+	kiroTokenProvider       *KiroTokenProvider
 	cache                   *UsageCache
 }
 
@@ -243,6 +278,7 @@ func NewAccountUsageService(
 	usageFetcher ClaudeUsageFetcher,
 	geminiQuotaService *GeminiQuotaService,
 	antigravityQuotaFetcher *AntigravityQuotaFetcher,
+	kiroTokenProvider *KiroTokenProvider,
 	cache *UsageCache,
 ) *AccountUsageService {
 	return &AccountUsageService{
@@ -251,6 +287,7 @@ func NewAccountUsageService(
 		usageFetcher:            usageFetcher,
 		geminiQuotaService:      geminiQuotaService,
 		antigravityQuotaFetcher: antigravityQuotaFetcher,
+		kiroTokenProvider:       kiroTokenProvider,
 		cache:                   cache,
 	}
 }
@@ -272,6 +309,11 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
 	if account.Platform == PlatformAntigravity {
 		return s.getAntigravityUsage(ctx, account)
+	}
+
+	// Kiro 平台：获取积分余额
+	if account.Platform == PlatformKiro {
+		return s.getKiroUsage(ctx, account)
 	}
 
 	// 只有oauth类型账号可以通过API获取usage（有profile scope）
@@ -412,6 +454,84 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 	})
 
 	return result.UsageInfo, nil
+}
+
+// getKiroUsage 获取 Kiro 账户积分余额
+func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	now := time.Now()
+
+	// 1. 检查缓存
+	if cached, ok := s.cache.kiroCreditsCache.Load(account.ID); ok {
+		if cache, ok := cached.(*kiroCreditsCache); ok && time.Since(cache.timestamp) < apiCacheTTL {
+			return &UsageInfo{
+				UpdatedAt:   &now,
+				KiroCredits: cache.creditsInfo,
+			}, nil
+		}
+	}
+
+	// 2. 获取 access token（通过 KiroTokenProvider 自动刷新）
+	var accessToken string
+	if s.kiroTokenProvider != nil {
+		var err error
+		accessToken, err = s.kiroTokenProvider.GetAccessToken(ctx, account)
+		if err != nil {
+			log.Printf("[AccountUsage] Failed to get Kiro access token for account %d: %v", account.ID, err)
+			return &UsageInfo{UpdatedAt: &now}, nil
+		}
+	} else {
+		// Fallback: 直接从 credentials 获取
+		accessToken = account.GetCredential("access_token")
+	}
+
+	if accessToken == "" {
+		// 没有 access token，返回空数据
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	// 3. 获取代理 URL
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	// 4. 调用 API 获取积分信息
+	region := account.GetKiroRegion()
+	fetcher := kiro.NewUsageLimitsFetcher(nil) // Use default HTTP client
+	limits, err := fetcher.FetchUsageLimits(ctx, accessToken, region, proxyURL)
+	if err != nil {
+		log.Printf("[AccountUsage] Failed to fetch Kiro usage limits for account %d: %v", account.ID, err)
+		// Return empty on error (don't fail the whole request)
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	// 5. 提取积分信息
+	creditsInfo := kiro.ExtractCreditsInfo(limits)
+	if creditsInfo == nil {
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	// 6. 转换为本地类型
+	localCreditsInfo := &KiroCreditsInfo{
+		AvailableCredits: creditsInfo.AvailableCredits,
+		UsedCredits:      creditsInfo.UsedCredits,
+		TotalCredits:     creditsInfo.TotalCredits,
+		DaysUntilReset:   creditsInfo.DaysUntilReset,
+		NextResetAt:      creditsInfo.NextResetAt,
+		UserEmail:        creditsInfo.UserEmail,
+		SubscriptionType: creditsInfo.SubscriptionType,
+	}
+
+	// 7. 缓存结果
+	s.cache.kiroCreditsCache.Store(account.ID, &kiroCreditsCache{
+		creditsInfo: localCreditsInfo,
+		timestamp:   time.Now(),
+	})
+
+	return &UsageInfo{
+		UpdatedAt:   &now,
+		KiroCredits: localCreditsInfo,
+	}, nil
 }
 
 // RefreshAntigravityQuota 强制刷新 Antigravity 账号配额（跳过缓存）

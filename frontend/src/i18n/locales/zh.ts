@@ -1168,6 +1168,7 @@ export default {
       testConnection: '测试连接',
       reAuthorize: '重新授权',
       refreshToken: '刷新令牌',
+      refreshKiroStates: '刷新 Kiro 状态',
       noAccountsYet: '暂无账号',
       createFirstAccount: '添加 AI 平台账号以开始使用 API 网关。',
       tokenRefreshed: 'Token 刷新成功',
@@ -1749,7 +1750,10 @@ export default {
         pleaseEnterIdcCredentials: '请输入 Client ID 和 Client Secret',
         // Success messages
         batchImportSuccess: '成功导入 {count} 个账号',
-        batchImportPartial: '导入完成：{success} 成功，{fail} 失败'
+        batchImportPartial: '导入完成：{success} 成功，{fail} 失败',
+        // Credits display
+        credits: '积分',
+        resetIn: '{days}天后重置'
       },
       // Re-Auth Modal
       reAuthorizeAccount: '重新授权账号',

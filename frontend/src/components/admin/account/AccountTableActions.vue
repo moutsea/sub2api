@@ -4,6 +4,10 @@
     <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary">
       <Icon name="refresh" size="md" :class="[loading ? 'animate-spin' : '']" />
     </button>
+    <button @click="$emit('refresh-kiro')" :disabled="refreshingKiro" class="btn btn-secondary" :title="t('admin.accounts.refreshKiroStates')">
+      <Icon name="refresh" size="md" :class="[refreshingKiro ? 'animate-spin' : '']" />
+      <span class="hidden sm:inline">Kiro</span>
+    </button>
     <button @click="$emit('sync')" class="btn btn-secondary">{{ t('admin.accounts.syncFromCrs') }}</button>
     <button @click="$emit('create')" class="btn btn-primary">{{ t('admin.accounts.createAccount') }}</button>
   </div>
@@ -13,8 +17,8 @@
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 
-defineProps(['loading'])
-defineEmits(['refresh', 'sync', 'create'])
+defineProps(['loading', 'refreshingKiro'])
+defineEmits(['refresh', 'refresh-kiro', 'sync', 'create'])
 
 const { t } = useI18n()
 </script>

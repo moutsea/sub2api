@@ -11,8 +11,8 @@ import (
 
 // Constants for tool processing
 const (
-	ToolDescriptionMaxLength = 500 // Max tool description length (aligned with proxycast)
-	MaxFunctionTools         = 50  // Max number of function tools
+	MaxFunctionTools              = 50  // Max number of function tools
+	ToolDocThresholdLength        = 500 // Threshold for moving description to system prompt
 )
 
 // TransformContext holds context for the transformation process
@@ -515,7 +515,7 @@ func buildToolDocumentation(tools []ClaudeTool) string {
 	var docParts []string
 
 	for _, tool := range tools {
-		if len(tool.Description) > ToolDescriptionMaxLength {
+		if len(tool.Description) > ToolDocThresholdLength {
 			docParts = append(docParts, fmt.Sprintf("## Tool: %s\n\n%s", tool.Name, tool.Description))
 		}
 	}
@@ -790,11 +790,20 @@ func buildContinueMessage(ctx *TransformContext, tools []ToolItem) CurrentMessag
 	}
 }
 
-// processTools processes tools, truncating long descriptions
+// processTools processes tools, truncating long descriptions and applying compression if needed
 func processTools(tools []ClaudeTool) []ToolItem {
 	if len(tools) == 0 {
 		return nil
 	}
+
+	// Build short name map for all tools first
+	var toolNames []string
+	for _, tool := range tools {
+		if tool.Name != "" && !isWebSearchTool(tool.Name) && !isWebSearchToolByType(tool) {
+			toolNames = append(toolNames, tool.Name)
+		}
+	}
+	shortNameMap := BuildToolNameMap(toolNames)
 
 	var cwTools []ToolItem
 	functionCount := 0
@@ -804,8 +813,8 @@ func processTools(tools []ClaudeTool) []ToolItem {
 			continue
 		}
 
-		// Check for web_search tool
-		if isWebSearchTool(tool.Name) {
+		// Check for web_search tool (also check type field for better compatibility)
+		if isWebSearchTool(tool.Name) || isWebSearchToolByType(tool) {
 			cwTools = append(cwTools, ToolItem{
 				WebSearch: &WebSearchTool{
 					Type: "web_search",
@@ -821,11 +830,11 @@ func processTools(tools []ClaudeTool) []ToolItem {
 		functionCount++
 
 		description := tool.Description
-		// Truncate long descriptions
-		if len(description) > ToolDescriptionMaxLength {
+		// Truncate individual tool descriptions that exceed Kiro API limit
+		if len(description) > KiroMaxToolDescLen {
 			runes := []rune(description)
-			if len(runes) > ToolDescriptionMaxLength-3 {
-				description = string(runes[:ToolDescriptionMaxLength-3]) + "..."
+			if len(runes) > KiroMaxToolDescLen-3 {
+				description = string(runes[:KiroMaxToolDescLen-3]) + "..."
 			}
 		}
 
@@ -837,10 +846,16 @@ func processTools(tools []ClaudeTool) []ToolItem {
 			}
 		}
 
+		// Apply shortened name
+		toolName := tool.Name
+		if short, ok := shortNameMap[tool.Name]; ok {
+			toolName = short
+		}
+
 		cwTools = append(cwTools, ToolItem{
 			Standard: &CodeWhispererTool{
 				ToolSpecification: ToolSpecification{
-					Name:        tool.Name,
+					Name:        toolName,
 					Description: description,
 					InputSchema: InputSchema{
 						JSON: inputSchema,
@@ -850,7 +865,20 @@ func processTools(tools []ClaudeTool) []ToolItem {
 		})
 	}
 
+	// Apply dynamic compression if total tools size exceeds threshold
+	// This prevents 500 errors when Claude Code sends too many tools
+	cwTools = compressToolsIfNeeded(cwTools, true)
+
 	return cwTools
+}
+
+// isWebSearchToolByType checks if the tool is a web_search tool by its type field
+// Claude web_search tools have a top-level "type" field like "web_search_20250305"
+func isWebSearchToolByType(tool ClaudeTool) bool {
+	if tool.Type == "" {
+		return false
+	}
+	return strings.HasPrefix(tool.Type, "web_search")
 }
 
 // isWebSearchTool checks if the tool is a web_search tool

@@ -40,14 +40,15 @@ const (
 
 // Kiro configuration constants
 const (
-	kiroDefaultRegion           = "us-east-1"
-	kiroDefaultCooldown         = 30 * time.Second
-	kiroRefreshBackoffBase      = time.Minute
-	kiroRefreshBackoffMax       = 30 * time.Minute
-	kiroTokenRefreshBuffer      = 60 * time.Second // Refresh token 60s before expiry
-	kiroCooldownRecoveryInterval = 30 * time.Second // Check cooldown accounts every 30s
-	kiroBannedRecoveryInterval   = 15 * time.Minute // Check banned accounts every 15min
-	kiroMaxRefreshFailures       = 3                // Mark as banned after 3 consecutive failures
+	kiroDefaultRegion            = "us-east-1"
+	kiroDefaultCooldown          = 30 * time.Second
+	kiroRefreshBackoffBase       = time.Minute
+	kiroRefreshBackoffMax        = 30 * time.Minute
+	kiroTokenRefreshBuffer       = 60 * time.Second  // Refresh token 60s before expiry
+	kiroCooldownRecoveryInterval = 30 * time.Second  // Check cooldown accounts every 30s
+	kiroBannedRecoveryInterval   = 15 * time.Minute  // Check banned accounts every 15min
+	kiroDBErrorRecoveryInterval  = 15 * time.Minute  // Check DB error accounts every 15min
+	kiroMaxRefreshFailures       = 3                 // Mark as banned after 3 consecutive failures
 )
 
 // KiroTokenState represents the runtime state of a Kiro account token
@@ -744,6 +745,7 @@ func (p *KiroTokenProvider) Start() {
 	log.Println("[KiroToken] Starting background recovery tasks...")
 	go p.cooldownRecoveryLoop()
 	go p.bannedRecoveryLoop()
+	go p.dbErrorRecoveryLoop()
 	log.Println("[KiroToken] Background recovery tasks started")
 }
 
@@ -915,4 +917,76 @@ func (p *KiroTokenProvider) attemptRecovery(accountID int64) {
 	go p.updateAccountCredentials(accountID, tokenInfo)
 
 	log.Printf("[KiroToken] Account %d recovered successfully", accountID)
+}
+
+// dbErrorRecoveryLoop periodically checks error accounts in database and attempts to recover them
+func (p *KiroTokenProvider) dbErrorRecoveryLoop() {
+	ticker := time.NewTicker(kiroDBErrorRecoveryInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		p.recoverDBErrorAccounts()
+	}
+}
+
+// recoverDBErrorAccounts queries error Kiro accounts from database and attempts to recover them
+func (p *KiroTokenProvider) recoverDBErrorAccounts() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Query error Kiro accounts from database
+	accounts, err := p.accountRepo.ListErrorByPlatform(ctx, PlatformKiro)
+	if err != nil {
+		log.Printf("[KiroToken] Failed to query error accounts from database: %v", err)
+		return
+	}
+
+	if len(accounts) == 0 {
+		return
+	}
+
+	log.Printf("[KiroToken] Found %d error Kiro accounts in database, attempting recovery...", len(accounts))
+
+	recovered := 0
+	failed := 0
+
+	for i := range accounts {
+		account := &accounts[i]
+
+		// Try to refresh token
+		tokenInfo, err := p.refreshToken(ctx, account)
+		if err != nil {
+			errType := p.classifyRefreshError(err)
+			// Only log permanent errors, skip temporary ones
+			if errType == KiroRefreshErrorBanned || errType == KiroRefreshErrorSuspended || errType == KiroRefreshErrorExpired {
+				log.Printf("[KiroToken] Account %d (%s) recovery failed (permanent): %v", account.ID, account.Name, err)
+			}
+			failed++
+			continue
+		}
+
+		// Success! Update credentials and status in database
+		p.updateAccountCredentials(account.ID, tokenInfo)
+
+		// Also update cache if exists
+		if state, ok := p.cache.Load(account.ID); ok {
+			s := state.(*KiroTokenState)
+			s.mu.Lock()
+			s.AccessToken = tokenInfo.AccessToken
+			s.ExpiresAt = tokenInfo.ExpiresAt
+			s.Status = KiroTokenStatusActive
+			s.LastRefreshed = time.Now()
+			s.RefreshFailures = 0
+			s.ErrorMsg = ""
+			s.mu.Unlock()
+			p.refreshBackoff.Delete(account.ID)
+		}
+
+		recovered++
+		log.Printf("[KiroToken] Account %d (%s) recovered successfully from DB error state", account.ID, account.Name)
+	}
+
+	if recovered > 0 || failed > 0 {
+		log.Printf("[KiroToken] DB error recovery completed: %d recovered, %d failed", recovered, failed)
+	}
 }

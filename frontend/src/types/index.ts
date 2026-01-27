@@ -531,6 +531,18 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  kiro_credits?: KiroCreditsInfo | null
+}
+
+// Kiro credits information
+export interface KiroCreditsInfo {
+  available_credits: number
+  used_credits: number
+  total_credits: number
+  days_until_reset: number
+  next_reset_at: string | null
+  user_email: string
+  subscription_type: string
 }
 
 // OpenAI Codex usage snapshot (from response headers)

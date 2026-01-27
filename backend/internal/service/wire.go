@@ -200,6 +200,13 @@ func ProvideAPIKeyAuthCacheInvalidator(apiKeyService *APIKeyService) APIKeyAuthC
 	return apiKeyService
 }
 
+// ProvideKiroTokenProvider creates and starts KiroTokenProvider with background recovery tasks.
+func ProvideKiroTokenProvider(accountRepo AccountRepository, httpUpstream HTTPUpstream) *KiroTokenProvider {
+	provider := NewKiroTokenProvider(accountRepo, httpUpstream)
+	provider.Start()
+	return provider
+}
+
 // ProvideGatewayService creates and starts GatewayService with background tasks.
 func ProvideGatewayService(
 	accountRepo AccountRepository,
@@ -218,6 +225,7 @@ func ProvideGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	claudeTokenProvider *ClaudeTokenProvider,
+	kiroTokenProvider *KiroTokenProvider,
 	sessionLimitCache SessionLimitCache,
 	usageCache *UsageCache,
 	accountUsageService *AccountUsageService,
@@ -226,7 +234,7 @@ func ProvideGatewayService(
 		accountRepo, groupRepo, usageLogRepo, userRepo, userSubRepo,
 		cache, cfg, schedulerSnapshot, concurrencyService, billingService,
 		rateLimitService, billingCacheService, identityService, httpUpstream,
-		deferredService, claudeTokenProvider, sessionLimitCache, usageCache,
+		deferredService, claudeTokenProvider, kiroTokenProvider, sessionLimitCache, usageCache,
 		accountUsageService,
 	)
 	// 启动后台配额恢复任务（每 30 分钟检查配额不健康的 Antigravity 账号）
@@ -267,7 +275,7 @@ var ProviderSet = wire.NewSet(
 	NewOpenAITokenProvider,
 	NewClaudeTokenProvider,
 	NewAntigravityGatewayService,
-	NewKiroTokenProvider,
+	ProvideKiroTokenProvider,
 	NewKiroGatewayService,
 	ProvideRateLimitService,
 	NewAccountUsageService,

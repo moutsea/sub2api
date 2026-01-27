@@ -3,6 +3,8 @@ package admin
 
 import (
 	"errors"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +48,7 @@ type AccountHandler struct {
 	crsSyncService          *service.CRSSyncService
 	sessionLimitCache       service.SessionLimitCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	kiroTokenProvider       *service.KiroTokenProvider
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -62,6 +65,7 @@ func NewAccountHandler(
 	crsSyncService *service.CRSSyncService,
 	sessionLimitCache service.SessionLimitCache,
 	tokenCacheInvalidator service.TokenCacheInvalidator,
+	kiroTokenProvider *service.KiroTokenProvider,
 ) *AccountHandler {
 	return &AccountHandler{
 		adminService:            adminService,
@@ -76,6 +80,7 @@ func NewAccountHandler(
 		crsSyncService:          crsSyncService,
 		sessionLimitCache:       sessionLimitCache,
 		tokenCacheInvalidator:   tokenCacheInvalidator,
+		kiroTokenProvider:       kiroTokenProvider,
 	}
 }
 
@@ -139,6 +144,9 @@ type AccountWithConcurrency struct {
 	// 以下字段仅对 Anthropic OAuth/SetupToken 账号有效，且仅在启用相应功能时返回
 	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
 	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
+	// Kiro 运行时状态（仅 Kiro 账号有效）
+	KiroRuntimeStatus *string `json:"kiro_runtime_status,omitempty"` // active, cooldown, exhausted, banned
+	KiroErrorMsg      *string `json:"kiro_error_msg,omitempty"`      // 错误信息（banned/exhausted 时）
 }
 
 // List handles listing all accounts with pagination
@@ -251,6 +259,17 @@ func (h *AccountHandler) List(c *gin.Context) {
 			}
 		}
 
+		// 添加 Kiro 运行时状态（仅 Kiro 账号有效）
+		if acc.IsKiro() && h.kiroTokenProvider != nil {
+			if state := h.kiroTokenProvider.GetTokenState(acc.ID); state != nil {
+				statusStr := string(state.Status)
+				item.KiroRuntimeStatus = &statusStr
+				if state.ErrorMsg != "" {
+					item.KiroErrorMsg = &state.ErrorMsg
+				}
+			}
+		}
+
 		result[i] = item
 	}
 
@@ -272,7 +291,23 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.AccountFromService(account))
+	// 构建响应，包含 Kiro 运行时状态
+	result := AccountWithConcurrency{
+		Account: dto.AccountFromService(account),
+	}
+
+	// 添加 Kiro 运行时状态（仅 Kiro 账号有效）
+	if account.IsKiro() && h.kiroTokenProvider != nil {
+		if state := h.kiroTokenProvider.GetTokenState(account.ID); state != nil {
+			statusStr := string(state.Status)
+			result.KiroRuntimeStatus = &statusStr
+			if state.ErrorMsg != "" {
+				result.KiroErrorMsg = &state.ErrorMsg
+			}
+		}
+	}
+
+	response.Success(c, result)
 }
 
 // Create handles creating a new account
@@ -490,6 +525,39 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
 	if err != nil {
 		response.NotFound(c, "Account not found")
+		return
+	}
+
+	// Handle Kiro accounts separately
+	if account.IsKiro() {
+		if h.kiroTokenProvider == nil {
+			response.BadRequest(c, "Kiro token provider not configured")
+			return
+		}
+
+		// Force refresh Kiro token (ignores current state like banned/cooldown)
+		err := h.kiroTokenProvider.ForceRefreshToken(c.Request.Context(), account)
+		if err != nil {
+			response.InternalError(c, "Failed to refresh Kiro token: "+err.Error())
+			return
+		}
+
+		// If account status is error, clear it since the refresh succeeded
+		if account.Status == "error" {
+			if _, err := h.adminService.ClearAccountError(c.Request.Context(), account.ID); err != nil {
+				// Log but don't fail the request
+				log.Printf("Failed to clear account error status: %v", err)
+			}
+		}
+
+		// Get updated account
+		updatedAccount, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+
+		response.Success(c, dto.AccountFromService(updatedAccount))
 		return
 	}
 
@@ -1021,6 +1089,91 @@ func (h *AccountHandler) ClearTempUnschedulable(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Temp unschedulable cleared successfully"})
+}
+
+// ClearKiroState handles clearing Kiro account runtime state
+// POST /api/v1/admin/accounts/:id/clear-kiro-state
+func (h *AccountHandler) ClearKiroState(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	// Verify account is Kiro
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	if !account.IsKiro() {
+		response.BadRequest(c, "Account is not a Kiro account")
+		return
+	}
+
+	if h.kiroTokenProvider == nil {
+		response.BadRequest(c, "Kiro token provider not configured")
+		return
+	}
+
+	// Clear the state
+	h.kiroTokenProvider.ClearState(accountID)
+
+	response.Success(c, gin.H{"message": "Kiro state cleared successfully"})
+}
+
+// RefreshKiroStates handles refreshing all Kiro account states
+// POST /api/v1/admin/accounts/refresh-kiro-states
+func (h *AccountHandler) RefreshKiroStates(c *gin.Context) {
+	if h.kiroTokenProvider == nil {
+		response.BadRequest(c, "Kiro token provider not configured")
+		return
+	}
+
+	// Get all Kiro accounts from database
+	accounts, _, err := h.adminService.ListAccounts(c.Request.Context(), 1, 10000, "kiro", "", "", "")
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	refreshed := 0
+	failed := 0
+	cleared := 0
+	errors := make([]string, 0)
+
+	// Attempt to refresh each account's token
+	for i := range accounts {
+		acc := &accounts[i]
+		if !acc.IsKiro() {
+			continue
+		}
+
+		// Try to get access token, which will refresh if needed
+		_, err := h.kiroTokenProvider.GetAccessToken(c.Request.Context(), acc)
+		if err != nil {
+			failed++
+			errors = append(errors, fmt.Sprintf("Account %d (%s): %v", acc.ID, acc.Name, err))
+		} else {
+			refreshed++
+			// If account status is error, clear it since the account is now working
+			if acc.Status == "error" {
+				if _, err := h.adminService.ClearAccountError(c.Request.Context(), acc.ID); err == nil {
+					cleared++
+				}
+			}
+		}
+	}
+
+	response.Success(c, gin.H{
+		"message":       "Kiro states refresh completed",
+		"total":         len(accounts),
+		"refreshed":     refreshed,
+		"failed":        failed,
+		"status_cleared": cleared,
+		"errors":        errors,
+	})
 }
 
 // GetTodayStats handles getting account today statistics

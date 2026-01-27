@@ -77,6 +77,45 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	originalModel := claudeReq.Model
 
+	// Pre-check: Estimate input tokens and truncate messages if exceeding context limit
+	// This prevents 400 errors from Kiro upstream due to context length exceeding threshold
+	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
+	if estimatedTokens > kiro.KiroContextPreCheckLimit {
+		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
+			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+
+		// Try to truncate messages
+		truncatedReq, truncated := kiro.TruncateAndRetry(claudeReq)
+		if truncated {
+			// Re-estimate after truncation
+			newEstimate := kiro.EstimateInputTokens(truncatedReq)
+			log.Printf("%s status=messages_truncated original_messages=%d new_messages=%d tokens=%d->%d",
+				prefix, len(claudeReq.Messages), len(truncatedReq.Messages), estimatedTokens, newEstimate)
+
+			// Check if still over limit after truncation
+			if newEstimate > kiro.KiroContextPreCheckLimit {
+				log.Printf("%s status=context_still_too_long after truncation, estimated_tokens=%d limit=%d",
+					prefix, newEstimate, kiro.KiroContextPreCheckLimit)
+				return nil, &ContextTooLongError{
+					EstimatedTokens: newEstimate,
+					Limit:           kiro.KiroContextWindowLimit,
+				}
+			}
+
+			// Use truncated request
+			claudeReq = truncatedReq
+			estimatedTokens = newEstimate
+		} else {
+			// Truncation not possible (too few messages or no safe truncation points)
+			log.Printf("%s status=truncation_not_possible estimated_tokens=%d limit=%d",
+				prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+			return nil, &ContextTooLongError{
+				EstimatedTokens: estimatedTokens,
+				Limit:           kiro.KiroContextWindowLimit,
+			}
+		}
+	}
+
 	// Get access token
 	if s.tokenProvider == nil {
 		return nil, errors.New("kiro token provider not configured")
@@ -138,7 +177,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		// AWS SDK headers (aligned with kiro4api)
 		upstreamReq.Header.Set("User-Agent", "aws-sdk-js/3.738.0 ua/2.1 os/deno lang/ts KiroGateway")
 		upstreamReq.Header.Set("x-amz-user-agent", "aws-sdk-js/3.738.0 KiroGateway")
-		upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+		upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "spec")
 		upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
 		upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 		upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
@@ -258,12 +297,18 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		c.Header("x-request-id", requestID)
 	}
 
+	// Estimate input tokens from the Claude request
+	inputTokens := kiro.EstimateInputTokens(claudeReq)
+
+	// Build tool name reverse map for restoring original names in response
+	toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
+
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 
 	if claudeReq.Stream {
 		// Streaming response
-		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel)
+		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap)
 		if err != nil {
 			log.Printf("%s status=stream_error error=%v", prefix, err)
 			return nil, err
@@ -272,7 +317,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		// Non-streaming response
-		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel)
+		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap)
 		if err != nil {
 			log.Printf("%s status=non_stream_error error=%v", prefix, err)
 			return nil, err
@@ -298,7 +343,7 @@ type kiroStreamResult struct {
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string) (*kiroStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -317,8 +362,11 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	parser := kiro.NewAwsEventStreamParser(messageID, originalModel)
 
 	// Create stream event converter
-	inputTokens := 0 // Will be updated from usage events
 	converter := kiro.NewStreamEventConverter(messageID, originalModel, inputTokens)
+	// Set tool name reverse map for restoring original names
+	if toolNameReverseMap != nil {
+		converter.SetToolNameReverseMap(toolNameReverseMap)
+	}
 
 	// Send initial events
 	initialEvents := converter.BuildInitialEvents()
@@ -445,6 +493,12 @@ finishStream:
 		}
 	}
 
+	// Set context percentage before building final events
+	// This allows BuildFinalEvents to calculate accurate input_tokens
+	if contextPct > 0 {
+		converter.SetContextPercentage(contextPct)
+	}
+
 	// Send final events
 	finalEvents := converter.BuildFinalEvents()
 	for _, event := range finalEvents {
@@ -456,22 +510,32 @@ finishStream:
 	}
 	flusher.Flush()
 
+	// Calculate accurate input tokens from context percentage if available
+	accurateInputTokens := inputTokens
+	if contextPct > 0 {
+		calculatedTokens := int(contextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
+		if calculatedTokens > 0 {
+			accurateInputTokens = calculatedTokens
+		}
+	}
+
 	// Build usage from converter stats
 	usage := &ClaudeUsage{
-		InputTokens:  inputTokens,
-		OutputTokens: converter.TotalOutputTokens(),
+		InputTokens:         accurateInputTokens,
+		OutputTokens:        converter.TotalOutputTokens(),
+		ContextUsagePercent: contextPct,
 	}
 
 	// Log credits/context usage if available
 	if credits > 0 || contextPct > 0 {
-		log.Printf("[kiro-Forward] credits=%.4f context_pct=%.2f", credits, contextPct)
+		log.Printf("[kiro-Forward] credits=%.4f context_pct=%.2f input_tokens=%d", credits, contextPct, accurateInputTokens)
 	}
 
 	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
 }
 
 // handleNonStreamingResponse handles non-streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string) (*kiroStreamResult, error) {
 	// Read entire response
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
@@ -482,13 +546,21 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	ms := int(time.Since(startTime).Milliseconds())
 	firstTokenMs = &ms
 
-	// Parse complete response
+	// Parse complete response with tool name restoration
 	messageID := "msg_" + uuid.New().String()[:24]
-	parsedResp := kiro.ParseCompleteResponse(respBody)
+	parsedResp := kiro.ParseCompleteResponseWithNameRestore(respBody, toolNameReverseMap)
 
-	// Build Claude response
-	inputTokens := 0 // Estimate or extract from response
-	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, inputTokens, parsedResp)
+	// Calculate accurate input tokens from context percentage if available
+	accurateInputTokens := inputTokens
+	if parsedResp.ContextPct > 0 {
+		calculatedTokens := int(parsedResp.ContextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
+		if calculatedTokens > 0 {
+			accurateInputTokens = calculatedTokens
+		}
+	}
+
+	// Build Claude response with accurate input tokens
+	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, accurateInputTokens, parsedResp)
 
 	// Serialize and send
 	respJSON, err := json.Marshal(claudeResp)
@@ -500,8 +572,9 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 
 	// Extract usage
 	usage := &ClaudeUsage{
-		InputTokens:  inputTokens,
-		OutputTokens: (len(parsedResp.Text) + 3) / 4, // Rough estimate
+		InputTokens:         accurateInputTokens,
+		OutputTokens:        (len(parsedResp.Text) + 3) / 4, // Rough estimate
+		ContextUsagePercent: parsedResp.ContextPct,
 	}
 
 	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil

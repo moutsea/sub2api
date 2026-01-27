@@ -132,6 +132,7 @@ type ClaudeUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	ContextUsagePercent      float64 `json:"context_usage_percent,omitempty"`
 }
 
 // ForwardResult 转发结果
@@ -158,6 +159,17 @@ func (e *UpstreamFailoverError) Error() string {
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
 }
 
+// ContextTooLongError indicates the input context exceeds the platform's limit.
+// This error is used to reject requests before sending to upstream to avoid 400 errors.
+type ContextTooLongError struct {
+	EstimatedTokens int
+	Limit           int
+}
+
+func (e *ContextTooLongError) Error() string {
+	return fmt.Sprintf("context too long: estimated %d tokens exceeds limit of %d", e.EstimatedTokens, e.Limit)
+}
+
 // GatewayService handles API gateway operations
 type GatewayService struct {
 	accountRepo         AccountRepository
@@ -176,9 +188,10 @@ type GatewayService struct {
 	deferredService     *DeferredService
 	concurrencyService  *ConcurrencyService
 	claudeTokenProvider *ClaudeTokenProvider
-	sessionLimitCache   SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	usageCache          *UsageCache       // 用量缓存，用于账号选择时检查配额
-	accountUsageService *AccountUsageService // 账号用量服务，用于主动刷新配额
+	kiroTokenProvider   *KiroTokenProvider    // Kiro token provider for checking runtime status
+	sessionLimitCache   SessionLimitCache     // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	usageCache          *UsageCache           // 用量缓存，用于账号选择时检查配额
+	accountUsageService *AccountUsageService  // 账号用量服务，用于主动刷新配额
 }
 
 // NewGatewayService creates a new GatewayService
@@ -199,6 +212,7 @@ func NewGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	claudeTokenProvider *ClaudeTokenProvider,
+	kiroTokenProvider *KiroTokenProvider,
 	sessionLimitCache SessionLimitCache,
 	usageCache *UsageCache,
 	accountUsageService *AccountUsageService,
@@ -220,6 +234,7 @@ func NewGatewayService(
 		httpUpstream:        httpUpstream,
 		deferredService:     deferredService,
 		claudeTokenProvider: claudeTokenProvider,
+		kiroTokenProvider:   kiroTokenProvider,
 		sessionLimitCache:   sessionLimitCache,
 		usageCache:          usageCache,
 		accountUsageService: accountUsageService,
@@ -506,6 +521,24 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, errors.New("no available accounts")
 	}
 
+	// Filter out Kiro accounts that are not available (cooldown/banned/exhausted)
+	if s.kiroTokenProvider != nil {
+		filteredAccounts := make([]Account, 0, len(accounts))
+		for i := range accounts {
+			acc := &accounts[i]
+			if acc.IsKiro() {
+				if !s.kiroTokenProvider.IsAvailable(acc.ID) {
+					continue // Skip unavailable Kiro accounts
+				}
+			}
+			filteredAccounts = append(filteredAccounts, accounts[i])
+		}
+		accounts = filteredAccounts
+		if len(accounts) == 0 {
+			return nil, errors.New("no available accounts (all Kiro accounts are in cooldown/banned)")
+		}
+	}
+
 	isExcluded := func(accountID int64) bool {
 		if excludedIDs == nil {
 			return false
@@ -680,7 +713,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
-				// 排序：优先级 > 负载率 > 重置时间（临近重置优先） > 最后使用时间
+				// 排序：优先级 > 负载率 > [Kiro积分余额] > 重置时间（临近重置优先） > 最后使用时间
 				sort.SliceStable(routingAvailable, func(i, j int) bool {
 					a, b := routingAvailable[i], routingAvailable[j]
 					if a.account.Priority != b.account.Priority {
@@ -688,6 +721,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+					}
+					// Kiro 账号优先使用积分余额较多的（负载均衡）
+					if a.account.IsKiro() && b.account.IsKiro() {
+						aCredits := s.getKiroAvailableCredits(a.account.ID)
+						bCredits := s.getKiroAvailableCredits(b.account.ID)
+						// 如果两个账号都有积分信息，优先选择积分多的
+						if aCredits >= 0 && bCredits >= 0 && aCredits != bCredits {
+							return aCredits > bCredits // 积分多的优先
+						}
 					}
 					// 重置时间比较：临近重置的账号优先使用
 					aReset := s.getAccountResetTime(a.account.ID)
@@ -888,6 +930,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				}
 				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+				}
+				// Kiro 账号优先使用积分余额较多的（负载均衡）
+				if a.account.IsKiro() && b.account.IsKiro() {
+					aCredits := s.getKiroAvailableCredits(a.account.ID)
+					bCredits := s.getKiroAvailableCredits(b.account.ID)
+					// 如果两个账号都有积分信息，优先选择积分多的
+					if aCredits >= 0 && bCredits >= 0 && aCredits != bCredits {
+						return aCredits > bCredits // 积分多的优先
+					}
 				}
 				// 重置时间比较：临近重置的账号优先使用
 				aReset := s.getAccountResetTime(a.account.ID)
@@ -3875,6 +3926,15 @@ func (s *GatewayService) getAccountResetTime(accountID int64) *time.Time {
 		return nil
 	}
 	return s.usageCache.GetResetTime(accountID)
+}
+
+// getKiroAvailableCredits 获取 Kiro 账号的可用积分余额
+// 返回：可用积分数，-1 表示无法获取
+func (s *GatewayService) getKiroAvailableCredits(accountID int64) float64 {
+	if s.usageCache == nil {
+		return -1
+	}
+	return s.usageCache.GetKiroAvailableCredits(accountID)
 }
 
 // RefreshAntigravityQuotaAsync 异步刷新 Antigravity 账号配额并更新健康状态

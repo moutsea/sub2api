@@ -12,7 +12,9 @@
           />
           <AccountTableActions
             :loading="loading"
+            :refreshingKiro="refreshingKiro"
             @refresh="load"
+            @refresh-kiro="handleRefreshKiroStates"
             @sync="showSync = true"
             @create="showCreate = true"
           >
@@ -146,7 +148,7 @@
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
-    <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
+    <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" :default-platform="params.platform" @close="showCreate = false" @created="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="load" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="load" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
@@ -259,6 +261,30 @@ const { items: accounts, loading, params, pagination, load, reload, debouncedRel
   fetchFn: adminAPI.accounts.list,
   initialParams: { platform: '', type: '', status: '', search: '' }
 })
+
+// Kiro states refresh
+const refreshingKiro = ref(false)
+const handleRefreshKiroStates = async () => {
+  refreshingKiro.value = true
+  try {
+    const result = await adminAPI.accounts.refreshKiroStates()
+    const msg = `${result.message}: ${result.refreshed}/${result.total} 成功`
+    if (result.status_cleared > 0) {
+      appStore.showSuccess(`${msg}, ${result.status_cleared} 个错误状态已清除`)
+    } else {
+      appStore.showSuccess(msg)
+    }
+    if (result.failed > 0 && result.errors.length > 0) {
+      console.warn('Kiro refresh errors:', result.errors)
+    }
+    load() // Reload the list
+  } catch (error) {
+    console.error('Failed to refresh Kiro states:', error)
+    appStore.showError('刷新 Kiro 状态失败')
+  } finally {
+    refreshingKiro.value = false
+  }
+}
 
 // All available columns
 const allColumns = computed(() => {

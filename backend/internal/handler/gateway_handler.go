@@ -424,6 +424,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				log.Printf("Account %d: upstream error %d, switching account %d/%d", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 				continue
 			}
+			// Handle context too long error - return error to client without failover
+			var contextErr *service.ContextTooLongError
+			if errors.As(err, &contextErr) {
+				log.Printf("Account %d: context too long (estimated %d tokens, limit %d)", account.ID, contextErr.EstimatedTokens, contextErr.Limit)
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+					"Input context too long. Please reduce context length.")
+				return
+			}
 			// 错误响应已在Forward中处理，这里只记录日志
 			log.Printf("Account %d: Forward request failed: %v", account.ID, err)
 			return

@@ -6,7 +6,6 @@
     >
       <GroupBadge
         :name="name"
-        :platform="platform"
         :subscription-type="subscriptionType"
         :rate-multiplier="rateMultiplier"
       />
@@ -32,11 +31,10 @@
 
 <script setup lang="ts">
 import GroupBadge from './GroupBadge.vue'
-import type { SubscriptionType, GroupPlatform } from '@/types'
+import type { SubscriptionType } from '@/types'
 
 interface Props {
   name: string
-  platform: GroupPlatform
   subscriptionType?: SubscriptionType
   rateMultiplier?: number
   description?: string | null

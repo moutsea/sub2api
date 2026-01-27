@@ -263,6 +263,63 @@
       </div>
     </template>
 
+    <!-- Kiro accounts: show credits balance -->
+    <template v-else-if="account.platform === 'kiro'">
+      <!-- Loading state -->
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-16 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+
+      <!-- Error state -->
+      <div v-else-if="error" class="text-xs text-red-500">
+        {{ error }}
+      </div>
+
+      <!-- Credits data -->
+      <div v-else-if="kiroCreditsInfo" class="space-y-1">
+        <!-- Subscription type badge -->
+        <div v-if="kiroSubscriptionLabel" class="mb-1">
+          <span
+            :class="[
+              'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+              kiroSubscriptionClass
+            ]"
+          >
+            {{ kiroSubscriptionLabel }}
+          </span>
+        </div>
+
+        <!-- Credits display -->
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-medium text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.kiro.credits') }}
+          </span>
+          <span class="text-sm font-semibold" :class="kiroCreditsColorClass">
+            {{ formatCredits(kiroCreditsInfo.available_credits) }}
+          </span>
+          <span class="text-xs text-gray-400">/</span>
+          <span class="text-xs text-gray-500 dark:text-gray-400">
+            {{ formatCredits(kiroCreditsInfo.total_credits) }}
+          </span>
+        </div>
+
+        <!-- Reset info -->
+        <div v-if="kiroCreditsInfo.days_until_reset > 0" class="text-[10px] text-gray-400 dark:text-gray-500">
+          {{ t('admin.accounts.kiro.resetIn', { days: kiroCreditsInfo.days_until_reset }) }}
+        </div>
+
+        <!-- User email (optional) -->
+        <div v-if="kiroCreditsInfo.user_email" class="text-[10px] text-gray-400 dark:text-gray-500 truncate" :title="kiroCreditsInfo.user_email">
+          {{ kiroCreditsInfo.user_email }}
+        </div>
+      </div>
+
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
@@ -299,6 +356,8 @@ const usageInfo = ref<AccountUsageInfo | null>(null)
 const showUsageWindows = computed(() => {
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
   if (props.account.platform === 'gemini') return true
+  // Kiro: always show credits if available
+  if (props.account.platform === 'kiro') return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
@@ -311,6 +370,9 @@ const shouldFetchUsage = computed(() => {
   }
   if (props.account.platform === 'antigravity') {
     return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'kiro') {
+    return true
   }
   return false
 })
@@ -822,6 +884,53 @@ const hasIneligibleTiers = computed(() => {
   const ineligibleTiers = loadCodeAssist.ineligibleTiers as unknown[] | undefined
   return Array.isArray(ineligibleTiers) && ineligibleTiers.length > 0
 })
+
+// ===== Kiro credits from API (usageInfo.kiro_credits) =====
+
+// Kiro credits info from API
+const kiroCreditsInfo = computed(() => {
+  return usageInfo.value?.kiro_credits || null
+})
+
+// Kiro subscription type label
+const kiroSubscriptionLabel = computed(() => {
+  if (!kiroCreditsInfo.value?.subscription_type) return null
+  const subType = kiroCreditsInfo.value.subscription_type.toLowerCase()
+  if (subType.includes('pro')) return 'Pro'
+  if (subType.includes('free')) return 'Free'
+  if (subType.includes('builder')) return 'Builder'
+  return kiroCreditsInfo.value.subscription_type
+})
+
+// Kiro subscription class
+const kiroSubscriptionClass = computed(() => {
+  if (!kiroCreditsInfo.value?.subscription_type) return ''
+  const subType = kiroCreditsInfo.value.subscription_type.toLowerCase()
+  if (subType.includes('pro') || subType.includes('builder')) {
+    return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300'
+  }
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+})
+
+// Kiro credits color class based on available credits
+const kiroCreditsColorClass = computed(() => {
+  if (!kiroCreditsInfo.value) return 'text-gray-900 dark:text-white'
+  const available = kiroCreditsInfo.value.available_credits
+  const total = kiroCreditsInfo.value.total_credits
+  if (total <= 0) return 'text-gray-900 dark:text-white'
+
+  const ratio = available / total
+  if (ratio <= 0.1) return 'text-red-500 dark:text-red-400'
+  if (ratio <= 0.3) return 'text-orange-500 dark:text-orange-400'
+  return 'text-green-600 dark:text-green-400'
+})
+
+// Format credits value
+const formatCredits = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '0'
+  // Round to 2 decimal places
+  return value.toFixed(2)
+}
 
 const loadUsage = async () => {
   if (!shouldFetchUsage.value) return

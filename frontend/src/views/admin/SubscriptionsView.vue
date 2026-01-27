@@ -180,7 +180,6 @@
             <GroupBadge
               v-if="row.group"
               :name="row.group.name"
-              :platform="row.group.platform"
               :subscription-type="row.group.subscription_type"
               :rate-multiplier="row.group.rate_multiplier"
               :show-rate="false"

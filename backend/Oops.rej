@@ -1,0 +1,15 @@
+@@ -925,11 +925,11 @@
+ 		account.Status = StatusError
+ 		account.ErrorMessage = errorMsg
+ 	case KiroTokenStatusExhausted:
+-		account.Status = StatusExhausted
++		account.Status = StatusError
+ 		account.ErrorMessage = errorMsg
+ 	case KiroTokenStatusCooldown:
+-		account.Status = StatusCooldown
+-		account.ErrorMessage = errorMsg
++		// Cooldown is a temporary state, keep as active in database
++		account.Status = StatusActive
+ 	case KiroTokenStatusActive:
+ 		account.Status = StatusActive
+ 		account.ErrorMessage = ""

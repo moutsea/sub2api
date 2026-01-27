@@ -347,6 +347,22 @@ export async function syncFromCrs(params: {
   return data
 }
 
+/**
+ * Refresh all Kiro account states
+ * @returns Refresh result with statistics
+ */
+export async function refreshKiroStates(): Promise<{
+  message: string
+  total: number
+  refreshed: number
+  failed: number
+  status_cleared: number
+  errors: string[]
+}> {
+  const { data } = await apiClient.post('/admin/accounts/refresh-kiro-states')
+  return data
+}
+
 export const accountsAPI = {
   list,
   getById,
@@ -370,7 +386,8 @@ export const accountsAPI = {
   batchCreate,
   batchUpdateCredentials,
   bulkUpdate,
-  syncFromCrs
+  syncFromCrs,
+  refreshKiroStates
 }
 
 export default accountsAPI

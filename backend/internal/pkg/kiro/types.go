@@ -353,6 +353,7 @@ type ContentBlock struct {
 
 // ClaudeTool represents a tool definition in Claude format
 type ClaudeTool struct {
+	Type        string         `json:"type,omitempty"` // Tool type (e.g., "web_search_20250305" for web search)
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"input_schema"`

@@ -19,6 +19,9 @@ type awsPayload struct {
 	ContextUsagePercent *float64        `json:"contextUsagePercentage"`
 	MeteringEvent       map[string]any  `json:"meteringEvent"`
 	ContextUsageEvent   map[string]any  `json:"contextUsageEvent"`
+	MessageMetadataEvent map[string]any `json:"messageMetadataEvent"`
+	MetadataEvent        map[string]any `json:"metadataEvent"`
+	TokenUsage           map[string]any `json:"tokenUsage"`
 }
 
 // toolAccumulator tracks state for a tool use block
@@ -200,6 +203,9 @@ var jsonStartPatterns = [][]byte{
 	[]byte(`{"followupPrompt":`),
 	[]byte(`{"meteringEvent":`),
 	[]byte(`{"contextUsageEvent":`),
+	[]byte(`{"messageMetadataEvent":`),
+	[]byte(`{"metadataEvent":`),
+	[]byte(`{"tokenUsage":`),
 	[]byte(`{"unit":`),
 }
 
@@ -267,6 +273,28 @@ func extractJSONObject(buf []byte, start int) ([]byte, int, bool) {
 	}
 
 	return nil, 0, false
+}
+
+func contextUsageFromTokenUsage(tokenUsage map[string]any) float64 {
+	if tokenUsage == nil {
+		return 0
+	}
+	for _, k := range []string{"contextUsagePercentage", "contextUsagePercent", "usagePercent", "percent", "contextPercent"} {
+		if v, ok := tokenUsage[k].(float64); ok && v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func tokenUsageFromMetadata(meta map[string]any) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	if tokenUsage, ok := meta["tokenUsage"].(map[string]any); ok {
+		return tokenUsage
+	}
+	return meta
 }
 
 func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, error) {
@@ -453,6 +481,15 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 			}
 		}
 	}
+	if ctxPct == 0 {
+		ctxPct = contextUsageFromTokenUsage(payload.TokenUsage)
+	}
+	if ctxPct == 0 {
+		ctxPct = contextUsageFromTokenUsage(tokenUsageFromMetadata(payload.MessageMetadataEvent))
+	}
+	if ctxPct == 0 {
+		ctxPct = contextUsageFromTokenUsage(tokenUsageFromMetadata(payload.MetadataEvent))
+	}
 
 	if credits > 0 || ctxPct > 0 {
 		events = append(events, StreamEvent{Type: EventBackendUsage, Credits: credits, ContextPercentage: ctxPct})
@@ -587,7 +624,14 @@ func BuildClaudeContentBlockStop(index int) ClaudeSSEEvent {
 }
 
 // BuildClaudeMessageDelta builds a message_delta event
-func BuildClaudeMessageDelta(stopReason string, outputTokens, inputTokens int) ClaudeSSEEvent {
+func BuildClaudeMessageDelta(stopReason string, outputTokens, inputTokens int, contextUsagePercent float64) ClaudeSSEEvent {
+	usage := map[string]any{
+		"output_tokens": outputTokens,
+		"input_tokens":  inputTokens,
+	}
+	if contextUsagePercent > 0 {
+		usage["context_usage_percent"] = contextUsagePercent
+	}
 	return ClaudeSSEEvent{
 		EventType: "message_delta",
 		Data: map[string]any{
@@ -596,10 +640,7 @@ func BuildClaudeMessageDelta(stopReason string, outputTokens, inputTokens int) C
 				"stop_reason":   stopReason,
 				"stop_sequence": nil,
 			},
-			"usage": map[string]any{
-				"output_tokens": outputTokens,
-				"input_tokens":  inputTokens,
-			},
+			"usage": usage,
 		},
 	}
 }
@@ -652,6 +693,10 @@ type StreamEventConverter struct {
 
 	sawToolUse        bool
 	totalOutputTokens int
+	contextPct        float64 // Context usage percentage from backend
+
+	// Tool name restoration map (shortened -> original)
+	toolNameReverseMap map[string]string
 }
 
 // NewStreamEventConverter creates a new converter
@@ -665,6 +710,22 @@ func NewStreamEventConverter(messageID, model string, inputTokens int) *StreamEv
 	}
 }
 
+// SetToolNameReverseMap sets the tool name reverse map for restoring original names
+func (c *StreamEventConverter) SetToolNameReverseMap(reverseMap map[string]string) {
+	c.toolNameReverseMap = reverseMap
+}
+
+// restoreToolName restores the original tool name from shortened name
+func (c *StreamEventConverter) restoreToolName(shortName string) string {
+	if c.toolNameReverseMap == nil {
+		return shortName
+	}
+	if original, ok := c.toolNameReverseMap[shortName]; ok {
+		return original
+	}
+	return shortName
+}
+
 // SawToolUse returns whether any tool use was seen
 func (c *StreamEventConverter) SawToolUse() bool {
 	return c.sawToolUse
@@ -673,6 +734,11 @@ func (c *StreamEventConverter) SawToolUse() bool {
 // TotalOutputTokens returns the estimated output tokens
 func (c *StreamEventConverter) TotalOutputTokens() int {
 	return c.totalOutputTokens
+}
+
+// SetContextPercentage sets the context usage percentage from backend
+func (c *StreamEventConverter) SetContextPercentage(pct float64) {
+	c.contextPct = pct
 }
 
 // ConvertEvent converts a StreamEvent to Claude SSE events
@@ -729,7 +795,13 @@ func (c *StreamEventConverter) handleBlockStart(e StreamEvent) []ClaudeSSEEvent 
 		c.activeThinkingBlockIndex = &idx
 	}
 
-	return []ClaudeSSEEvent{BuildClaudeContentBlockStart(int(e.Index), e.BlockType)}
+	// Restore original tool name if shortened
+	blockType := e.BlockType
+	if blockType.Kind == BlockToolUse {
+		blockType.ToolName = c.restoreToolName(blockType.ToolName)
+	}
+
+	return []ClaudeSSEEvent{BuildClaudeContentBlockStart(int(e.Index), blockType)}
 }
 
 func (c *StreamEventConverter) handleTextDelta(e StreamEvent) []ClaudeSSEEvent {
@@ -785,8 +857,10 @@ func (c *StreamEventConverter) handleBlockStop(e StreamEvent) []ClaudeSSEEvent {
 
 // BuildInitialEvents builds the initial SSE events for a stream
 func (c *StreamEventConverter) BuildInitialEvents() []ClaudeSSEEvent {
+	// Use inflated input tokens to trigger client-side context compression earlier
+	inflatedTokens := InflateInputTokens(c.inputTokens)
 	return []ClaudeSSEEvent{
-		BuildClaudeMessageStart(c.messageID, c.model, c.inputTokens),
+		BuildClaudeMessageStart(c.messageID, c.model, inflatedTokens),
 		BuildClaudePing(),
 	}
 }
@@ -803,8 +877,24 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 		outputTokens = 1
 	}
 
+	// Use contextPct to calculate more accurate input tokens if available
+	// contextPct is the percentage of context window used (0-100)
+	// KiroContextWindowLimit is 150000 tokens
+	inputTokens := c.inputTokens
+	if c.contextPct > 0 {
+		// Calculate input tokens from context percentage
+		// input_tokens = contextPct / 100 * KiroContextWindowLimit
+		calculatedTokens := int(c.contextPct / 100.0 * float64(KiroContextWindowLimit))
+		if calculatedTokens > 0 {
+			inputTokens = calculatedTokens
+		}
+	}
+
+	// Apply inflation to trigger client-side context compression earlier
+	inflatedTokens := InflateInputTokens(inputTokens)
+
 	return []ClaudeSSEEvent{
-		BuildClaudeMessageDelta(stopReason, outputTokens, c.inputTokens),
+		BuildClaudeMessageDelta(stopReason, outputTokens, inflatedTokens, c.contextPct),
 		BuildClaudeMessageStop(),
 	}
 }
@@ -813,8 +903,9 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 
 // CompleteResponse represents a parsed complete response
 type CompleteResponse struct {
-	Text      string
-	ToolCalls []ToolCallData
+	Text       string
+	ToolCalls  []ToolCallData
+	ContextPct float64 // Context usage percentage from backend
 }
 
 // ToolCallData represents a tool call in the response
@@ -826,6 +917,11 @@ type ToolCallData struct {
 
 // ParseCompleteResponse parses a complete (non-streaming) response
 func ParseCompleteResponse(data []byte) *CompleteResponse {
+	return ParseCompleteResponseWithNameRestore(data, nil)
+}
+
+// ParseCompleteResponseWithNameRestore parses a complete response and restores tool names
+func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[string]string) *CompleteResponse {
 	parser := NewAwsEventStreamParser("", "")
 	events := parser.Process(data)
 	events = append(events, parser.Finish()...)
@@ -833,6 +929,16 @@ func ParseCompleteResponse(data []byte) *CompleteResponse {
 	resp := &CompleteResponse{}
 	var textParts []string
 	toolInputs := make(map[string]string) // toolID -> accumulated input JSON
+
+	restoreName := func(name string) string {
+		if toolNameReverseMap == nil {
+			return name
+		}
+		if original, ok := toolNameReverseMap[name]; ok {
+			return original
+		}
+		return name
+	}
 
 	for _, e := range events {
 		switch e.Type {
@@ -842,11 +948,15 @@ func ParseCompleteResponse(data []byte) *CompleteResponse {
 			if e.BlockType.Kind == BlockToolUse {
 				resp.ToolCalls = append(resp.ToolCalls, ToolCallData{
 					ID:   e.BlockType.ToolID,
-					Name: e.BlockType.ToolName,
+					Name: restoreName(e.BlockType.ToolName),
 				})
 			}
 		case EventToolUseInputDelta:
 			toolInputs[e.ToolID] += e.PartialJSON
+		case EventBackendUsage:
+			if e.ContextPercentage > 0 {
+				resp.ContextPct = e.ContextPercentage
+			}
 		}
 	}
 
@@ -910,6 +1020,17 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 		stopReason = "tool_use"
 	}
 
+	// Apply inflation to trigger client-side context compression earlier
+	inflatedTokens := InflateInputTokens(inputTokens)
+
+	usage := map[string]any{
+		"input_tokens":  inflatedTokens,
+		"output_tokens": outputTokens,
+	}
+	if resp.ContextPct > 0 {
+		usage["context_usage_percent"] = resp.ContextPct
+	}
+
 	return map[string]any{
 		"id":            messageID,
 		"type":          "message",
@@ -918,9 +1039,6 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 		"model":         model,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-		},
+		"usage":         usage,
 	}
 }

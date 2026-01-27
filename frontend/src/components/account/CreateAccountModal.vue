@@ -1852,6 +1852,7 @@ interface Props {
   show: boolean
   proxies: Proxy[]
   groups: AdminGroup[]
+  defaultPlatform?: AccountPlatform | ''
 }
 
 const props = defineProps<Props>()
@@ -2057,7 +2058,15 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
-      // Modal opened - fill related models
+      // Modal opened - set default platform if provided
+      if (props.defaultPlatform) {
+        form.platform = props.defaultPlatform
+        // Reset account category based on platform
+        if (props.defaultPlatform === 'antigravity' || props.defaultPlatform === 'kiro') {
+          accountCategory.value = 'oauth-based'
+        }
+      }
+      // Fill related models
       allowedModels.value = [...getModelsByPlatform(form.platform)]
     } else {
       resetForm()
@@ -2447,8 +2456,15 @@ const handleSubmit = async () => {
         return
       }
 
-      // Batch name prefix (default to 'Kiro' if not provided)
-      const batchPrefix = form.name.trim() || 'Kiro'
+      // Batch name prefix (default to 'kiro_{date}' if not provided)
+      const getDefaultBatchPrefix = () => {
+        const now = new Date()
+        const year = now.getFullYear()
+        const month = String(now.getMonth() + 1).padStart(2, '0')
+        const day = String(now.getDate()).padStart(2, '0')
+        return `kiro_${year}${month}${day}`
+      }
+      const batchPrefix = form.name.trim() || getDefaultBatchPrefix()
       const totalCount = kiroParsedTokens.value.length
 
       submitting.value = true

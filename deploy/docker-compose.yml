@@ -11,7 +11,7 @@
 # No Setup Wizard needed - the system auto-initializes on first run.
 # =============================================================================
 
-# docker buildx build --platform linux/amd64 -t cfjwlchangji/sub2api:v1.0.2 --push .
+# docker buildx build --platform linux/amd64 -t cfjwlchangji/sub2api:v1.0.3 --push .
 
 services:
   # ===========================================================================
