@@ -23,6 +23,10 @@
             <span class="text-sm text-gray-600 dark:text-gray-400">
               {{ t('common.selected', { count: selectedIds.length }) }}
             </span>
+            <button @click="copySelectedKeys" class="btn btn-secondary btn-sm">
+              <Icon name="copy" size="sm" class="mr-1" />
+              {{ t('admin.tempApiKeys.copyKeys') }}
+            </button>
             <button @click="showBatchDialog = true" class="btn btn-secondary btn-sm">
               {{ t('admin.tempApiKeys.batchUpdate') }}
             </button>
@@ -544,6 +548,15 @@ const toggleSelectAll = () => {
 const copyKey = (key: string) => {
   navigator.clipboard.writeText(key)
   appStore.showSuccess(t('keys.copiedToClipboard'))
+}
+
+const copySelectedKeys = async () => {
+  if (selectedIds.value.length === 0) return
+  const selectedKeys = keys.value
+    .filter(k => selectedIds.value.includes(k.id))
+    .map(k => k.key)
+  await navigator.clipboard.writeText(selectedKeys.join('\n'))
+  appStore.showSuccess(t('admin.tempApiKeys.keysCopied', { count: selectedKeys.length }))
 }
 
 const formatDate = (date: string | null) => {

@@ -2171,6 +2171,8 @@ export default {
       fillRequired: '请填写所有必填字段',
       createSuccess: '成功创建 {count} 个临时密钥',
       createSuccessAndCopied: '成功创建 {count} 个临时密钥，已复制到剪贴板',
+      copyKeys: '复制密钥',
+      keysCopied: '已复制 {count} 个密钥到剪贴板',
       createFailed: '创建失败',
       updateSuccess: '更新成功',
       updateFailed: '更新失败',

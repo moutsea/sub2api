@@ -2024,6 +2024,8 @@ export default {
       fillRequired: 'Please fill in all required fields',
       createSuccess: 'Successfully created {count} temp keys',
       createSuccessAndCopied: 'Successfully created {count} temp keys, copied to clipboard',
+      copyKeys: 'Copy Keys',
+      keysCopied: 'Copied {count} keys to clipboard',
       createFailed: 'Failed to create',
       updateSuccess: 'Updated successfully',
       updateFailed: 'Failed to update',
