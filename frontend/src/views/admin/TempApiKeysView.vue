@@ -426,7 +426,14 @@ const handleCreate = async () => {
   creating.value = true
   try {
     const res = await tempApiKeysAPI.create(createForm.value)
-    appStore.showSuccess(t('admin.tempApiKeys.createSuccess', { count: res.created }))
+    // 自动复制所有新建 key 到剪贴板
+    if (res.data && res.data.length > 0) {
+      const keysText = res.data.map((k: TempApiKey) => k.key).join('\n')
+      await navigator.clipboard.writeText(keysText)
+      appStore.showSuccess(t('admin.tempApiKeys.createSuccessAndCopied', { count: res.created }))
+    } else {
+      appStore.showSuccess(t('admin.tempApiKeys.createSuccess', { count: res.created }))
+    }
     showCreateDialog.value = false
     createForm.value = { count: 1, name_prefix: '', group_id: 0, valid_days: 7, daily_limit: 1000 }
     loadKeys()

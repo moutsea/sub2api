@@ -195,6 +195,7 @@ export default {
     now: 'Now',
     unknown: 'Unknown',
     minutes: 'min',
+    createdAt: 'Created At',
     time: {
       never: 'Never',
       justNow: 'Just now',
@@ -2022,6 +2023,7 @@ export default {
       batchUpdateHint: 'Empty fields will not be modified',
       fillRequired: 'Please fill in all required fields',
       createSuccess: 'Successfully created {count} temp keys',
+      createSuccessAndCopied: 'Successfully created {count} temp keys, copied to clipboard',
       createFailed: 'Failed to create',
       updateSuccess: 'Updated successfully',
       updateFailed: 'Failed to update',

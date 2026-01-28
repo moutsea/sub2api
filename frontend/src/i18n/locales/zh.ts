@@ -192,6 +192,7 @@ export default {
     now: '现在',
     unknown: '未知',
     minutes: '分钟',
+    createdAt: '创建时间',
     time: {
       never: '从未',
       justNow: '刚刚',
@@ -2169,6 +2170,7 @@ export default {
       batchUpdateHint: '留空的字段将不会被修改',
       fillRequired: '请填写所有必填字段',
       createSuccess: '成功创建 {count} 个临时密钥',
+      createSuccessAndCopied: '成功创建 {count} 个临时密钥，已复制到剪贴板',
       createFailed: '创建失败',
       updateSuccess: '更新成功',
       updateFailed: '更新失败',
