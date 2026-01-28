@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
+	"github.com/Wei-Shaw/sub2api/ent/tempapikey"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
@@ -96,6 +97,7 @@ func checkColumn(t, c string) error {
 			proxy.Table:                   proxy.ValidColumn,
 			redeemcode.Table:              redeemcode.ValidColumn,
 			setting.Table:                 setting.ValidColumn,
+			tempapikey.Table:              tempapikey.ValidColumn,
 			usagelog.Table:                usagelog.ValidColumn,
 			user.Table:                    user.ValidColumn,
 			userallowedgroup.Table:        userallowedgroup.ValidColumn,

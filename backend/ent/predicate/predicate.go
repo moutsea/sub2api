@@ -33,6 +33,9 @@ type RedeemCode func(*sql.Selector)
 // Setting is the predicate function for setting builders.
 type Setting func(*sql.Selector)
 
+// TempAPIKey is the predicate function for tempapikey builders.
+type TempAPIKey func(*sql.Selector)
+
 // UsageLog is the predicate function for usagelog builders.
 type UsageLog func(*sql.Selector)
 

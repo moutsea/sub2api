@@ -7,7 +7,7 @@
     ]"
   >
     <!-- Logo/Brand -->
-    <div class="sidebar-header">
+    <router-link to="/home" class="sidebar-header cursor-pointer hover:opacity-80 transition-opacity">
       <!-- Custom Logo or Default Logo -->
       <div class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl shadow-glow">
         <img :src="siteLogo || '/logo.png'" alt="Logo" class="h-full w-full object-contain" />
@@ -21,7 +21,7 @@
           <VersionBadge :version="siteVersion" />
         </div>
       </transition>
-    </div>
+    </router-link>
 
     <!-- Navigation -->
     <nav class="sidebar-nav scrollbar-hide">
@@ -454,6 +454,7 @@ const adminNavItems = computed(() => {
     { path: '/admin/redeem', label: t('nav.redeemCodes'), icon: TicketIcon, hideInSimpleMode: true },
     { path: '/admin/promo-codes', label: t('nav.promoCodes'), icon: GiftIcon, hideInSimpleMode: true },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
+    { path: '/admin/temp-api-keys', label: t('nav.tempApiKeys'), icon: KeyIcon },
   ]
 
   // 简单模式下，在系统设置前插入 API密钥

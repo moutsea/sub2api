@@ -317,6 +317,52 @@ export interface UpdateApiKeyRequest {
   ip_blacklist?: string[]
 }
 
+// ==================== Temp API Key Types ====================
+
+export interface TempApiKey {
+  id: number
+  key: string
+  name: string
+  group_id: number
+  group_name?: string
+  valid_days: number
+  activated_at: string | null
+  expires_at: string | null
+  daily_limit: number
+  current_period_count: number
+  total_requests: number
+  status: 'active' | 'inactive' | 'expired'
+  created_by: number
+  creator_email?: string
+  created_at: string
+  updated_at: string
+  remaining_requests: number
+  is_expired: boolean
+  is_activated: boolean
+}
+
+export interface CreateTempApiKeyRequest {
+  count: number
+  name_prefix: string
+  group_id: number
+  valid_days: number
+  daily_limit?: number
+}
+
+export interface UpdateTempApiKeyRequest {
+  name?: string
+  status?: 'active' | 'inactive'
+  valid_days?: number
+  daily_limit?: number
+}
+
+export interface BatchUpdateTempApiKeyRequest {
+  ids: number[]
+  status?: 'active' | 'inactive'
+  valid_days?: number
+  daily_limit?: number
+}
+
 export interface CreateGroupRequest {
   name: string
   description?: string | null

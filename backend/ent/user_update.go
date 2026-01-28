@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
+	"github.com/Wei-Shaw/sub2api/ent/tempapikey"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
@@ -202,6 +203,21 @@ func (_u *UserUpdate) AddAPIKeys(v ...*APIKey) *UserUpdate {
 	return _u.AddAPIKeyIDs(ids...)
 }
 
+// AddCreatedTempAPIKeyIDs adds the "created_temp_api_keys" edge to the TempAPIKey entity by IDs.
+func (_u *UserUpdate) AddCreatedTempAPIKeyIDs(ids ...int64) *UserUpdate {
+	_u.mutation.AddCreatedTempAPIKeyIDs(ids...)
+	return _u
+}
+
+// AddCreatedTempAPIKeys adds the "created_temp_api_keys" edges to the TempAPIKey entity.
+func (_u *UserUpdate) AddCreatedTempAPIKeys(v ...*TempAPIKey) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddCreatedTempAPIKeyIDs(ids...)
+}
+
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by IDs.
 func (_u *UserUpdate) AddRedeemCodeIDs(ids ...int64) *UserUpdate {
 	_u.mutation.AddRedeemCodeIDs(ids...)
@@ -331,6 +347,27 @@ func (_u *UserUpdate) RemoveAPIKeys(v ...*APIKey) *UserUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveAPIKeyIDs(ids...)
+}
+
+// ClearCreatedTempAPIKeys clears all "created_temp_api_keys" edges to the TempAPIKey entity.
+func (_u *UserUpdate) ClearCreatedTempAPIKeys() *UserUpdate {
+	_u.mutation.ClearCreatedTempAPIKeys()
+	return _u
+}
+
+// RemoveCreatedTempAPIKeyIDs removes the "created_temp_api_keys" edge to TempAPIKey entities by IDs.
+func (_u *UserUpdate) RemoveCreatedTempAPIKeyIDs(ids ...int64) *UserUpdate {
+	_u.mutation.RemoveCreatedTempAPIKeyIDs(ids...)
+	return _u
+}
+
+// RemoveCreatedTempAPIKeys removes "created_temp_api_keys" edges to TempAPIKey entities.
+func (_u *UserUpdate) RemoveCreatedTempAPIKeys(v ...*TempAPIKey) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveCreatedTempAPIKeyIDs(ids...)
 }
 
 // ClearRedeemCodes clears all "redeem_codes" edges to the RedeemCode entity.
@@ -641,6 +678,51 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.CreatedTempAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.CreatedTempAPIKeysTable,
+			Columns: []string{user.CreatedTempAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(tempapikey.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedCreatedTempAPIKeysIDs(); len(nodes) > 0 && !_u.mutation.CreatedTempAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.CreatedTempAPIKeysTable,
+			Columns: []string{user.CreatedTempAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(tempapikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.CreatedTempAPIKeysIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.CreatedTempAPIKeysTable,
+			Columns: []string{user.CreatedTempAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(tempapikey.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -1162,6 +1244,21 @@ func (_u *UserUpdateOne) AddAPIKeys(v ...*APIKey) *UserUpdateOne {
 	return _u.AddAPIKeyIDs(ids...)
 }
 
+// AddCreatedTempAPIKeyIDs adds the "created_temp_api_keys" edge to the TempAPIKey entity by IDs.
+func (_u *UserUpdateOne) AddCreatedTempAPIKeyIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.AddCreatedTempAPIKeyIDs(ids...)
+	return _u
+}
+
+// AddCreatedTempAPIKeys adds the "created_temp_api_keys" edges to the TempAPIKey entity.
+func (_u *UserUpdateOne) AddCreatedTempAPIKeys(v ...*TempAPIKey) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddCreatedTempAPIKeyIDs(ids...)
+}
+
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by IDs.
 func (_u *UserUpdateOne) AddRedeemCodeIDs(ids ...int64) *UserUpdateOne {
 	_u.mutation.AddRedeemCodeIDs(ids...)
@@ -1291,6 +1388,27 @@ func (_u *UserUpdateOne) RemoveAPIKeys(v ...*APIKey) *UserUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveAPIKeyIDs(ids...)
+}
+
+// ClearCreatedTempAPIKeys clears all "created_temp_api_keys" edges to the TempAPIKey entity.
+func (_u *UserUpdateOne) ClearCreatedTempAPIKeys() *UserUpdateOne {
+	_u.mutation.ClearCreatedTempAPIKeys()
+	return _u
+}
+
+// RemoveCreatedTempAPIKeyIDs removes the "created_temp_api_keys" edge to TempAPIKey entities by IDs.
+func (_u *UserUpdateOne) RemoveCreatedTempAPIKeyIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.RemoveCreatedTempAPIKeyIDs(ids...)
+	return _u
+}
+
+// RemoveCreatedTempAPIKeys removes "created_temp_api_keys" edges to TempAPIKey entities.
+func (_u *UserUpdateOne) RemoveCreatedTempAPIKeys(v ...*TempAPIKey) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveCreatedTempAPIKeyIDs(ids...)
 }
 
 // ClearRedeemCodes clears all "redeem_codes" edges to the RedeemCode entity.
@@ -1631,6 +1749,51 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.CreatedTempAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.CreatedTempAPIKeysTable,
+			Columns: []string{user.CreatedTempAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(tempapikey.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedCreatedTempAPIKeysIDs(); len(nodes) > 0 && !_u.mutation.CreatedTempAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.CreatedTempAPIKeysTable,
+			Columns: []string{user.CreatedTempAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(tempapikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.CreatedTempAPIKeysIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.CreatedTempAPIKeysTable,
+			Columns: []string{user.CreatedTempAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(tempapikey.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

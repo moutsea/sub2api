@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
+	"github.com/Wei-Shaw/sub2api/ent/tempapikey"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
@@ -47,6 +48,7 @@ const (
 	TypeProxy                   = "Proxy"
 	TypeRedeemCode              = "RedeemCode"
 	TypeSetting                 = "Setting"
+	TypeTempAPIKey              = "TempAPIKey"
 	TypeUsageLog                = "UsageLog"
 	TypeUser                    = "User"
 	TypeUserAllowedGroup        = "UserAllowedGroup"
@@ -3870,6 +3872,9 @@ type GroupMutation struct {
 	api_keys                 map[int64]struct{}
 	removedapi_keys          map[int64]struct{}
 	clearedapi_keys          bool
+	temp_api_keys            map[int64]struct{}
+	removedtemp_api_keys     map[int64]struct{}
+	clearedtemp_api_keys     bool
 	redeem_codes             map[int64]struct{}
 	removedredeem_codes      map[int64]struct{}
 	clearedredeem_codes      bool
@@ -5115,6 +5120,60 @@ func (m *GroupMutation) ResetAPIKeys() {
 	m.removedapi_keys = nil
 }
 
+// AddTempAPIKeyIDs adds the "temp_api_keys" edge to the TempAPIKey entity by ids.
+func (m *GroupMutation) AddTempAPIKeyIDs(ids ...int64) {
+	if m.temp_api_keys == nil {
+		m.temp_api_keys = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.temp_api_keys[ids[i]] = struct{}{}
+	}
+}
+
+// ClearTempAPIKeys clears the "temp_api_keys" edge to the TempAPIKey entity.
+func (m *GroupMutation) ClearTempAPIKeys() {
+	m.clearedtemp_api_keys = true
+}
+
+// TempAPIKeysCleared reports if the "temp_api_keys" edge to the TempAPIKey entity was cleared.
+func (m *GroupMutation) TempAPIKeysCleared() bool {
+	return m.clearedtemp_api_keys
+}
+
+// RemoveTempAPIKeyIDs removes the "temp_api_keys" edge to the TempAPIKey entity by IDs.
+func (m *GroupMutation) RemoveTempAPIKeyIDs(ids ...int64) {
+	if m.removedtemp_api_keys == nil {
+		m.removedtemp_api_keys = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.temp_api_keys, ids[i])
+		m.removedtemp_api_keys[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedTempAPIKeys returns the removed IDs of the "temp_api_keys" edge to the TempAPIKey entity.
+func (m *GroupMutation) RemovedTempAPIKeysIDs() (ids []int64) {
+	for id := range m.removedtemp_api_keys {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// TempAPIKeysIDs returns the "temp_api_keys" edge IDs in the mutation.
+func (m *GroupMutation) TempAPIKeysIDs() (ids []int64) {
+	for id := range m.temp_api_keys {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetTempAPIKeys resets all changes to the "temp_api_keys" edge.
+func (m *GroupMutation) ResetTempAPIKeys() {
+	m.temp_api_keys = nil
+	m.clearedtemp_api_keys = false
+	m.removedtemp_api_keys = nil
+}
+
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by ids.
 func (m *GroupMutation) AddRedeemCodeIDs(ids ...int64) {
 	if m.redeem_codes == nil {
@@ -6032,9 +6091,12 @@ func (m *GroupMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *GroupMutation) AddedEdges() []string {
-	edges := make([]string, 0, 6)
+	edges := make([]string, 0, 7)
 	if m.api_keys != nil {
 		edges = append(edges, group.EdgeAPIKeys)
+	}
+	if m.temp_api_keys != nil {
+		edges = append(edges, group.EdgeTempAPIKeys)
 	}
 	if m.redeem_codes != nil {
 		edges = append(edges, group.EdgeRedeemCodes)
@@ -6061,6 +6123,12 @@ func (m *GroupMutation) AddedIDs(name string) []ent.Value {
 	case group.EdgeAPIKeys:
 		ids := make([]ent.Value, 0, len(m.api_keys))
 		for id := range m.api_keys {
+			ids = append(ids, id)
+		}
+		return ids
+	case group.EdgeTempAPIKeys:
+		ids := make([]ent.Value, 0, len(m.temp_api_keys))
+		for id := range m.temp_api_keys {
 			ids = append(ids, id)
 		}
 		return ids
@@ -6100,9 +6168,12 @@ func (m *GroupMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *GroupMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 6)
+	edges := make([]string, 0, 7)
 	if m.removedapi_keys != nil {
 		edges = append(edges, group.EdgeAPIKeys)
+	}
+	if m.removedtemp_api_keys != nil {
+		edges = append(edges, group.EdgeTempAPIKeys)
 	}
 	if m.removedredeem_codes != nil {
 		edges = append(edges, group.EdgeRedeemCodes)
@@ -6129,6 +6200,12 @@ func (m *GroupMutation) RemovedIDs(name string) []ent.Value {
 	case group.EdgeAPIKeys:
 		ids := make([]ent.Value, 0, len(m.removedapi_keys))
 		for id := range m.removedapi_keys {
+			ids = append(ids, id)
+		}
+		return ids
+	case group.EdgeTempAPIKeys:
+		ids := make([]ent.Value, 0, len(m.removedtemp_api_keys))
+		for id := range m.removedtemp_api_keys {
 			ids = append(ids, id)
 		}
 		return ids
@@ -6168,9 +6245,12 @@ func (m *GroupMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *GroupMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 6)
+	edges := make([]string, 0, 7)
 	if m.clearedapi_keys {
 		edges = append(edges, group.EdgeAPIKeys)
+	}
+	if m.clearedtemp_api_keys {
+		edges = append(edges, group.EdgeTempAPIKeys)
 	}
 	if m.clearedredeem_codes {
 		edges = append(edges, group.EdgeRedeemCodes)
@@ -6196,6 +6276,8 @@ func (m *GroupMutation) EdgeCleared(name string) bool {
 	switch name {
 	case group.EdgeAPIKeys:
 		return m.clearedapi_keys
+	case group.EdgeTempAPIKeys:
+		return m.clearedtemp_api_keys
 	case group.EdgeRedeemCodes:
 		return m.clearedredeem_codes
 	case group.EdgeSubscriptions:
@@ -6224,6 +6306,9 @@ func (m *GroupMutation) ResetEdge(name string) error {
 	switch name {
 	case group.EdgeAPIKeys:
 		m.ResetAPIKeys()
+		return nil
+	case group.EdgeTempAPIKeys:
+		m.ResetTempAPIKeys()
 		return nil
 	case group.EdgeRedeemCodes:
 		m.ResetRedeemCodes()
@@ -10370,6 +10455,1415 @@ func (m *SettingMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown Setting edge %s", name)
 }
 
+// TempAPIKeyMutation represents an operation that mutates the TempAPIKey nodes in the graph.
+type TempAPIKeyMutation struct {
+	config
+	op                      Op
+	typ                     string
+	id                      *int64
+	created_at              *time.Time
+	updated_at              *time.Time
+	deleted_at              *time.Time
+	key                     *string
+	name                    *string
+	valid_days              *int
+	addvalid_days           *int
+	activated_at            *time.Time
+	expires_at              *time.Time
+	daily_limit             *int
+	adddaily_limit          *int
+	current_period_start    *time.Time
+	current_period_count    *int
+	addcurrent_period_count *int
+	total_requests          *int64
+	addtotal_requests       *int64
+	status                  *string
+	clearedFields           map[string]struct{}
+	group                   *int64
+	clearedgroup            bool
+	creator                 *int64
+	clearedcreator          bool
+	done                    bool
+	oldValue                func(context.Context) (*TempAPIKey, error)
+	predicates              []predicate.TempAPIKey
+}
+
+var _ ent.Mutation = (*TempAPIKeyMutation)(nil)
+
+// tempapikeyOption allows management of the mutation configuration using functional options.
+type tempapikeyOption func(*TempAPIKeyMutation)
+
+// newTempAPIKeyMutation creates new mutation for the TempAPIKey entity.
+func newTempAPIKeyMutation(c config, op Op, opts ...tempapikeyOption) *TempAPIKeyMutation {
+	m := &TempAPIKeyMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeTempAPIKey,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withTempAPIKeyID sets the ID field of the mutation.
+func withTempAPIKeyID(id int64) tempapikeyOption {
+	return func(m *TempAPIKeyMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *TempAPIKey
+		)
+		m.oldValue = func(ctx context.Context) (*TempAPIKey, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().TempAPIKey.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withTempAPIKey sets the old TempAPIKey of the mutation.
+func withTempAPIKey(node *TempAPIKey) tempapikeyOption {
+	return func(m *TempAPIKeyMutation) {
+		m.oldValue = func(context.Context) (*TempAPIKey, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m TempAPIKeyMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m TempAPIKeyMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *TempAPIKeyMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *TempAPIKeyMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().TempAPIKey.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *TempAPIKeyMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *TempAPIKeyMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *TempAPIKeyMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *TempAPIKeyMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *TempAPIKeyMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *TempAPIKeyMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// SetDeletedAt sets the "deleted_at" field.
+func (m *TempAPIKeyMutation) SetDeletedAt(t time.Time) {
+	m.deleted_at = &t
+}
+
+// DeletedAt returns the value of the "deleted_at" field in the mutation.
+func (m *TempAPIKeyMutation) DeletedAt() (r time.Time, exists bool) {
+	v := m.deleted_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDeletedAt returns the old "deleted_at" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldDeletedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDeletedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDeletedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDeletedAt: %w", err)
+	}
+	return oldValue.DeletedAt, nil
+}
+
+// ClearDeletedAt clears the value of the "deleted_at" field.
+func (m *TempAPIKeyMutation) ClearDeletedAt() {
+	m.deleted_at = nil
+	m.clearedFields[tempapikey.FieldDeletedAt] = struct{}{}
+}
+
+// DeletedAtCleared returns if the "deleted_at" field was cleared in this mutation.
+func (m *TempAPIKeyMutation) DeletedAtCleared() bool {
+	_, ok := m.clearedFields[tempapikey.FieldDeletedAt]
+	return ok
+}
+
+// ResetDeletedAt resets all changes to the "deleted_at" field.
+func (m *TempAPIKeyMutation) ResetDeletedAt() {
+	m.deleted_at = nil
+	delete(m.clearedFields, tempapikey.FieldDeletedAt)
+}
+
+// SetKey sets the "key" field.
+func (m *TempAPIKeyMutation) SetKey(s string) {
+	m.key = &s
+}
+
+// Key returns the value of the "key" field in the mutation.
+func (m *TempAPIKeyMutation) Key() (r string, exists bool) {
+	v := m.key
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldKey returns the old "key" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldKey(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldKey is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldKey requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldKey: %w", err)
+	}
+	return oldValue.Key, nil
+}
+
+// ResetKey resets all changes to the "key" field.
+func (m *TempAPIKeyMutation) ResetKey() {
+	m.key = nil
+}
+
+// SetName sets the "name" field.
+func (m *TempAPIKeyMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *TempAPIKeyMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *TempAPIKeyMutation) ResetName() {
+	m.name = nil
+}
+
+// SetGroupID sets the "group_id" field.
+func (m *TempAPIKeyMutation) SetGroupID(i int64) {
+	m.group = &i
+}
+
+// GroupID returns the value of the "group_id" field in the mutation.
+func (m *TempAPIKeyMutation) GroupID() (r int64, exists bool) {
+	v := m.group
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGroupID returns the old "group_id" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldGroupID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGroupID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGroupID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGroupID: %w", err)
+	}
+	return oldValue.GroupID, nil
+}
+
+// ResetGroupID resets all changes to the "group_id" field.
+func (m *TempAPIKeyMutation) ResetGroupID() {
+	m.group = nil
+}
+
+// SetValidDays sets the "valid_days" field.
+func (m *TempAPIKeyMutation) SetValidDays(i int) {
+	m.valid_days = &i
+	m.addvalid_days = nil
+}
+
+// ValidDays returns the value of the "valid_days" field in the mutation.
+func (m *TempAPIKeyMutation) ValidDays() (r int, exists bool) {
+	v := m.valid_days
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldValidDays returns the old "valid_days" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldValidDays(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldValidDays is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldValidDays requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldValidDays: %w", err)
+	}
+	return oldValue.ValidDays, nil
+}
+
+// AddValidDays adds i to the "valid_days" field.
+func (m *TempAPIKeyMutation) AddValidDays(i int) {
+	if m.addvalid_days != nil {
+		*m.addvalid_days += i
+	} else {
+		m.addvalid_days = &i
+	}
+}
+
+// AddedValidDays returns the value that was added to the "valid_days" field in this mutation.
+func (m *TempAPIKeyMutation) AddedValidDays() (r int, exists bool) {
+	v := m.addvalid_days
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetValidDays resets all changes to the "valid_days" field.
+func (m *TempAPIKeyMutation) ResetValidDays() {
+	m.valid_days = nil
+	m.addvalid_days = nil
+}
+
+// SetActivatedAt sets the "activated_at" field.
+func (m *TempAPIKeyMutation) SetActivatedAt(t time.Time) {
+	m.activated_at = &t
+}
+
+// ActivatedAt returns the value of the "activated_at" field in the mutation.
+func (m *TempAPIKeyMutation) ActivatedAt() (r time.Time, exists bool) {
+	v := m.activated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldActivatedAt returns the old "activated_at" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldActivatedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldActivatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldActivatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldActivatedAt: %w", err)
+	}
+	return oldValue.ActivatedAt, nil
+}
+
+// ClearActivatedAt clears the value of the "activated_at" field.
+func (m *TempAPIKeyMutation) ClearActivatedAt() {
+	m.activated_at = nil
+	m.clearedFields[tempapikey.FieldActivatedAt] = struct{}{}
+}
+
+// ActivatedAtCleared returns if the "activated_at" field was cleared in this mutation.
+func (m *TempAPIKeyMutation) ActivatedAtCleared() bool {
+	_, ok := m.clearedFields[tempapikey.FieldActivatedAt]
+	return ok
+}
+
+// ResetActivatedAt resets all changes to the "activated_at" field.
+func (m *TempAPIKeyMutation) ResetActivatedAt() {
+	m.activated_at = nil
+	delete(m.clearedFields, tempapikey.FieldActivatedAt)
+}
+
+// SetExpiresAt sets the "expires_at" field.
+func (m *TempAPIKeyMutation) SetExpiresAt(t time.Time) {
+	m.expires_at = &t
+}
+
+// ExpiresAt returns the value of the "expires_at" field in the mutation.
+func (m *TempAPIKeyMutation) ExpiresAt() (r time.Time, exists bool) {
+	v := m.expires_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExpiresAt returns the old "expires_at" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldExpiresAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExpiresAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExpiresAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExpiresAt: %w", err)
+	}
+	return oldValue.ExpiresAt, nil
+}
+
+// ClearExpiresAt clears the value of the "expires_at" field.
+func (m *TempAPIKeyMutation) ClearExpiresAt() {
+	m.expires_at = nil
+	m.clearedFields[tempapikey.FieldExpiresAt] = struct{}{}
+}
+
+// ExpiresAtCleared returns if the "expires_at" field was cleared in this mutation.
+func (m *TempAPIKeyMutation) ExpiresAtCleared() bool {
+	_, ok := m.clearedFields[tempapikey.FieldExpiresAt]
+	return ok
+}
+
+// ResetExpiresAt resets all changes to the "expires_at" field.
+func (m *TempAPIKeyMutation) ResetExpiresAt() {
+	m.expires_at = nil
+	delete(m.clearedFields, tempapikey.FieldExpiresAt)
+}
+
+// SetDailyLimit sets the "daily_limit" field.
+func (m *TempAPIKeyMutation) SetDailyLimit(i int) {
+	m.daily_limit = &i
+	m.adddaily_limit = nil
+}
+
+// DailyLimit returns the value of the "daily_limit" field in the mutation.
+func (m *TempAPIKeyMutation) DailyLimit() (r int, exists bool) {
+	v := m.daily_limit
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDailyLimit returns the old "daily_limit" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldDailyLimit(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDailyLimit is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDailyLimit requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDailyLimit: %w", err)
+	}
+	return oldValue.DailyLimit, nil
+}
+
+// AddDailyLimit adds i to the "daily_limit" field.
+func (m *TempAPIKeyMutation) AddDailyLimit(i int) {
+	if m.adddaily_limit != nil {
+		*m.adddaily_limit += i
+	} else {
+		m.adddaily_limit = &i
+	}
+}
+
+// AddedDailyLimit returns the value that was added to the "daily_limit" field in this mutation.
+func (m *TempAPIKeyMutation) AddedDailyLimit() (r int, exists bool) {
+	v := m.adddaily_limit
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetDailyLimit resets all changes to the "daily_limit" field.
+func (m *TempAPIKeyMutation) ResetDailyLimit() {
+	m.daily_limit = nil
+	m.adddaily_limit = nil
+}
+
+// SetCurrentPeriodStart sets the "current_period_start" field.
+func (m *TempAPIKeyMutation) SetCurrentPeriodStart(t time.Time) {
+	m.current_period_start = &t
+}
+
+// CurrentPeriodStart returns the value of the "current_period_start" field in the mutation.
+func (m *TempAPIKeyMutation) CurrentPeriodStart() (r time.Time, exists bool) {
+	v := m.current_period_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCurrentPeriodStart returns the old "current_period_start" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldCurrentPeriodStart(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCurrentPeriodStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCurrentPeriodStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCurrentPeriodStart: %w", err)
+	}
+	return oldValue.CurrentPeriodStart, nil
+}
+
+// ClearCurrentPeriodStart clears the value of the "current_period_start" field.
+func (m *TempAPIKeyMutation) ClearCurrentPeriodStart() {
+	m.current_period_start = nil
+	m.clearedFields[tempapikey.FieldCurrentPeriodStart] = struct{}{}
+}
+
+// CurrentPeriodStartCleared returns if the "current_period_start" field was cleared in this mutation.
+func (m *TempAPIKeyMutation) CurrentPeriodStartCleared() bool {
+	_, ok := m.clearedFields[tempapikey.FieldCurrentPeriodStart]
+	return ok
+}
+
+// ResetCurrentPeriodStart resets all changes to the "current_period_start" field.
+func (m *TempAPIKeyMutation) ResetCurrentPeriodStart() {
+	m.current_period_start = nil
+	delete(m.clearedFields, tempapikey.FieldCurrentPeriodStart)
+}
+
+// SetCurrentPeriodCount sets the "current_period_count" field.
+func (m *TempAPIKeyMutation) SetCurrentPeriodCount(i int) {
+	m.current_period_count = &i
+	m.addcurrent_period_count = nil
+}
+
+// CurrentPeriodCount returns the value of the "current_period_count" field in the mutation.
+func (m *TempAPIKeyMutation) CurrentPeriodCount() (r int, exists bool) {
+	v := m.current_period_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCurrentPeriodCount returns the old "current_period_count" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldCurrentPeriodCount(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCurrentPeriodCount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCurrentPeriodCount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCurrentPeriodCount: %w", err)
+	}
+	return oldValue.CurrentPeriodCount, nil
+}
+
+// AddCurrentPeriodCount adds i to the "current_period_count" field.
+func (m *TempAPIKeyMutation) AddCurrentPeriodCount(i int) {
+	if m.addcurrent_period_count != nil {
+		*m.addcurrent_period_count += i
+	} else {
+		m.addcurrent_period_count = &i
+	}
+}
+
+// AddedCurrentPeriodCount returns the value that was added to the "current_period_count" field in this mutation.
+func (m *TempAPIKeyMutation) AddedCurrentPeriodCount() (r int, exists bool) {
+	v := m.addcurrent_period_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCurrentPeriodCount resets all changes to the "current_period_count" field.
+func (m *TempAPIKeyMutation) ResetCurrentPeriodCount() {
+	m.current_period_count = nil
+	m.addcurrent_period_count = nil
+}
+
+// SetTotalRequests sets the "total_requests" field.
+func (m *TempAPIKeyMutation) SetTotalRequests(i int64) {
+	m.total_requests = &i
+	m.addtotal_requests = nil
+}
+
+// TotalRequests returns the value of the "total_requests" field in the mutation.
+func (m *TempAPIKeyMutation) TotalRequests() (r int64, exists bool) {
+	v := m.total_requests
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTotalRequests returns the old "total_requests" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldTotalRequests(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTotalRequests is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTotalRequests requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTotalRequests: %w", err)
+	}
+	return oldValue.TotalRequests, nil
+}
+
+// AddTotalRequests adds i to the "total_requests" field.
+func (m *TempAPIKeyMutation) AddTotalRequests(i int64) {
+	if m.addtotal_requests != nil {
+		*m.addtotal_requests += i
+	} else {
+		m.addtotal_requests = &i
+	}
+}
+
+// AddedTotalRequests returns the value that was added to the "total_requests" field in this mutation.
+func (m *TempAPIKeyMutation) AddedTotalRequests() (r int64, exists bool) {
+	v := m.addtotal_requests
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetTotalRequests resets all changes to the "total_requests" field.
+func (m *TempAPIKeyMutation) ResetTotalRequests() {
+	m.total_requests = nil
+	m.addtotal_requests = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *TempAPIKeyMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *TempAPIKeyMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *TempAPIKeyMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetCreatedBy sets the "created_by" field.
+func (m *TempAPIKeyMutation) SetCreatedBy(i int64) {
+	m.creator = &i
+}
+
+// CreatedBy returns the value of the "created_by" field in the mutation.
+func (m *TempAPIKeyMutation) CreatedBy() (r int64, exists bool) {
+	v := m.creator
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedBy returns the old "created_by" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldCreatedBy(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedBy is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedBy requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedBy: %w", err)
+	}
+	return oldValue.CreatedBy, nil
+}
+
+// ResetCreatedBy resets all changes to the "created_by" field.
+func (m *TempAPIKeyMutation) ResetCreatedBy() {
+	m.creator = nil
+}
+
+// ClearGroup clears the "group" edge to the Group entity.
+func (m *TempAPIKeyMutation) ClearGroup() {
+	m.clearedgroup = true
+	m.clearedFields[tempapikey.FieldGroupID] = struct{}{}
+}
+
+// GroupCleared reports if the "group" edge to the Group entity was cleared.
+func (m *TempAPIKeyMutation) GroupCleared() bool {
+	return m.clearedgroup
+}
+
+// GroupIDs returns the "group" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// GroupID instead. It exists only for internal usage by the builders.
+func (m *TempAPIKeyMutation) GroupIDs() (ids []int64) {
+	if id := m.group; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetGroup resets all changes to the "group" edge.
+func (m *TempAPIKeyMutation) ResetGroup() {
+	m.group = nil
+	m.clearedgroup = false
+}
+
+// SetCreatorID sets the "creator" edge to the User entity by id.
+func (m *TempAPIKeyMutation) SetCreatorID(id int64) {
+	m.creator = &id
+}
+
+// ClearCreator clears the "creator" edge to the User entity.
+func (m *TempAPIKeyMutation) ClearCreator() {
+	m.clearedcreator = true
+	m.clearedFields[tempapikey.FieldCreatedBy] = struct{}{}
+}
+
+// CreatorCleared reports if the "creator" edge to the User entity was cleared.
+func (m *TempAPIKeyMutation) CreatorCleared() bool {
+	return m.clearedcreator
+}
+
+// CreatorID returns the "creator" edge ID in the mutation.
+func (m *TempAPIKeyMutation) CreatorID() (id int64, exists bool) {
+	if m.creator != nil {
+		return *m.creator, true
+	}
+	return
+}
+
+// CreatorIDs returns the "creator" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// CreatorID instead. It exists only for internal usage by the builders.
+func (m *TempAPIKeyMutation) CreatorIDs() (ids []int64) {
+	if id := m.creator; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetCreator resets all changes to the "creator" edge.
+func (m *TempAPIKeyMutation) ResetCreator() {
+	m.creator = nil
+	m.clearedcreator = false
+}
+
+// Where appends a list predicates to the TempAPIKeyMutation builder.
+func (m *TempAPIKeyMutation) Where(ps ...predicate.TempAPIKey) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the TempAPIKeyMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *TempAPIKeyMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.TempAPIKey, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *TempAPIKeyMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *TempAPIKeyMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (TempAPIKey).
+func (m *TempAPIKeyMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *TempAPIKeyMutation) Fields() []string {
+	fields := make([]string, 0, 15)
+	if m.created_at != nil {
+		fields = append(fields, tempapikey.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, tempapikey.FieldUpdatedAt)
+	}
+	if m.deleted_at != nil {
+		fields = append(fields, tempapikey.FieldDeletedAt)
+	}
+	if m.key != nil {
+		fields = append(fields, tempapikey.FieldKey)
+	}
+	if m.name != nil {
+		fields = append(fields, tempapikey.FieldName)
+	}
+	if m.group != nil {
+		fields = append(fields, tempapikey.FieldGroupID)
+	}
+	if m.valid_days != nil {
+		fields = append(fields, tempapikey.FieldValidDays)
+	}
+	if m.activated_at != nil {
+		fields = append(fields, tempapikey.FieldActivatedAt)
+	}
+	if m.expires_at != nil {
+		fields = append(fields, tempapikey.FieldExpiresAt)
+	}
+	if m.daily_limit != nil {
+		fields = append(fields, tempapikey.FieldDailyLimit)
+	}
+	if m.current_period_start != nil {
+		fields = append(fields, tempapikey.FieldCurrentPeriodStart)
+	}
+	if m.current_period_count != nil {
+		fields = append(fields, tempapikey.FieldCurrentPeriodCount)
+	}
+	if m.total_requests != nil {
+		fields = append(fields, tempapikey.FieldTotalRequests)
+	}
+	if m.status != nil {
+		fields = append(fields, tempapikey.FieldStatus)
+	}
+	if m.creator != nil {
+		fields = append(fields, tempapikey.FieldCreatedBy)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *TempAPIKeyMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case tempapikey.FieldCreatedAt:
+		return m.CreatedAt()
+	case tempapikey.FieldUpdatedAt:
+		return m.UpdatedAt()
+	case tempapikey.FieldDeletedAt:
+		return m.DeletedAt()
+	case tempapikey.FieldKey:
+		return m.Key()
+	case tempapikey.FieldName:
+		return m.Name()
+	case tempapikey.FieldGroupID:
+		return m.GroupID()
+	case tempapikey.FieldValidDays:
+		return m.ValidDays()
+	case tempapikey.FieldActivatedAt:
+		return m.ActivatedAt()
+	case tempapikey.FieldExpiresAt:
+		return m.ExpiresAt()
+	case tempapikey.FieldDailyLimit:
+		return m.DailyLimit()
+	case tempapikey.FieldCurrentPeriodStart:
+		return m.CurrentPeriodStart()
+	case tempapikey.FieldCurrentPeriodCount:
+		return m.CurrentPeriodCount()
+	case tempapikey.FieldTotalRequests:
+		return m.TotalRequests()
+	case tempapikey.FieldStatus:
+		return m.Status()
+	case tempapikey.FieldCreatedBy:
+		return m.CreatedBy()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *TempAPIKeyMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case tempapikey.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case tempapikey.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	case tempapikey.FieldDeletedAt:
+		return m.OldDeletedAt(ctx)
+	case tempapikey.FieldKey:
+		return m.OldKey(ctx)
+	case tempapikey.FieldName:
+		return m.OldName(ctx)
+	case tempapikey.FieldGroupID:
+		return m.OldGroupID(ctx)
+	case tempapikey.FieldValidDays:
+		return m.OldValidDays(ctx)
+	case tempapikey.FieldActivatedAt:
+		return m.OldActivatedAt(ctx)
+	case tempapikey.FieldExpiresAt:
+		return m.OldExpiresAt(ctx)
+	case tempapikey.FieldDailyLimit:
+		return m.OldDailyLimit(ctx)
+	case tempapikey.FieldCurrentPeriodStart:
+		return m.OldCurrentPeriodStart(ctx)
+	case tempapikey.FieldCurrentPeriodCount:
+		return m.OldCurrentPeriodCount(ctx)
+	case tempapikey.FieldTotalRequests:
+		return m.OldTotalRequests(ctx)
+	case tempapikey.FieldStatus:
+		return m.OldStatus(ctx)
+	case tempapikey.FieldCreatedBy:
+		return m.OldCreatedBy(ctx)
+	}
+	return nil, fmt.Errorf("unknown TempAPIKey field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *TempAPIKeyMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case tempapikey.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case tempapikey.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	case tempapikey.FieldDeletedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDeletedAt(v)
+		return nil
+	case tempapikey.FieldKey:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetKey(v)
+		return nil
+	case tempapikey.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case tempapikey.FieldGroupID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGroupID(v)
+		return nil
+	case tempapikey.FieldValidDays:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetValidDays(v)
+		return nil
+	case tempapikey.FieldActivatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetActivatedAt(v)
+		return nil
+	case tempapikey.FieldExpiresAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExpiresAt(v)
+		return nil
+	case tempapikey.FieldDailyLimit:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDailyLimit(v)
+		return nil
+	case tempapikey.FieldCurrentPeriodStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCurrentPeriodStart(v)
+		return nil
+	case tempapikey.FieldCurrentPeriodCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCurrentPeriodCount(v)
+		return nil
+	case tempapikey.FieldTotalRequests:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTotalRequests(v)
+		return nil
+	case tempapikey.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case tempapikey.FieldCreatedBy:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedBy(v)
+		return nil
+	}
+	return fmt.Errorf("unknown TempAPIKey field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *TempAPIKeyMutation) AddedFields() []string {
+	var fields []string
+	if m.addvalid_days != nil {
+		fields = append(fields, tempapikey.FieldValidDays)
+	}
+	if m.adddaily_limit != nil {
+		fields = append(fields, tempapikey.FieldDailyLimit)
+	}
+	if m.addcurrent_period_count != nil {
+		fields = append(fields, tempapikey.FieldCurrentPeriodCount)
+	}
+	if m.addtotal_requests != nil {
+		fields = append(fields, tempapikey.FieldTotalRequests)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *TempAPIKeyMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case tempapikey.FieldValidDays:
+		return m.AddedValidDays()
+	case tempapikey.FieldDailyLimit:
+		return m.AddedDailyLimit()
+	case tempapikey.FieldCurrentPeriodCount:
+		return m.AddedCurrentPeriodCount()
+	case tempapikey.FieldTotalRequests:
+		return m.AddedTotalRequests()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *TempAPIKeyMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case tempapikey.FieldValidDays:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddValidDays(v)
+		return nil
+	case tempapikey.FieldDailyLimit:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddDailyLimit(v)
+		return nil
+	case tempapikey.FieldCurrentPeriodCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCurrentPeriodCount(v)
+		return nil
+	case tempapikey.FieldTotalRequests:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTotalRequests(v)
+		return nil
+	}
+	return fmt.Errorf("unknown TempAPIKey numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *TempAPIKeyMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(tempapikey.FieldDeletedAt) {
+		fields = append(fields, tempapikey.FieldDeletedAt)
+	}
+	if m.FieldCleared(tempapikey.FieldActivatedAt) {
+		fields = append(fields, tempapikey.FieldActivatedAt)
+	}
+	if m.FieldCleared(tempapikey.FieldExpiresAt) {
+		fields = append(fields, tempapikey.FieldExpiresAt)
+	}
+	if m.FieldCleared(tempapikey.FieldCurrentPeriodStart) {
+		fields = append(fields, tempapikey.FieldCurrentPeriodStart)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *TempAPIKeyMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *TempAPIKeyMutation) ClearField(name string) error {
+	switch name {
+	case tempapikey.FieldDeletedAt:
+		m.ClearDeletedAt()
+		return nil
+	case tempapikey.FieldActivatedAt:
+		m.ClearActivatedAt()
+		return nil
+	case tempapikey.FieldExpiresAt:
+		m.ClearExpiresAt()
+		return nil
+	case tempapikey.FieldCurrentPeriodStart:
+		m.ClearCurrentPeriodStart()
+		return nil
+	}
+	return fmt.Errorf("unknown TempAPIKey nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *TempAPIKeyMutation) ResetField(name string) error {
+	switch name {
+	case tempapikey.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case tempapikey.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	case tempapikey.FieldDeletedAt:
+		m.ResetDeletedAt()
+		return nil
+	case tempapikey.FieldKey:
+		m.ResetKey()
+		return nil
+	case tempapikey.FieldName:
+		m.ResetName()
+		return nil
+	case tempapikey.FieldGroupID:
+		m.ResetGroupID()
+		return nil
+	case tempapikey.FieldValidDays:
+		m.ResetValidDays()
+		return nil
+	case tempapikey.FieldActivatedAt:
+		m.ResetActivatedAt()
+		return nil
+	case tempapikey.FieldExpiresAt:
+		m.ResetExpiresAt()
+		return nil
+	case tempapikey.FieldDailyLimit:
+		m.ResetDailyLimit()
+		return nil
+	case tempapikey.FieldCurrentPeriodStart:
+		m.ResetCurrentPeriodStart()
+		return nil
+	case tempapikey.FieldCurrentPeriodCount:
+		m.ResetCurrentPeriodCount()
+		return nil
+	case tempapikey.FieldTotalRequests:
+		m.ResetTotalRequests()
+		return nil
+	case tempapikey.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case tempapikey.FieldCreatedBy:
+		m.ResetCreatedBy()
+		return nil
+	}
+	return fmt.Errorf("unknown TempAPIKey field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *TempAPIKeyMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.group != nil {
+		edges = append(edges, tempapikey.EdgeGroup)
+	}
+	if m.creator != nil {
+		edges = append(edges, tempapikey.EdgeCreator)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *TempAPIKeyMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case tempapikey.EdgeGroup:
+		if id := m.group; id != nil {
+			return []ent.Value{*id}
+		}
+	case tempapikey.EdgeCreator:
+		if id := m.creator; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *TempAPIKeyMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *TempAPIKeyMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *TempAPIKeyMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.clearedgroup {
+		edges = append(edges, tempapikey.EdgeGroup)
+	}
+	if m.clearedcreator {
+		edges = append(edges, tempapikey.EdgeCreator)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *TempAPIKeyMutation) EdgeCleared(name string) bool {
+	switch name {
+	case tempapikey.EdgeGroup:
+		return m.clearedgroup
+	case tempapikey.EdgeCreator:
+		return m.clearedcreator
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *TempAPIKeyMutation) ClearEdge(name string) error {
+	switch name {
+	case tempapikey.EdgeGroup:
+		m.ClearGroup()
+		return nil
+	case tempapikey.EdgeCreator:
+		m.ClearCreator()
+		return nil
+	}
+	return fmt.Errorf("unknown TempAPIKey unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *TempAPIKeyMutation) ResetEdge(name string) error {
+	switch name {
+	case tempapikey.EdgeGroup:
+		m.ResetGroup()
+		return nil
+	case tempapikey.EdgeCreator:
+		m.ResetCreator()
+		return nil
+	}
+	return fmt.Errorf("unknown TempAPIKey edge %s", name)
+}
+
 // UsageLogMutation represents an operation that mutates the UsageLog nodes in the graph.
 type UsageLogMutation struct {
 	config
@@ -13278,6 +14772,9 @@ type UserMutation struct {
 	api_keys                      map[int64]struct{}
 	removedapi_keys               map[int64]struct{}
 	clearedapi_keys               bool
+	created_temp_api_keys         map[int64]struct{}
+	removedcreated_temp_api_keys  map[int64]struct{}
+	clearedcreated_temp_api_keys  bool
 	redeem_codes                  map[int64]struct{}
 	removedredeem_codes           map[int64]struct{}
 	clearedredeem_codes           bool
@@ -13903,6 +15400,60 @@ func (m *UserMutation) ResetAPIKeys() {
 	m.api_keys = nil
 	m.clearedapi_keys = false
 	m.removedapi_keys = nil
+}
+
+// AddCreatedTempAPIKeyIDs adds the "created_temp_api_keys" edge to the TempAPIKey entity by ids.
+func (m *UserMutation) AddCreatedTempAPIKeyIDs(ids ...int64) {
+	if m.created_temp_api_keys == nil {
+		m.created_temp_api_keys = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.created_temp_api_keys[ids[i]] = struct{}{}
+	}
+}
+
+// ClearCreatedTempAPIKeys clears the "created_temp_api_keys" edge to the TempAPIKey entity.
+func (m *UserMutation) ClearCreatedTempAPIKeys() {
+	m.clearedcreated_temp_api_keys = true
+}
+
+// CreatedTempAPIKeysCleared reports if the "created_temp_api_keys" edge to the TempAPIKey entity was cleared.
+func (m *UserMutation) CreatedTempAPIKeysCleared() bool {
+	return m.clearedcreated_temp_api_keys
+}
+
+// RemoveCreatedTempAPIKeyIDs removes the "created_temp_api_keys" edge to the TempAPIKey entity by IDs.
+func (m *UserMutation) RemoveCreatedTempAPIKeyIDs(ids ...int64) {
+	if m.removedcreated_temp_api_keys == nil {
+		m.removedcreated_temp_api_keys = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.created_temp_api_keys, ids[i])
+		m.removedcreated_temp_api_keys[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedCreatedTempAPIKeys returns the removed IDs of the "created_temp_api_keys" edge to the TempAPIKey entity.
+func (m *UserMutation) RemovedCreatedTempAPIKeysIDs() (ids []int64) {
+	for id := range m.removedcreated_temp_api_keys {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// CreatedTempAPIKeysIDs returns the "created_temp_api_keys" edge IDs in the mutation.
+func (m *UserMutation) CreatedTempAPIKeysIDs() (ids []int64) {
+	for id := range m.created_temp_api_keys {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetCreatedTempAPIKeys resets all changes to the "created_temp_api_keys" edge.
+func (m *UserMutation) ResetCreatedTempAPIKeys() {
+	m.created_temp_api_keys = nil
+	m.clearedcreated_temp_api_keys = false
+	m.removedcreated_temp_api_keys = nil
 }
 
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by ids.
@@ -14622,9 +16173,12 @@ func (m *UserMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *UserMutation) AddedEdges() []string {
-	edges := make([]string, 0, 8)
+	edges := make([]string, 0, 9)
 	if m.api_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
+	}
+	if m.created_temp_api_keys != nil {
+		edges = append(edges, user.EdgeCreatedTempAPIKeys)
 	}
 	if m.redeem_codes != nil {
 		edges = append(edges, user.EdgeRedeemCodes)
@@ -14657,6 +16211,12 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 	case user.EdgeAPIKeys:
 		ids := make([]ent.Value, 0, len(m.api_keys))
 		for id := range m.api_keys {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeCreatedTempAPIKeys:
+		ids := make([]ent.Value, 0, len(m.created_temp_api_keys))
+		for id := range m.created_temp_api_keys {
 			ids = append(ids, id)
 		}
 		return ids
@@ -14708,9 +16268,12 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *UserMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 8)
+	edges := make([]string, 0, 9)
 	if m.removedapi_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
+	}
+	if m.removedcreated_temp_api_keys != nil {
+		edges = append(edges, user.EdgeCreatedTempAPIKeys)
 	}
 	if m.removedredeem_codes != nil {
 		edges = append(edges, user.EdgeRedeemCodes)
@@ -14743,6 +16306,12 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 	case user.EdgeAPIKeys:
 		ids := make([]ent.Value, 0, len(m.removedapi_keys))
 		for id := range m.removedapi_keys {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeCreatedTempAPIKeys:
+		ids := make([]ent.Value, 0, len(m.removedcreated_temp_api_keys))
+		for id := range m.removedcreated_temp_api_keys {
 			ids = append(ids, id)
 		}
 		return ids
@@ -14794,9 +16363,12 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *UserMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 8)
+	edges := make([]string, 0, 9)
 	if m.clearedapi_keys {
 		edges = append(edges, user.EdgeAPIKeys)
+	}
+	if m.clearedcreated_temp_api_keys {
+		edges = append(edges, user.EdgeCreatedTempAPIKeys)
 	}
 	if m.clearedredeem_codes {
 		edges = append(edges, user.EdgeRedeemCodes)
@@ -14828,6 +16400,8 @@ func (m *UserMutation) EdgeCleared(name string) bool {
 	switch name {
 	case user.EdgeAPIKeys:
 		return m.clearedapi_keys
+	case user.EdgeCreatedTempAPIKeys:
+		return m.clearedcreated_temp_api_keys
 	case user.EdgeRedeemCodes:
 		return m.clearedredeem_codes
 	case user.EdgeSubscriptions:
@@ -14860,6 +16434,9 @@ func (m *UserMutation) ResetEdge(name string) error {
 	switch name {
 	case user.EdgeAPIKeys:
 		m.ResetAPIKeys()
+		return nil
+	case user.EdgeCreatedTempAPIKeys:
+		m.ResetCreatedTempAPIKeys()
 		return nil
 	case user.EdgeRedeemCodes:
 		m.ResetRedeemCodes()

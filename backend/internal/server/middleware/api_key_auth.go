@@ -9,18 +9,25 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 // NewAPIKeyAuthMiddleware 创建 API Key 认证中间件
-func NewAPIKeyAuthMiddleware(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) APIKeyAuthMiddleware {
-	return APIKeyAuthMiddleware(apiKeyAuthWithSubscription(apiKeyService, subscriptionService, cfg))
+func NewAPIKeyAuthMiddleware(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, tempAPIKeyRepo *repository.TempAPIKeyRepo, cfg *config.Config) APIKeyAuthMiddleware {
+	return APIKeyAuthMiddleware(apiKeyAuthWithSubscription(apiKeyService, subscriptionService, tempAPIKeyRepo, cfg))
 }
 
 // apiKeyAuthWithSubscription API Key认证中间件（支持订阅验证）
-func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) gin.HandlerFunc {
+func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, tempAPIKeyRepo *repository.TempAPIKeyRepo, cfg *config.Config) gin.HandlerFunc {
+	// Create temp API key service
+	var tempAPIKeyService *service.TempAPIKeyService
+	if tempAPIKeyRepo != nil {
+		tempAPIKeyService = service.NewTempAPIKeyService(tempAPIKeyRepo)
+	}
+
 	return func(c *gin.Context) {
 		queryKey := strings.TrimSpace(c.Query("key"))
 		queryApiKey := strings.TrimSpace(c.Query("api_key"))
@@ -54,6 +61,12 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// 如果所有header都没有API key
 		if apiKeyString == "" {
 			AbortWithError(c, 401, "API_KEY_REQUIRED", "API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header")
+			return
+		}
+
+		// 检查是否为临时 API Key (sk-temp- 前缀)
+		if service.IsTempAPIKey(apiKeyString) {
+			handleTempAPIKey(c, apiKeyString, tempAPIKeyService, cfg)
 			return
 		}
 
@@ -199,4 +212,101 @@ func setGroupContext(c *gin.Context, group *service.Group) {
 	}
 	ctx := context.WithValue(c.Request.Context(), ctxkey.Group, group)
 	c.Request = c.Request.WithContext(ctx)
+}
+
+// handleTempAPIKey 处理临时 API Key 认证
+func handleTempAPIKey(c *gin.Context, apiKeyString string, tempAPIKeyService *service.TempAPIKeyService, cfg *config.Config) {
+	if tempAPIKeyService == nil {
+		AbortWithError(c, 401, "INVALID_API_KEY", "Invalid API key")
+		return
+	}
+
+	// 从数据库获取临时 API Key
+	tempKey, err := tempAPIKeyService.GetByKey(c.Request.Context(), apiKeyString)
+	if err != nil {
+		AbortWithError(c, 401, "INVALID_API_KEY", "Invalid API key")
+		return
+	}
+
+	// 验证并增加使用计数
+	updatedKey, err := tempAPIKeyService.ValidateAndIncrement(c.Request.Context(), tempKey)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrTempAPIKeyExpired):
+			AbortWithError(c, 401, "TEMP_API_KEY_EXPIRED", "Temporary API key has expired")
+		case errors.Is(err, service.ErrTempAPIKeyInactive):
+			AbortWithError(c, 401, "TEMP_API_KEY_INACTIVE", "Temporary API key is inactive")
+		case errors.Is(err, service.ErrTempAPIKeyRateLimited):
+			AbortWithError(c, 429, "TEMP_API_KEY_RATE_LIMITED", "Temporary API key daily limit exceeded")
+		default:
+			AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate temporary API key")
+		}
+		return
+	}
+
+	// 检查关联的分组
+	if updatedKey.Group == nil {
+		AbortWithError(c, 401, "GROUP_NOT_FOUND", "Group associated with temporary API key not found")
+		return
+	}
+
+	// 检查分组状态
+	if updatedKey.Group.Status != service.StatusActive {
+		AbortWithError(c, 401, "GROUP_INACTIVE", "Group is not active")
+		return
+	}
+
+	// 检查创建者（用于计费）
+	if updatedKey.Creator == nil {
+		AbortWithError(c, 401, "CREATOR_NOT_FOUND", "Creator of temporary API key not found")
+		return
+	}
+
+	// 检查创建者状态
+	if !updatedKey.Creator.IsActive() {
+		AbortWithError(c, 401, "CREATOR_INACTIVE", "Creator account is not active")
+		return
+	}
+
+	// 非简易模式下，检查创建者余额（余额模式）
+	if cfg.RunMode != config.RunModeSimple {
+		isSubscriptionType := updatedKey.Group.IsSubscriptionType()
+		if !isSubscriptionType && updatedKey.Creator.Balance <= 0 {
+			AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+			return
+		}
+	}
+
+	// 创建一个虚拟的 APIKey 对象，使用创建者（admin）作为计费用户
+	virtualAPIKey := &service.APIKey{
+		ID:      0,
+		UserID:  updatedKey.Creator.ID,
+		Key:     updatedKey.Key,
+		Name:    updatedKey.Name,
+		GroupID: &updatedKey.GroupID,
+		Status:  service.StatusActive,
+		User:    updatedKey.Creator, // 使用创建者作为计费用户
+		Group:   updatedKey.Group,
+	}
+
+	// 设置上下文 - 同时设置虚拟 APIKey 和临时 Key
+	c.Set(string(ContextKeyAPIKey), virtualAPIKey)
+	c.Set(string(ContextKeyTempAPIKey), updatedKey)
+	c.Set(string(ContextKeyUser), AuthSubject{
+		UserID:      updatedKey.Creator.ID,
+		Concurrency: updatedKey.Creator.Concurrency,
+	})
+	setGroupContext(c, updatedKey.Group)
+
+	c.Next()
+}
+
+// GetTempAPIKeyFromContext 从上下文中获取临时 API Key
+func GetTempAPIKeyFromContext(c *gin.Context) (*service.TempAPIKey, bool) {
+	value, exists := c.Get(string(ContextKeyTempAPIKey))
+	if !exists {
+		return nil, false
+	}
+	tempKey, ok := value.(*service.TempAPIKey)
+	return tempKey, ok
 }

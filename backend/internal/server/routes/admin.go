@@ -64,6 +64,9 @@ func RegisterAdminRoutes(
 
 		// 用户属性管理
 		registerUserAttributeRoutes(admin, h)
+
+		// 临时 API Key 管理
+		registerTempAPIKeyRoutes(admin, h)
 	}
 }
 
@@ -371,5 +374,18 @@ func registerUserAttributeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		attrs.PUT("/reorder", h.Admin.UserAttribute.ReorderDefinitions)
 		attrs.PUT("/:id", h.Admin.UserAttribute.UpdateDefinition)
 		attrs.DELETE("/:id", h.Admin.UserAttribute.DeleteDefinition)
+	}
+}
+
+func registerTempAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	tempKeys := admin.Group("/temp-api-keys")
+	{
+		tempKeys.GET("", h.Admin.TempAPIKey.List)
+		tempKeys.GET("/:id", h.Admin.TempAPIKey.GetByID)
+		tempKeys.POST("", h.Admin.TempAPIKey.Create)
+		tempKeys.PUT("/:id", h.Admin.TempAPIKey.Update)
+		tempKeys.DELETE("/:id", h.Admin.TempAPIKey.Delete)
+		tempKeys.POST("/batch-delete", h.Admin.TempAPIKey.BatchDelete)
+		tempKeys.POST("/batch-update", h.Admin.TempAPIKey.BatchUpdate)
 	}
 }

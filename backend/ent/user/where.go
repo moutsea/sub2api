@@ -733,6 +733,29 @@ func HasAPIKeysWith(preds ...predicate.APIKey) predicate.User {
 	})
 }
 
+// HasCreatedTempAPIKeys applies the HasEdge predicate on the "created_temp_api_keys" edge.
+func HasCreatedTempAPIKeys() predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, CreatedTempAPIKeysTable, CreatedTempAPIKeysColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasCreatedTempAPIKeysWith applies the HasEdge predicate on the "created_temp_api_keys" edge with a given conditions (other predicates).
+func HasCreatedTempAPIKeysWith(preds ...predicate.TempAPIKey) predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := newCreatedTempAPIKeysStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // HasRedeemCodes applies the HasEdge predicate on the "redeem_codes" edge.
 func HasRedeemCodes() predicate.User {
 	return predicate.User(func(s *sql.Selector) {

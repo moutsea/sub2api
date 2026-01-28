@@ -1,4 +1,34 @@
 export default {
+  // Key Query (Public)
+  keyQuery: {
+    title: '密钥查询',
+    inputLabel: '请输入密钥',
+    placeholder: '输入您的临时 API 密钥',
+    query: '查询',
+    enterKey: '请输入密钥',
+    notFound: '密钥不存在',
+    queryFailed: '查询失败',
+    result: '查询结果',
+    name: '名称',
+    group: '分组',
+    statusLabel: '状态',
+    validDays: '有效期',
+    days: '天',
+    activatedAt: '激活时间',
+    expiresAt: '过期时间',
+    usageInfo: '使用情况',
+    dailyLimit: '每日限额',
+    todayUsed: '今日已用',
+    remaining: '剩余次数',
+    totalRequests: '总请求数',
+    status: {
+      disabled: '已禁用',
+      expired: '已过期',
+      active: '使用中',
+      pending: '待激活'
+    }
+  },
+
   // Home Page
   home: {
     viewOnGithub: '在 GitHub 上查看',
@@ -10,6 +40,7 @@ export default {
     login: '登录',
     getStarted: '开始使用',
     goToDashboard: '进入控制台',
+    keyQuery: '密钥查询',
     tags: {
       subscriptionToApi: '订阅转 API',
       stickySession: '粘性会话',
@@ -185,6 +216,7 @@ export default {
     redeemCodes: '兑换码',
     ops: '运维监控',
     promoCodes: '优惠码',
+    tempApiKeys: '临时密钥',
     settings: '系统设置',
     myAccount: '我的账户',
     lightMode: '浅色模式',
@@ -2104,6 +2136,49 @@ export default {
       failedToUpdate: '更新优惠码失败',
       failedToDelete: '删除优惠码失败',
       failedToLoadUsages: '加载使用记录失败'
+    },
+
+    // Temp API Keys
+    tempApiKeys: {
+      title: '临时密钥管理',
+      description: '创建和管理临时 API 密钥',
+      create: '批量创建',
+      createTitle: '批量创建临时密钥',
+      editTitle: '编辑临时密钥',
+      name: '名称',
+      namePrefix: '名称前缀',
+      namePrefixPlaceholder: '例如: test-key',
+      count: '创建数量',
+      group: '分组',
+      selectGroup: '选择分组',
+      status: '状态',
+      active: '有效',
+      inactive: '已禁用',
+      expired: '已过期',
+      validity: '有效期',
+      validDays: '有效天数',
+      dailyLimit: '每日限额',
+      todayUsage: '今日/限额',
+      totalRequests: '总请求',
+      expiresAt: '过期时间',
+      notActivated: '未激活',
+      days: '天',
+      noChange: '不修改',
+      batchUpdate: '批量修改',
+      batchUpdateTitle: '批量修改 ({count} 项)',
+      batchUpdateHint: '留空的字段将不会被修改',
+      fillRequired: '请填写所有必填字段',
+      createSuccess: '成功创建 {count} 个临时密钥',
+      createFailed: '创建失败',
+      updateSuccess: '更新成功',
+      updateFailed: '更新失败',
+      deleteSuccess: '删除成功',
+      deleteFailed: '删除失败',
+      batchDeleteSuccess: '成功删除 {count} 个密钥',
+      batchUpdateSuccess: '成功更新 {count} 个密钥',
+      confirmDelete: '确定要删除此临时密钥吗？',
+      confirmBatchDelete: '确定要删除选中的 {count} 个临时密钥吗？',
+      loadFailed: '加载临时密钥失败'
     },
 
     // Usage Records

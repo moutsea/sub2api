@@ -59,6 +59,8 @@ const (
 	FieldModelRoutingEnabled = "model_routing_enabled"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
+	// EdgeTempAPIKeys holds the string denoting the temp_api_keys edge name in mutations.
+	EdgeTempAPIKeys = "temp_api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
 	EdgeRedeemCodes = "redeem_codes"
 	// EdgeSubscriptions holds the string denoting the subscriptions edge name in mutations.
@@ -82,6 +84,13 @@ const (
 	APIKeysInverseTable = "api_keys"
 	// APIKeysColumn is the table column denoting the api_keys relation/edge.
 	APIKeysColumn = "group_id"
+	// TempAPIKeysTable is the table that holds the temp_api_keys relation/edge.
+	TempAPIKeysTable = "temp_api_keys"
+	// TempAPIKeysInverseTable is the table name for the TempAPIKey entity.
+	// It exists in this package in order to avoid circular dependency with the "tempapikey" package.
+	TempAPIKeysInverseTable = "temp_api_keys"
+	// TempAPIKeysColumn is the table column denoting the temp_api_keys relation/edge.
+	TempAPIKeysColumn = "group_id"
 	// RedeemCodesTable is the table that holds the redeem_codes relation/edge.
 	RedeemCodesTable = "redeem_codes"
 	// RedeemCodesInverseTable is the table name for the RedeemCode entity.
@@ -336,6 +345,20 @@ func ByAPIKeys(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByTempAPIKeysCount orders the results by temp_api_keys count.
+func ByTempAPIKeysCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newTempAPIKeysStep(), opts...)
+	}
+}
+
+// ByTempAPIKeys orders the results by temp_api_keys terms.
+func ByTempAPIKeys(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newTempAPIKeysStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByRedeemCodesCount orders the results by redeem_codes count.
 func ByRedeemCodesCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -438,6 +461,13 @@ func newAPIKeysStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(APIKeysInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, APIKeysTable, APIKeysColumn),
+	)
+}
+func newTempAPIKeysStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(TempAPIKeysInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, TempAPIKeysTable, TempAPIKeysColumn),
 	)
 }
 func newRedeemCodesStep() *sqlgraph.Step {

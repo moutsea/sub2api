@@ -79,6 +79,15 @@ const routes: RouteRecordRaw[] = [
       title: 'LinuxDo OAuth Callback'
     }
   },
+  {
+    path: '/key-query',
+    name: 'KeyQuery',
+    component: () => import('@/views/public/KeyQueryView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'Key Query'
+    }
+  },
 
   // ==================== User Routes ====================
   {
@@ -293,6 +302,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Usage Records',
       titleKey: 'admin.usage.title',
       descriptionKey: 'admin.usage.description'
+    }
+  },
+  {
+    path: '/admin/temp-api-keys',
+    name: 'AdminTempApiKeys',
+    component: () => import('@/views/admin/TempApiKeysView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Temp API Keys',
+      titleKey: 'admin.tempApiKeys.title',
+      descriptionKey: 'admin.tempApiKeys.description'
     }
   },
 

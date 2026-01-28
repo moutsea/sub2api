@@ -26,6 +26,7 @@ func ProvideAdminHandlers(
 	subscriptionHandler *admin.SubscriptionHandler,
 	usageHandler *admin.UsageHandler,
 	userAttributeHandler *admin.UserAttributeHandler,
+	tempAPIKeyHandler *admin.TempAPIKeyHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:        dashboardHandler,
@@ -45,6 +46,7 @@ func ProvideAdminHandlers(
 		Subscription:     subscriptionHandler,
 		Usage:            usageHandler,
 		UserAttribute:    userAttributeHandler,
+		TempAPIKey:       tempAPIKeyHandler,
 	}
 }
 
@@ -70,18 +72,20 @@ func ProvideHandlers(
 	gatewayHandler *GatewayHandler,
 	openaiGatewayHandler *OpenAIGatewayHandler,
 	settingHandler *SettingHandler,
+	tempAPIKeyQueryHandler *TempAPIKeyQueryHandler,
 ) *Handlers {
 	return &Handlers{
-		Auth:          authHandler,
-		User:          userHandler,
-		APIKey:        apiKeyHandler,
-		Usage:         usageHandler,
-		Redeem:        redeemHandler,
-		Subscription:  subscriptionHandler,
-		Admin:         adminHandlers,
-		Gateway:       gatewayHandler,
-		OpenAIGateway: openaiGatewayHandler,
-		Setting:       settingHandler,
+		Auth:            authHandler,
+		User:            userHandler,
+		APIKey:          apiKeyHandler,
+		Usage:           usageHandler,
+		Redeem:          redeemHandler,
+		Subscription:    subscriptionHandler,
+		Admin:           adminHandlers,
+		Gateway:         gatewayHandler,
+		OpenAIGateway:   openaiGatewayHandler,
+		Setting:         settingHandler,
+		TempAPIKeyQuery: tempAPIKeyQueryHandler,
 	}
 }
 
@@ -97,6 +101,7 @@ var ProviderSet = wire.NewSet(
 	NewGatewayHandler,
 	NewOpenAIGatewayHandler,
 	ProvideSettingHandler,
+	NewTempAPIKeyQueryHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,
@@ -116,6 +121,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewSubscriptionHandler,
 	admin.NewUsageHandler,
 	admin.NewUserAttributeHandler,
+	admin.NewTempAPIKeyHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

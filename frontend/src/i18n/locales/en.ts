@@ -1,4 +1,34 @@
 export default {
+  // Key Query (Public)
+  keyQuery: {
+    title: 'Key Query',
+    inputLabel: 'Enter your key',
+    placeholder: 'Enter your temporary API key',
+    query: 'Query',
+    enterKey: 'Please enter your key',
+    notFound: 'Key not found',
+    queryFailed: 'Query failed',
+    result: 'Result',
+    name: 'Name',
+    group: 'Group',
+    statusLabel: 'Status',
+    validDays: 'Valid Period',
+    days: 'days',
+    activatedAt: 'Activated At',
+    expiresAt: 'Expires At',
+    usageInfo: 'Usage Info',
+    dailyLimit: 'Daily Limit',
+    todayUsed: 'Today Used',
+    remaining: 'Remaining',
+    totalRequests: 'Total Requests',
+    status: {
+      disabled: 'Disabled',
+      expired: 'Expired',
+      active: 'Active',
+      pending: 'Pending'
+    }
+  },
+
   // Home Page
   home: {
     viewOnGithub: 'View on GitHub',
@@ -10,6 +40,7 @@ export default {
     login: 'Login',
     getStarted: 'Get Started',
     goToDashboard: 'Go to Dashboard',
+    keyQuery: 'Key Query',
     tags: {
       subscriptionToApi: 'Subscription to API',
       stickySession: 'Sticky Session',
@@ -188,6 +219,7 @@ export default {
     redeemCodes: 'Redeem Codes',
     ops: 'Ops',
     promoCodes: 'Promo Codes',
+    tempApiKeys: 'Temp Keys',
     settings: 'Settings',
     myAccount: 'My Account',
     lightMode: 'Light Mode',
@@ -1957,6 +1989,49 @@ export default {
       failedToUpdate: 'Failed to update promo code',
       failedToDelete: 'Failed to delete promo code',
       failedToLoadUsages: 'Failed to load usage records'
+    },
+
+    // Temp API Keys
+    tempApiKeys: {
+      title: 'Temp API Keys',
+      description: 'Create and manage temporary API keys',
+      create: 'Batch Create',
+      createTitle: 'Batch Create Temp Keys',
+      editTitle: 'Edit Temp Key',
+      name: 'Name',
+      namePrefix: 'Name Prefix',
+      namePrefixPlaceholder: 'e.g., test-key',
+      count: 'Count',
+      group: 'Group',
+      selectGroup: 'Select Group',
+      status: 'Status',
+      active: 'Active',
+      inactive: 'Inactive',
+      expired: 'Expired',
+      validity: 'Validity',
+      validDays: 'Valid Days',
+      dailyLimit: 'Daily Limit',
+      todayUsage: 'Today/Limit',
+      totalRequests: 'Total Requests',
+      expiresAt: 'Expires At',
+      notActivated: 'Not Activated',
+      days: ' days',
+      noChange: 'No Change',
+      batchUpdate: 'Batch Update',
+      batchUpdateTitle: 'Batch Update ({count} items)',
+      batchUpdateHint: 'Empty fields will not be modified',
+      fillRequired: 'Please fill in all required fields',
+      createSuccess: 'Successfully created {count} temp keys',
+      createFailed: 'Failed to create',
+      updateSuccess: 'Updated successfully',
+      updateFailed: 'Failed to update',
+      deleteSuccess: 'Deleted successfully',
+      deleteFailed: 'Failed to delete',
+      batchDeleteSuccess: 'Successfully deleted {count} keys',
+      batchUpdateSuccess: 'Successfully updated {count} keys',
+      confirmDelete: 'Are you sure you want to delete this temp key?',
+      confirmBatchDelete: 'Are you sure you want to delete {count} selected temp keys?',
+      loadFailed: 'Failed to load temp API keys'
     },
 
     // Usage Records

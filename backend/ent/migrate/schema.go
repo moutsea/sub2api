@@ -434,6 +434,72 @@ var (
 		Columns:    SettingsColumns,
 		PrimaryKey: []*schema.Column{SettingsColumns[0]},
 	}
+	// TempAPIKeysColumns holds the columns for the "temp_api_keys" table.
+	TempAPIKeysColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "key", Type: field.TypeString, Unique: true, Size: 128},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "valid_days", Type: field.TypeInt, Default: 7},
+		{Name: "activated_at", Type: field.TypeTime, Nullable: true},
+		{Name: "expires_at", Type: field.TypeTime, Nullable: true},
+		{Name: "daily_limit", Type: field.TypeInt, Default: 1000},
+		{Name: "current_period_start", Type: field.TypeTime, Nullable: true},
+		{Name: "current_period_count", Type: field.TypeInt, Default: 0},
+		{Name: "total_requests", Type: field.TypeInt64, Default: 0},
+		{Name: "status", Type: field.TypeString, Default: "active"},
+		{Name: "group_id", Type: field.TypeInt64},
+		{Name: "created_by", Type: field.TypeInt64},
+	}
+	// TempAPIKeysTable holds the schema information for the "temp_api_keys" table.
+	TempAPIKeysTable = &schema.Table{
+		Name:       "temp_api_keys",
+		Columns:    TempAPIKeysColumns,
+		PrimaryKey: []*schema.Column{TempAPIKeysColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "temp_api_keys_groups_temp_api_keys",
+				Columns:    []*schema.Column{TempAPIKeysColumns[14]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "temp_api_keys_users_created_temp_api_keys",
+				Columns:    []*schema.Column{TempAPIKeysColumns[15]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "tempapikey_key",
+				Unique:  true,
+				Columns: []*schema.Column{TempAPIKeysColumns[4]},
+			},
+			{
+				Name:    "tempapikey_group_id",
+				Unique:  false,
+				Columns: []*schema.Column{TempAPIKeysColumns[14]},
+			},
+			{
+				Name:    "tempapikey_status",
+				Unique:  false,
+				Columns: []*schema.Column{TempAPIKeysColumns[13]},
+			},
+			{
+				Name:    "tempapikey_created_by",
+				Unique:  false,
+				Columns: []*schema.Column{TempAPIKeysColumns[15]},
+			},
+			{
+				Name:    "tempapikey_expires_at",
+				Unique:  false,
+				Columns: []*schema.Column{TempAPIKeysColumns[8]},
+			},
+		},
+	}
 	// UsageLogsColumns holds the columns for the "usage_logs" table.
 	UsageLogsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -805,6 +871,7 @@ var (
 		ProxiesTable,
 		RedeemCodesTable,
 		SettingsTable,
+		TempAPIKeysTable,
 		UsageLogsTable,
 		UsersTable,
 		UserAllowedGroupsTable,
@@ -850,6 +917,11 @@ func init() {
 	}
 	SettingsTable.Annotation = &entsql.Annotation{
 		Table: "settings",
+	}
+	TempAPIKeysTable.ForeignKeys[0].RefTable = GroupsTable
+	TempAPIKeysTable.ForeignKeys[1].RefTable = UsersTable
+	TempAPIKeysTable.Annotation = &entsql.Annotation{
+		Table: "temp_api_keys",
 	}
 	UsageLogsTable.ForeignKeys[0].RefTable = APIKeysTable
 	UsageLogsTable.ForeignKeys[1].RefTable = AccountsTable

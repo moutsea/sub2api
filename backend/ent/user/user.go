@@ -39,6 +39,8 @@ const (
 	FieldNotes = "notes"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
+	// EdgeCreatedTempAPIKeys holds the string denoting the created_temp_api_keys edge name in mutations.
+	EdgeCreatedTempAPIKeys = "created_temp_api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
 	EdgeRedeemCodes = "redeem_codes"
 	// EdgeSubscriptions holds the string denoting the subscriptions edge name in mutations.
@@ -64,6 +66,13 @@ const (
 	APIKeysInverseTable = "api_keys"
 	// APIKeysColumn is the table column denoting the api_keys relation/edge.
 	APIKeysColumn = "user_id"
+	// CreatedTempAPIKeysTable is the table that holds the created_temp_api_keys relation/edge.
+	CreatedTempAPIKeysTable = "temp_api_keys"
+	// CreatedTempAPIKeysInverseTable is the table name for the TempAPIKey entity.
+	// It exists in this package in order to avoid circular dependency with the "tempapikey" package.
+	CreatedTempAPIKeysInverseTable = "temp_api_keys"
+	// CreatedTempAPIKeysColumn is the table column denoting the created_temp_api_keys relation/edge.
+	CreatedTempAPIKeysColumn = "created_by"
 	// RedeemCodesTable is the table that holds the redeem_codes relation/edge.
 	RedeemCodesTable = "redeem_codes"
 	// RedeemCodesInverseTable is the table name for the RedeemCode entity.
@@ -267,6 +276,20 @@ func ByAPIKeys(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByCreatedTempAPIKeysCount orders the results by created_temp_api_keys count.
+func ByCreatedTempAPIKeysCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newCreatedTempAPIKeysStep(), opts...)
+	}
+}
+
+// ByCreatedTempAPIKeys orders the results by created_temp_api_keys terms.
+func ByCreatedTempAPIKeys(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newCreatedTempAPIKeysStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByRedeemCodesCount orders the results by redeem_codes count.
 func ByRedeemCodesCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -383,6 +406,13 @@ func newAPIKeysStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(APIKeysInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, APIKeysTable, APIKeysColumn),
+	)
+}
+func newCreatedTempAPIKeysStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(CreatedTempAPIKeysInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, CreatedTempAPIKeysTable, CreatedTempAPIKeysColumn),
 	)
 }
 func newRedeemCodesStep() *sqlgraph.Step {

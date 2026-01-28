@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
+	"github.com/Wei-Shaw/sub2api/ent/tempapikey"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
@@ -33,6 +34,7 @@ type UserQuery struct {
 	inters                    []Interceptor
 	predicates                []predicate.User
 	withAPIKeys               *APIKeyQuery
+	withCreatedTempAPIKeys    *TempAPIKeyQuery
 	withRedeemCodes           *RedeemCodeQuery
 	withSubscriptions         *UserSubscriptionQuery
 	withAssignedSubscriptions *UserSubscriptionQuery
@@ -93,6 +95,28 @@ func (_q *UserQuery) QueryAPIKeys() *APIKeyQuery {
 			sqlgraph.From(user.Table, user.FieldID, selector),
 			sqlgraph.To(apikey.Table, apikey.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, user.APIKeysTable, user.APIKeysColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryCreatedTempAPIKeys chains the current query on the "created_temp_api_keys" edge.
+func (_q *UserQuery) QueryCreatedTempAPIKeys() *TempAPIKeyQuery {
+	query := (&TempAPIKeyClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(tempapikey.Table, tempapikey.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.CreatedTempAPIKeysTable, user.CreatedTempAPIKeysColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -469,6 +493,7 @@ func (_q *UserQuery) Clone() *UserQuery {
 		inters:                    append([]Interceptor{}, _q.inters...),
 		predicates:                append([]predicate.User{}, _q.predicates...),
 		withAPIKeys:               _q.withAPIKeys.Clone(),
+		withCreatedTempAPIKeys:    _q.withCreatedTempAPIKeys.Clone(),
 		withRedeemCodes:           _q.withRedeemCodes.Clone(),
 		withSubscriptions:         _q.withSubscriptions.Clone(),
 		withAssignedSubscriptions: _q.withAssignedSubscriptions.Clone(),
@@ -491,6 +516,17 @@ func (_q *UserQuery) WithAPIKeys(opts ...func(*APIKeyQuery)) *UserQuery {
 		opt(query)
 	}
 	_q.withAPIKeys = query
+	return _q
+}
+
+// WithCreatedTempAPIKeys tells the query-builder to eager-load the nodes that are connected to
+// the "created_temp_api_keys" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithCreatedTempAPIKeys(opts ...func(*TempAPIKeyQuery)) *UserQuery {
+	query := (&TempAPIKeyClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withCreatedTempAPIKeys = query
 	return _q
 }
 
@@ -660,8 +696,9 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 	var (
 		nodes       = []*User{}
 		_spec       = _q.querySpec()
-		loadedTypes = [9]bool{
+		loadedTypes = [10]bool{
 			_q.withAPIKeys != nil,
+			_q.withCreatedTempAPIKeys != nil,
 			_q.withRedeemCodes != nil,
 			_q.withSubscriptions != nil,
 			_q.withAssignedSubscriptions != nil,
@@ -697,6 +734,13 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 		if err := _q.loadAPIKeys(ctx, query, nodes,
 			func(n *User) { n.Edges.APIKeys = []*APIKey{} },
 			func(n *User, e *APIKey) { n.Edges.APIKeys = append(n.Edges.APIKeys, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withCreatedTempAPIKeys; query != nil {
+		if err := _q.loadCreatedTempAPIKeys(ctx, query, nodes,
+			func(n *User) { n.Edges.CreatedTempAPIKeys = []*TempAPIKey{} },
+			func(n *User, e *TempAPIKey) { n.Edges.CreatedTempAPIKeys = append(n.Edges.CreatedTempAPIKeys, e) }); err != nil {
 			return nil, err
 		}
 	}
@@ -786,6 +830,36 @@ func (_q *UserQuery) loadAPIKeys(ctx context.Context, query *APIKeyQuery, nodes 
 		node, ok := nodeids[fk]
 		if !ok {
 			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadCreatedTempAPIKeys(ctx context.Context, query *TempAPIKeyQuery, nodes []*User, init func(*User), assign func(*User, *TempAPIKey)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(tempapikey.FieldCreatedBy)
+	}
+	query.Where(predicate.TempAPIKey(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.CreatedTempAPIKeysColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.CreatedBy
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "created_by" returned %v for node %v`, fk, n.ID)
 		}
 		assign(node, n)
 	}

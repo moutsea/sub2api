@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/schema"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
+	"github.com/Wei-Shaw/sub2api/ent/tempapikey"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
@@ -495,6 +496,53 @@ func init() {
 	setting.DefaultUpdatedAt = settingDescUpdatedAt.Default.(func() time.Time)
 	// setting.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
 	setting.UpdateDefaultUpdatedAt = settingDescUpdatedAt.UpdateDefault.(func() time.Time)
+	tempapikeyMixin := schema.TempAPIKey{}.Mixin()
+	tempapikeyMixinHooks1 := tempapikeyMixin[1].Hooks()
+	tempapikey.Hooks[0] = tempapikeyMixinHooks1[0]
+	tempapikeyMixinInters1 := tempapikeyMixin[1].Interceptors()
+	tempapikey.Interceptors[0] = tempapikeyMixinInters1[0]
+	tempapikeyMixinFields0 := tempapikeyMixin[0].Fields()
+	_ = tempapikeyMixinFields0
+	tempapikeyFields := schema.TempAPIKey{}.Fields()
+	_ = tempapikeyFields
+	// tempapikeyDescCreatedAt is the schema descriptor for created_at field.
+	tempapikeyDescCreatedAt := tempapikeyMixinFields0[0].Descriptor()
+	// tempapikey.DefaultCreatedAt holds the default value on creation for the created_at field.
+	tempapikey.DefaultCreatedAt = tempapikeyDescCreatedAt.Default.(func() time.Time)
+	// tempapikeyDescUpdatedAt is the schema descriptor for updated_at field.
+	tempapikeyDescUpdatedAt := tempapikeyMixinFields0[1].Descriptor()
+	// tempapikey.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	tempapikey.DefaultUpdatedAt = tempapikeyDescUpdatedAt.Default.(func() time.Time)
+	// tempapikey.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	tempapikey.UpdateDefaultUpdatedAt = tempapikeyDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// tempapikeyDescKey is the schema descriptor for key field.
+	tempapikeyDescKey := tempapikeyFields[0].Descriptor()
+	// tempapikey.KeyValidator is a validator for the "key" field. It is called by the builders before save.
+	tempapikey.KeyValidator = tempapikeyDescKey.Validators[0].(func(string) error)
+	// tempapikeyDescName is the schema descriptor for name field.
+	tempapikeyDescName := tempapikeyFields[1].Descriptor()
+	// tempapikey.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	tempapikey.NameValidator = tempapikeyDescName.Validators[0].(func(string) error)
+	// tempapikeyDescValidDays is the schema descriptor for valid_days field.
+	tempapikeyDescValidDays := tempapikeyFields[3].Descriptor()
+	// tempapikey.DefaultValidDays holds the default value on creation for the valid_days field.
+	tempapikey.DefaultValidDays = tempapikeyDescValidDays.Default.(int)
+	// tempapikeyDescDailyLimit is the schema descriptor for daily_limit field.
+	tempapikeyDescDailyLimit := tempapikeyFields[6].Descriptor()
+	// tempapikey.DefaultDailyLimit holds the default value on creation for the daily_limit field.
+	tempapikey.DefaultDailyLimit = tempapikeyDescDailyLimit.Default.(int)
+	// tempapikeyDescCurrentPeriodCount is the schema descriptor for current_period_count field.
+	tempapikeyDescCurrentPeriodCount := tempapikeyFields[8].Descriptor()
+	// tempapikey.DefaultCurrentPeriodCount holds the default value on creation for the current_period_count field.
+	tempapikey.DefaultCurrentPeriodCount = tempapikeyDescCurrentPeriodCount.Default.(int)
+	// tempapikeyDescTotalRequests is the schema descriptor for total_requests field.
+	tempapikeyDescTotalRequests := tempapikeyFields[9].Descriptor()
+	// tempapikey.DefaultTotalRequests holds the default value on creation for the total_requests field.
+	tempapikey.DefaultTotalRequests = tempapikeyDescTotalRequests.Default.(int64)
+	// tempapikeyDescStatus is the schema descriptor for status field.
+	tempapikeyDescStatus := tempapikeyFields[10].Descriptor()
+	// tempapikey.DefaultStatus holds the default value on creation for the status field.
+	tempapikey.DefaultStatus = tempapikeyDescStatus.Default.(string)
 	usagelogFields := schema.UsageLog{}.Fields()
 	_ = usagelogFields
 	// usagelogDescRequestID is the schema descriptor for request_id field.
