@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -639,6 +640,9 @@ func (p *KiroTokenProvider) updateAccountCredentials(accountID int64, tokenInfo 
 	if tokenInfo.ProfileArn != "" {
 		account.Credentials["profile_arn"] = tokenInfo.ProfileArn
 	}
+
+	// Set token version to prevent cache race condition
+	account.Credentials[TokenVersionKey] = strconv.FormatInt(time.Now().UnixMilli(), 10)
 
 	// Update status to active and clear error message on successful refresh
 	account.Status = StatusActive

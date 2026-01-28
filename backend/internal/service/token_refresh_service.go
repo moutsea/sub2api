@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,12 +168,16 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
 		newCredentials, err := refresher.Refresh(ctx, account)
 		if err == nil {
-			// 刷新成功，更新账号credentials
+			// 刷新成功，设置 token 版本号（毫秒级时间戳）用于防止缓存竞态
+			newCredentials[TokenVersionKey] = strconv.FormatInt(time.Now().UnixMilli(), 10)
+
+			// 更新账号 credentials
 			account.Credentials = newCredentials
 			if err := s.accountRepo.Update(ctx, account); err != nil {
 				return fmt.Errorf("failed to save credentials: %w", err)
 			}
 			// 对所有 OAuth 账号调用缓存失效（InvalidateToken 内部根据平台判断是否需要处理）
+			// 注意：先保存到数据库，再清除缓存，确保新版本号已持久化
 			if s.cacheInvalidator != nil && account.Type == AccountTypeOAuth {
 				if err := s.cacheInvalidator.InvalidateToken(ctx, account); err != nil {
 					log.Printf("[TokenRefresh] Failed to invalidate token cache for account %d: %v", account.ID, err)

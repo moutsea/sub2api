@@ -23,6 +23,15 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 		v1Resp.Response = directResp
 		v1Resp.ResponseID = directResp.ResponseID
 		v1Resp.ModelVersion = directResp.ModelVersion
+	} else if len(v1Resp.Response.Candidates) == 0 {
+		// 第一次解析成功但 candidates 为空，说明是直接的 GeminiResponse 格式
+		var directResp GeminiResponse
+		if err2 := json.Unmarshal(geminiResp, &directResp); err2 != nil {
+			return nil, nil, fmt.Errorf("parse gemini response as direct: %w", err2)
+		}
+		v1Resp.Response = directResp
+		v1Resp.ResponseID = directResp.ResponseID
+		v1Resp.ModelVersion = directResp.ModelVersion
 	}
 
 	// 使用处理器转换

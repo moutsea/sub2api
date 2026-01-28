@@ -181,26 +181,42 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		return "", errors.New("access_token not found in credentials")
 	}
 
-	// 3. 存入缓存
+	// 3. 存入缓存（检查 token 版本避免缓存竞态）
 	if p.tokenCache != nil {
-		ttl := 30 * time.Minute
-		if refreshFailed {
-			// 刷新失败时使用短 TTL，避免失效 token 长时间缓存导致 401 抖动
-			ttl = time.Minute
-			slog.Debug("claude_token_cache_short_ttl", "account_id", account.ID, "reason", "refresh_failed")
-		} else if expiresAt != nil {
-			until := time.Until(*expiresAt)
-			switch {
-			case until > claudeTokenCacheSkew:
-				ttl = until - claudeTokenCacheSkew
-			case until > 0:
-				ttl = until
-			default:
-				ttl = time.Minute
+		// 检查当前内存中的 token 版本是否过时
+		// 如果异步刷新服务已更新了数据库中的 token，则不应将旧 token 写入缓存
+		var skipCache bool
+		if p.accountRepo != nil {
+			if dbAccount, err := p.accountRepo.GetByID(ctx, account.ID); err == nil && dbAccount != nil {
+				dbVersion := dbAccount.GetTokenVersion()
+				if account.IsTokenVersionStale(dbVersion) {
+					slog.Debug("claude_token_cache_skip_stale", "account_id", account.ID,
+						"mem_version", account.GetTokenVersion(), "db_version", dbVersion)
+					skipCache = true
+				}
 			}
 		}
-		if err := p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl); err != nil {
-			slog.Warn("claude_token_cache_set_failed", "account_id", account.ID, "error", err)
+
+		if !skipCache {
+			ttl := 30 * time.Minute
+			if refreshFailed {
+				// 刷新失败时使用短 TTL，避免失效 token 长时间缓存导致 401 抖动
+				ttl = time.Minute
+				slog.Debug("claude_token_cache_short_ttl", "account_id", account.ID, "reason", "refresh_failed")
+			} else if expiresAt != nil {
+				until := time.Until(*expiresAt)
+				switch {
+				case until > claudeTokenCacheSkew:
+					ttl = until - claudeTokenCacheSkew
+				case until > 0:
+					ttl = until
+				default:
+					ttl = time.Minute
+				}
+			}
+			if err := p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl); err != nil {
+				slog.Warn("claude_token_cache_set_failed", "account_id", account.ID, "error", err)
+			}
 		}
 	}
 

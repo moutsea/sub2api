@@ -101,21 +101,37 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 		return "", errors.New("access_token not found in credentials")
 	}
 
-	// 3. 存入缓存
+	// 3. 存入缓存（检查 token 版本避免缓存竞态）
 	if p.tokenCache != nil {
-		ttl := 30 * time.Minute
-		if expiresAt != nil {
-			until := time.Until(*expiresAt)
-			switch {
-			case until > antigravityTokenCacheSkew:
-				ttl = until - antigravityTokenCacheSkew
-			case until > 0:
-				ttl = until
-			default:
-				ttl = time.Minute
+		// 检查当前内存中的 token 版本是否过时
+		// 如果异步刷新服务已更新了数据库中的 token，则不应将旧 token 写入缓存
+		var skipCache bool
+		if p.accountRepo != nil {
+			if dbAccount, err := p.accountRepo.GetByID(ctx, account.ID); err == nil && dbAccount != nil {
+				dbVersion := dbAccount.GetTokenVersion()
+				if account.IsTokenVersionStale(dbVersion) {
+					log.Printf("[AntigravityTokenProvider] Skip cache write for stale token, account_id=%d, mem_version=%d, db_version=%d",
+						account.ID, account.GetTokenVersion(), dbVersion)
+					skipCache = true
+				}
 			}
 		}
-		_ = p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
+
+		if !skipCache {
+			ttl := 30 * time.Minute
+			if expiresAt != nil {
+				until := time.Until(*expiresAt)
+				switch {
+				case until > antigravityTokenCacheSkew:
+					ttl = until - antigravityTokenCacheSkew
+				case until > 0:
+					ttl = until
+				default:
+					ttl = time.Minute
+				}
+			}
+			_ = p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
+		}
 	}
 
 	return accessToken, nil

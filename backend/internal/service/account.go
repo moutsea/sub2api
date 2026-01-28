@@ -175,6 +175,19 @@ func (a *Account) GetCredential(key string) string {
 	}
 }
 
+// GetCredentialAsInt64 解析凭证中的 int64 字段
+// 支持 string/float64/int64/json.Number 等类型
+func (a *Account) GetCredentialAsInt64(key string) int64 {
+	s := a.GetCredential(key)
+	if s == "" {
+		return 0
+	}
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return v
+	}
+	return 0
+}
+
 // GetCredentialAsTime 解析凭证中的时间戳字段，支持多种格式
 // 兼容以下格式：
 //   - RFC3339 字符串: "2025-01-01T00:00:00Z"
@@ -798,4 +811,33 @@ func (a *Account) IsKiroTokenExpired() bool {
 		return true // 无过期时间，视为过期
 	}
 	return time.Now().Add(60 * time.Second).After(*expiresAt)
+}
+
+// ========================
+// Token Version Methods
+// ========================
+
+// TokenVersionKey 是存储在 credentials 中的 token 版本字段名
+const TokenVersionKey = "_token_version"
+
+// GetTokenVersion 获取 credentials 中的 token 版本号（毫秒级时间戳）
+func (a *Account) GetTokenVersion() int64 {
+	return a.GetCredentialAsInt64(TokenVersionKey)
+}
+
+// IsTokenVersionStale 检查内存中的 token 版本是否过时
+// 通过比较内存中的版本与数据库中的版本来判断
+// 如果内存版本 < 数据库版本，说明 token 已被刷新，内存中的是旧的
+func (a *Account) IsTokenVersionStale(dbVersion int64) bool {
+	memVersion := a.GetTokenVersion()
+	// 如果内存版本为 0（旧数据没有版本号），不认为过时
+	if memVersion == 0 {
+		return false
+	}
+	// 如果数据库版本为 0，说明数据库还没有版本号，不认为过时
+	if dbVersion == 0 {
+		return false
+	}
+	// 内存版本 < 数据库版本，说明过时
+	return memVersion < dbVersion
 }

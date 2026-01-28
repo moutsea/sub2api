@@ -1,6 +1,11 @@
 package service
 
-import "context"
+import (
+	"context"
+	"log/slog"
+	"strconv"
+	"strings"
+)
 
 type TokenCacheInvalidator interface {
 	InvalidateToken(ctx context.Context, account *Account) error
@@ -24,18 +29,42 @@ func (c *CompositeTokenCacheInvalidator) InvalidateToken(ctx context.Context, ac
 		return nil
 	}
 
-	var cacheKey string
+	// 收集所有可能的缓存键
+	var cacheKeys []string
+	accountIDStr := strconv.FormatInt(account.ID, 10)
+
 	switch account.Platform {
 	case PlatformGemini:
-		cacheKey = GeminiTokenCacheKey(account)
+		// Gemini 可能有 project_id 键和 account_id 键两种
+		projectID := strings.TrimSpace(account.GetCredential("project_id"))
+		if projectID != "" {
+			cacheKeys = append(cacheKeys, "gemini:"+projectID)
+		}
+		cacheKeys = append(cacheKeys, "gemini:account:"+accountIDStr)
 	case PlatformAntigravity:
-		cacheKey = AntigravityTokenCacheKey(account)
+		// Antigravity 可能有 project_id 键和 account_id 键两种
+		projectID := strings.TrimSpace(account.GetCredential("project_id"))
+		if projectID != "" {
+			cacheKeys = append(cacheKeys, "ag:"+projectID)
+		}
+		cacheKeys = append(cacheKeys, "ag:account:"+accountIDStr)
 	case PlatformOpenAI:
-		cacheKey = OpenAITokenCacheKey(account)
+		cacheKeys = append(cacheKeys, OpenAITokenCacheKey(account))
 	case PlatformAnthropic:
-		cacheKey = ClaudeTokenCacheKey(account)
+		cacheKeys = append(cacheKeys, ClaudeTokenCacheKey(account))
 	default:
 		return nil
 	}
-	return c.cache.DeleteAccessToken(ctx, cacheKey)
+
+	// 删除所有可能的缓存键
+	var lastErr error
+	for _, key := range cacheKeys {
+		if err := c.cache.DeleteAccessToken(ctx, key); err != nil {
+			slog.Warn("token_cache_invalidate_failed", "account_id", account.ID, "cache_key", key, "error", err)
+			lastErr = err
+		} else {
+			slog.Debug("token_cache_invalidated", "account_id", account.ID, "cache_key", key)
+		}
+	}
+	return lastErr
 }
