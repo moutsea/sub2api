@@ -5,6 +5,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
+)
+
+// Thinking tag constants for parsing thinking blocks from content
+const (
+	ThinkingStartTag = "<thinking>"
+	ThinkingEndTag   = "</thinking>"
 )
 
 // awsPayload represents the JSON payload from CodeWhisperer stream
@@ -39,6 +46,7 @@ type toolAccumulator struct {
 // - Tool calls bound by toolUseId (supports concurrent/interleaved)
 // - Clear memory limits to prevent buffer overflow
 // - Aligned with proxycast Kiro parsing semantics
+// - TAG-BASED THINKING PARSING: Parse <thinking> tags from content
 type AwsEventStreamParser struct {
 	messageID string
 	model     string
@@ -55,6 +63,11 @@ type AwsEventStreamParser struct {
 
 	toolAccumulators map[string]*toolAccumulator
 	sawToolUse       bool
+
+	// Thinking tag parsing state
+	inThinkingBlock    bool
+	thinkingBlockIndex *uint32
+	pendingContent     strings.Builder // Buffer for partial tag matching
 
 	parseErrorCount int
 }
@@ -124,6 +137,9 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		p.toolAccumulators = make(map[string]*toolAccumulator)
 		p.textBlockIndex = nil
 		p.inTextBlock = false
+		p.thinkingBlockIndex = nil
+		p.inThinkingBlock = false
+		p.pendingContent.Reset()
 		return events
 	}
 
@@ -137,6 +153,14 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		}
 	}
 	p.toolAccumulators = make(map[string]*toolAccumulator)
+
+	// Close thinking block if open
+	if p.thinkingBlockIndex != nil {
+		idx := *p.thinkingBlockIndex
+		events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+		p.thinkingBlockIndex = nil
+		p.inThinkingBlock = false
+	}
 
 	// Close text block
 	if p.textBlockIndex != nil {
@@ -156,6 +180,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 	}
 
 	p.buffer = nil
+	p.pendingContent.Reset()
 	return events
 }
 
@@ -310,23 +335,12 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		events = append(events, StreamEvent{Type: EventMessageStart, MessageID: p.messageID, Model: p.model})
 	}
 
-	// 1) content text delta (skip followupPrompt)
+	// 1) content text delta (skip followupPrompt) - with thinking tag parsing
 	if payload.Content != nil {
 		if len(payload.FollowupPrompt) == 0 || string(payload.FollowupPrompt) == "null" {
-			if !p.inTextBlock {
-				p.inTextBlock = true
-				idx := p.nextIndex()
-				p.textBlockIndex = &idx
-				events = append(events, StreamEvent{
-					Type:  EventContentBlockStart,
-					Index: idx,
-					BlockType: ContentBlockType{
-						Kind: BlockText,
-					},
-				})
-			}
-
-			events = append(events, StreamEvent{Type: EventTextDelta, Text: *payload.Content})
+			// Parse thinking tags from content
+			contentEvents := p.parseContentWithThinking(*payload.Content)
+			events = append(events, contentEvents...)
 		}
 		return events, nil
 	}
@@ -1041,4 +1055,161 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 		"stop_sequence": nil,
 		"usage":         usage,
 	}
+}
+
+// ==================== Thinking Tag Parsing ====================
+
+// parseContentWithThinking parses content for <thinking> tags and emits appropriate events.
+// This implements TAG-BASED THINKING PARSING similar to CLIProxyAPIPlus.
+func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []StreamEvent {
+	var events []StreamEvent
+
+	// Combine pending content with new content for processing
+	p.pendingContent.WriteString(contentDelta)
+	processContent := p.pendingContent.String()
+	p.pendingContent.Reset()
+
+	// Process content looking for thinking tags
+	for len(processContent) > 0 {
+		if p.inThinkingBlock {
+			// We're inside a thinking block, look for </thinking>
+			endIdx := strings.Index(processContent, ThinkingEndTag)
+			if endIdx >= 0 {
+				// Found end tag - emit thinking content before the tag
+				thinkingText := processContent[:endIdx]
+				if thinkingText != "" {
+					// Ensure thinking block is open
+					if p.thinkingBlockIndex == nil {
+						idx := p.nextIndex()
+						p.thinkingBlockIndex = &idx
+						events = append(events, StreamEvent{
+							Type:  EventContentBlockStart,
+							Index: idx,
+							BlockType: ContentBlockType{
+								Kind: BlockThinking,
+							},
+						})
+					}
+					// Send thinking delta
+					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: thinkingText})
+				}
+				// Close thinking block
+				if p.thinkingBlockIndex != nil {
+					idx := *p.thinkingBlockIndex
+					events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+					p.thinkingBlockIndex = nil
+				}
+				p.inThinkingBlock = false
+				processContent = processContent[endIdx+len(ThinkingEndTag):]
+			} else {
+				// No end tag found - check for partial match at end
+				partialLen := pendingTagSuffix(processContent, ThinkingEndTag)
+				if partialLen > 0 {
+					// Possible partial tag at end, buffer it
+					p.pendingContent.WriteString(processContent[len(processContent)-partialLen:])
+					processContent = processContent[:len(processContent)-partialLen]
+				}
+				if len(processContent) > 0 {
+					// Emit all as thinking content
+					if p.thinkingBlockIndex == nil {
+						idx := p.nextIndex()
+						p.thinkingBlockIndex = &idx
+						events = append(events, StreamEvent{
+							Type:  EventContentBlockStart,
+							Index: idx,
+							BlockType: ContentBlockType{
+								Kind: BlockThinking,
+							},
+						})
+					}
+					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: processContent})
+				}
+				processContent = ""
+			}
+		} else {
+			// Not in thinking block, look for <thinking>
+			startIdx := strings.Index(processContent, ThinkingStartTag)
+			if startIdx >= 0 {
+				// Found start tag - emit text content before the tag
+				textBefore := processContent[:startIdx]
+				if textBefore != "" {
+					// Close thinking block if open (shouldn't happen but be safe)
+					if p.thinkingBlockIndex != nil {
+						idx := *p.thinkingBlockIndex
+						events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+						p.thinkingBlockIndex = nil
+					}
+					// Ensure text block is open
+					if !p.inTextBlock {
+						p.inTextBlock = true
+						idx := p.nextIndex()
+						p.textBlockIndex = &idx
+						events = append(events, StreamEvent{
+							Type:  EventContentBlockStart,
+							Index: idx,
+							BlockType: ContentBlockType{
+								Kind: BlockText,
+							},
+						})
+					}
+					// Send text delta
+					events = append(events, StreamEvent{Type: EventTextDelta, Text: textBefore})
+				}
+				// Close text block before entering thinking
+				if p.inTextBlock && p.textBlockIndex != nil {
+					idx := *p.textBlockIndex
+					events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+					p.textBlockIndex = nil
+					p.inTextBlock = false
+				}
+				p.inThinkingBlock = true
+				processContent = processContent[startIdx+len(ThinkingStartTag):]
+			} else {
+				// No start tag found - check for partial match at end
+				partialLen := pendingTagSuffix(processContent, ThinkingStartTag)
+				if partialLen > 0 {
+					// Possible partial tag at end, buffer it
+					p.pendingContent.WriteString(processContent[len(processContent)-partialLen:])
+					processContent = processContent[:len(processContent)-partialLen]
+				}
+				if len(processContent) > 0 {
+					// Emit all as text content
+					if !p.inTextBlock {
+						p.inTextBlock = true
+						idx := p.nextIndex()
+						p.textBlockIndex = &idx
+						events = append(events, StreamEvent{
+							Type:  EventContentBlockStart,
+							Index: idx,
+							BlockType: ContentBlockType{
+								Kind: BlockText,
+							},
+						})
+					}
+					events = append(events, StreamEvent{Type: EventTextDelta, Text: processContent})
+				}
+				processContent = ""
+			}
+		}
+	}
+
+	return events
+}
+
+// pendingTagSuffix detects if the buffer ends with a partial prefix of the given tag.
+// Returns the length of the partial match (0 if no match).
+func pendingTagSuffix(buffer, tag string) int {
+	if buffer == "" || tag == "" {
+		return 0
+	}
+	maxLen := len(buffer)
+	if maxLen > len(tag)-1 {
+		maxLen = len(tag) - 1
+	}
+	for length := maxLen; length > 0; length-- {
+		if len(buffer) >= length && buffer[len(buffer)-length:] == tag[:length] {
+			return length
+		}
+	}
+	return 0
 }
