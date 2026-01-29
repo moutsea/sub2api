@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+const (
+	// MinCacheableTokens is Anthropic's minimum threshold for prompt caching
+	MinCacheableTokens = 1024
+)
+
 // Token estimation constants (aligned with kiro4api)
 const (
 	// Base characters per token for English text
@@ -375,4 +380,75 @@ func estimateToolNameTokens(name string) int {
 // higher than actual, triggering auto-compression earlier.
 func InflateInputTokens(actualTokens int) int {
 	return actualTokens + InputTokenInflation
+}
+
+// CacheEstimation holds the breakdown of cacheable vs non-cacheable tokens
+// for predicting Anthropic prompt cache behavior.
+type CacheEstimation struct {
+	CacheableTokens     int  // system + tools + history (except last msg)
+	NonCacheableTokens  int  // last message only
+	TotalInputTokens    int  // sum of above
+	MeetsCacheThreshold bool // >= MinCacheableTokens (1024)
+}
+
+// EstimateCache separates cacheable from non-cacheable tokens.
+// Cacheable: system prompt + tools + all messages except the last one
+// Non-cacheable: last message only + base request overhead
+// This matches Anthropic's prompt caching behavior.
+func EstimateCache(req *ClaudeRequest) CacheEstimation {
+	if req == nil {
+		return CacheEstimation{}
+	}
+
+	result := CacheEstimation{}
+
+	// 1. System prompt - cacheable
+	result.CacheableTokens += estimateSystemTokens(req.System)
+
+	// 2. Tools - cacheable
+	result.CacheableTokens += estimateToolsTokens(req.Tools)
+
+	// 3. Messages - all except last are cacheable
+	msgCount := len(req.Messages)
+	for i, msg := range req.Messages {
+		tokens := estimateMessageTokens(msg)
+		if i < msgCount-1 {
+			result.CacheableTokens += tokens
+		} else {
+			result.NonCacheableTokens += tokens
+		}
+	}
+
+	// 4. Base request overhead - non-cacheable (aligned with kiro4api)
+	result.NonCacheableTokens += BaseRequestOverhead
+
+	result.TotalInputTokens = result.CacheableTokens + result.NonCacheableTokens
+	result.MeetsCacheThreshold = result.CacheableTokens >= MinCacheableTokens
+
+	return result
+}
+
+// ExtractSystemPromptText extracts system prompt as string for cache key generation.
+// Handles both string and array formats of system prompt.
+// Uses simple concatenation (no separator) to match kiro4api behavior.
+func ExtractSystemPromptText(system any) string {
+	if system == nil {
+		return ""
+	}
+
+	switch sys := system.(type) {
+	case string:
+		return sys
+	case []any:
+		var result string
+		for _, sysMsg := range sys {
+			if sysMsgMap, ok := sysMsg.(map[string]any); ok {
+				if text, ok := sysMsgMap["text"].(string); ok {
+					result += text
+				}
+			}
+		}
+		return result
+	}
+	return ""
 }

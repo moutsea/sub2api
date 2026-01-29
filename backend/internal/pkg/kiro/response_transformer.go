@@ -638,13 +638,20 @@ func BuildClaudeContentBlockStop(index int) ClaudeSSEEvent {
 }
 
 // BuildClaudeMessageDelta builds a message_delta event
-func BuildClaudeMessageDelta(stopReason string, outputTokens, inputTokens int, contextUsagePercent float64) ClaudeSSEEvent {
+func BuildClaudeMessageDelta(stopReason string, outputTokens, inputTokens int, contextUsagePercent float64, cacheCreationTokens, cacheReadTokens int) ClaudeSSEEvent {
 	usage := map[string]any{
 		"output_tokens": outputTokens,
 		"input_tokens":  inputTokens,
 	}
 	if contextUsagePercent > 0 {
 		usage["context_usage_percent"] = contextUsagePercent
+	}
+	// Add cache tokens if present (Claude standard fields)
+	if cacheCreationTokens > 0 {
+		usage["cache_creation_input_tokens"] = cacheCreationTokens
+	}
+	if cacheReadTokens > 0 {
+		usage["cache_read_input_tokens"] = cacheReadTokens
 	}
 	return ClaudeSSEEvent{
 		EventType: "message_delta",
@@ -709,6 +716,10 @@ type StreamEventConverter struct {
 	totalOutputTokens int
 	contextPct        float64 // Context usage percentage from backend
 
+	// Cache token estimation
+	cacheCreationTokens int
+	cacheReadTokens     int
+
 	// Tool name restoration map (shortened -> original)
 	toolNameReverseMap map[string]string
 }
@@ -753,6 +764,12 @@ func (c *StreamEventConverter) TotalOutputTokens() int {
 // SetContextPercentage sets the context usage percentage from backend
 func (c *StreamEventConverter) SetContextPercentage(pct float64) {
 	c.contextPct = pct
+}
+
+// SetCacheTokens sets the cache token estimation for billing
+func (c *StreamEventConverter) SetCacheTokens(cacheCreation, cacheRead int) {
+	c.cacheCreationTokens = cacheCreation
+	c.cacheReadTokens = cacheRead
 }
 
 // ConvertEvent converts a StreamEvent to Claude SSE events
@@ -908,7 +925,7 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 	inflatedTokens := InflateInputTokens(inputTokens)
 
 	return []ClaudeSSEEvent{
-		BuildClaudeMessageDelta(stopReason, outputTokens, inflatedTokens, c.contextPct),
+		BuildClaudeMessageDelta(stopReason, outputTokens, inflatedTokens, c.contextPct, c.cacheCreationTokens, c.cacheReadTokens),
 		BuildClaudeMessageStop(),
 	}
 }
@@ -920,6 +937,10 @@ type CompleteResponse struct {
 	Text       string
 	ToolCalls  []ToolCallData
 	ContextPct float64 // Context usage percentage from backend
+
+	// Cache token estimation (set externally before building response)
+	CacheCreationTokens int
+	CacheReadTokens     int
 }
 
 // ToolCallData represents a tool call in the response
@@ -1043,6 +1064,13 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 	}
 	if resp.ContextPct > 0 {
 		usage["context_usage_percent"] = resp.ContextPct
+	}
+	// Add cache tokens if present (Claude standard fields)
+	if resp.CacheCreationTokens > 0 {
+		usage["cache_creation_input_tokens"] = resp.CacheCreationTokens
+	}
+	if resp.CacheReadTokens > 0 {
+		usage["cache_read_input_tokens"] = resp.CacheReadTokens
 	}
 
 	return map[string]any{
