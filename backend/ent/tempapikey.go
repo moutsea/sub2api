@@ -61,9 +61,11 @@ type TempAPIKeyEdges struct {
 	Group *Group `json:"group,omitempty"`
 	// Creator holds the value of the creator edge.
 	Creator *User `json:"creator,omitempty"`
+	// UsageLogs holds the value of the usage_logs edge.
+	UsageLogs []*UsageLog `json:"usage_logs,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [2]bool
+	loadedTypes [3]bool
 }
 
 // GroupOrErr returns the Group value or an error if the edge
@@ -86,6 +88,15 @@ func (e TempAPIKeyEdges) CreatorOrErr() (*User, error) {
 		return nil, &NotFoundError{label: user.Label}
 	}
 	return nil, &NotLoadedError{edge: "creator"}
+}
+
+// UsageLogsOrErr returns the UsageLogs value or an error if the edge
+// was not loaded in eager-loading.
+func (e TempAPIKeyEdges) UsageLogsOrErr() ([]*UsageLog, error) {
+	if e.loadedTypes[2] {
+		return e.UsageLogs, nil
+	}
+	return nil, &NotLoadedError{edge: "usage_logs"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -235,6 +246,11 @@ func (_m *TempAPIKey) QueryGroup() *GroupQuery {
 // QueryCreator queries the "creator" edge of the TempAPIKey entity.
 func (_m *TempAPIKey) QueryCreator() *UserQuery {
 	return NewTempAPIKeyClient(_m.config).QueryCreator(_m)
+}
+
+// QueryUsageLogs queries the "usage_logs" edge of the TempAPIKey entity.
+func (_m *TempAPIKey) QueryUsageLogs() *UsageLogQuery {
+	return NewTempAPIKeyClient(_m.config).QueryUsageLogs(_m)
 }
 
 // Update returns a builder for updating this TempAPIKey.

@@ -642,6 +642,7 @@ func (_q *AccountQuery) loadUsageLogs(ctx context.Context, query *UsageLogQuery,
 			init(nodes[i])
 		}
 	}
+	query.withFKs = true
 	if len(query.ctx.Fields) > 0 {
 		query.ctx.AppendFieldOnce(usagelog.FieldAccountID)
 	}

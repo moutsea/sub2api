@@ -142,6 +142,33 @@ func (_u *UsageLogUpdate) ClearSubscriptionID() *UsageLogUpdate {
 	return _u
 }
 
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (_u *UsageLogUpdate) SetTempAPIKeyID(v int64) *UsageLogUpdate {
+	_u.mutation.ResetTempAPIKeyID()
+	_u.mutation.SetTempAPIKeyID(v)
+	return _u
+}
+
+// SetNillableTempAPIKeyID sets the "temp_api_key_id" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableTempAPIKeyID(v *int64) *UsageLogUpdate {
+	if v != nil {
+		_u.SetTempAPIKeyID(*v)
+	}
+	return _u
+}
+
+// AddTempAPIKeyID adds value to the "temp_api_key_id" field.
+func (_u *UsageLogUpdate) AddTempAPIKeyID(v int64) *UsageLogUpdate {
+	_u.mutation.AddTempAPIKeyID(v)
+	return _u
+}
+
+// ClearTempAPIKeyID clears the value of the "temp_api_key_id" field.
+func (_u *UsageLogUpdate) ClearTempAPIKeyID() *UsageLogUpdate {
+	_u.mutation.ClearTempAPIKeyID()
+	return _u
+}
+
 // SetInputTokens sets the "input_tokens" field.
 func (_u *UsageLogUpdate) SetInputTokens(v int) *UsageLogUpdate {
 	_u.mutation.ResetInputTokens()
@@ -756,6 +783,15 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.Model(); ok {
 		_spec.SetField(usagelog.FieldModel, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.TempAPIKeyID(); ok {
+		_spec.SetField(usagelog.FieldTempAPIKeyID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedTempAPIKeyID(); ok {
+		_spec.AddField(usagelog.FieldTempAPIKeyID, field.TypeInt64, value)
+	}
+	if _u.mutation.TempAPIKeyIDCleared() {
+		_spec.ClearField(usagelog.FieldTempAPIKeyID, field.TypeInt64)
+	}
 	if value, ok := _u.mutation.InputTokens(); ok {
 		_spec.SetField(usagelog.FieldInputTokens, field.TypeInt, value)
 	}
@@ -1166,6 +1202,33 @@ func (_u *UsageLogUpdateOne) SetNillableSubscriptionID(v *int64) *UsageLogUpdate
 // ClearSubscriptionID clears the value of the "subscription_id" field.
 func (_u *UsageLogUpdateOne) ClearSubscriptionID() *UsageLogUpdateOne {
 	_u.mutation.ClearSubscriptionID()
+	return _u
+}
+
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (_u *UsageLogUpdateOne) SetTempAPIKeyID(v int64) *UsageLogUpdateOne {
+	_u.mutation.ResetTempAPIKeyID()
+	_u.mutation.SetTempAPIKeyID(v)
+	return _u
+}
+
+// SetNillableTempAPIKeyID sets the "temp_api_key_id" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableTempAPIKeyID(v *int64) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetTempAPIKeyID(*v)
+	}
+	return _u
+}
+
+// AddTempAPIKeyID adds value to the "temp_api_key_id" field.
+func (_u *UsageLogUpdateOne) AddTempAPIKeyID(v int64) *UsageLogUpdateOne {
+	_u.mutation.AddTempAPIKeyID(v)
+	return _u
+}
+
+// ClearTempAPIKeyID clears the value of the "temp_api_key_id" field.
+func (_u *UsageLogUpdateOne) ClearTempAPIKeyID() *UsageLogUpdateOne {
+	_u.mutation.ClearTempAPIKeyID()
 	return _u
 }
 
@@ -1812,6 +1875,15 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if value, ok := _u.mutation.Model(); ok {
 		_spec.SetField(usagelog.FieldModel, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.TempAPIKeyID(); ok {
+		_spec.SetField(usagelog.FieldTempAPIKeyID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedTempAPIKeyID(); ok {
+		_spec.AddField(usagelog.FieldTempAPIKeyID, field.TypeInt64, value)
+	}
+	if _u.mutation.TempAPIKeyIDCleared() {
+		_spec.ClearField(usagelog.FieldTempAPIKeyID, field.TypeInt64)
 	}
 	if value, ok := _u.mutation.InputTokens(); ok {
 		_spec.SetField(usagelog.FieldInputTokens, field.TypeInt, value)

@@ -54,6 +54,8 @@ type UsageLog struct {
 	Account      *Account
 	Group        *Group
 	Subscription *UserSubscription
+
+	TempAPIKeyID *int64
 }
 
 func (u *UsageLog) TotalTokens() int {

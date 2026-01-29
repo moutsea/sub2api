@@ -85,6 +85,20 @@ func (_c *UsageLogCreate) SetNillableSubscriptionID(v *int64) *UsageLogCreate {
 	return _c
 }
 
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (_c *UsageLogCreate) SetTempAPIKeyID(v int64) *UsageLogCreate {
+	_c.mutation.SetTempAPIKeyID(v)
+	return _c
+}
+
+// SetNillableTempAPIKeyID sets the "temp_api_key_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableTempAPIKeyID(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetTempAPIKeyID(*v)
+	}
+	return _c
+}
+
 // SetInputTokens sets the "input_tokens" field.
 func (_c *UsageLogCreate) SetInputTokens(v int) *UsageLogCreate {
 	_c.mutation.SetInputTokens(v)
@@ -674,6 +688,10 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		_spec.SetField(usagelog.FieldModel, field.TypeString, value)
 		_node.Model = value
 	}
+	if value, ok := _c.mutation.TempAPIKeyID(); ok {
+		_spec.SetField(usagelog.FieldTempAPIKeyID, field.TypeInt64, value)
+		_node.TempAPIKeyID = &value
+	}
 	if value, ok := _c.mutation.InputTokens(); ok {
 		_spec.SetField(usagelog.FieldInputTokens, field.TypeInt, value)
 		_node.InputTokens = value
@@ -996,6 +1014,30 @@ func (u *UsageLogUpsert) UpdateSubscriptionID() *UsageLogUpsert {
 // ClearSubscriptionID clears the value of the "subscription_id" field.
 func (u *UsageLogUpsert) ClearSubscriptionID() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldSubscriptionID)
+	return u
+}
+
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (u *UsageLogUpsert) SetTempAPIKeyID(v int64) *UsageLogUpsert {
+	u.Set(usagelog.FieldTempAPIKeyID, v)
+	return u
+}
+
+// UpdateTempAPIKeyID sets the "temp_api_key_id" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateTempAPIKeyID() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldTempAPIKeyID)
+	return u
+}
+
+// AddTempAPIKeyID adds v to the "temp_api_key_id" field.
+func (u *UsageLogUpsert) AddTempAPIKeyID(v int64) *UsageLogUpsert {
+	u.Add(usagelog.FieldTempAPIKeyID, v)
+	return u
+}
+
+// ClearTempAPIKeyID clears the value of the "temp_api_key_id" field.
+func (u *UsageLogUpsert) ClearTempAPIKeyID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldTempAPIKeyID)
 	return u
 }
 
@@ -1561,6 +1603,34 @@ func (u *UsageLogUpsertOne) UpdateSubscriptionID() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearSubscriptionID() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearSubscriptionID()
+	})
+}
+
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (u *UsageLogUpsertOne) SetTempAPIKeyID(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetTempAPIKeyID(v)
+	})
+}
+
+// AddTempAPIKeyID adds v to the "temp_api_key_id" field.
+func (u *UsageLogUpsertOne) AddTempAPIKeyID(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddTempAPIKeyID(v)
+	})
+}
+
+// UpdateTempAPIKeyID sets the "temp_api_key_id" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateTempAPIKeyID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateTempAPIKeyID()
+	})
+}
+
+// ClearTempAPIKeyID clears the value of the "temp_api_key_id" field.
+func (u *UsageLogUpsertOne) ClearTempAPIKeyID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearTempAPIKeyID()
 	})
 }
 
@@ -2360,6 +2430,34 @@ func (u *UsageLogUpsertBulk) UpdateSubscriptionID() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearSubscriptionID() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearSubscriptionID()
+	})
+}
+
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (u *UsageLogUpsertBulk) SetTempAPIKeyID(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetTempAPIKeyID(v)
+	})
+}
+
+// AddTempAPIKeyID adds v to the "temp_api_key_id" field.
+func (u *UsageLogUpsertBulk) AddTempAPIKeyID(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddTempAPIKeyID(v)
+	})
+}
+
+// UpdateTempAPIKeyID sets the "temp_api_key_id" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateTempAPIKeyID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateTempAPIKeyID()
+	})
+}
+
+// ClearTempAPIKeyID clears the value of the "temp_api_key_id" field.
+func (u *UsageLogUpsertBulk) ClearTempAPIKeyID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearTempAPIKeyID()
 	})
 }
 

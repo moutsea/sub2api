@@ -3417,6 +3417,7 @@ type RecordUsageInput struct {
 	Subscription *UserSubscription // 可选：订阅信息
 	UserAgent    string            // 请求的 User-Agent
 	IPAddress    string            // 请求的客户端 IP 地址
+	TempAPIKeyID *int64            // 临时 API Key ID
 }
 
 // RecordUsage 记录使用量并扣费（或更新订阅用量）
@@ -3520,6 +3521,9 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	}
 	if subscription != nil {
 		usageLog.SubscriptionID = &subscription.ID
+	}
+	if input.TempAPIKeyID != nil {
+		usageLog.TempAPIKeyID = input.TempAPIKeyID
 	}
 
 	inserted, err := s.usageLogRepo.Create(ctx, usageLog)

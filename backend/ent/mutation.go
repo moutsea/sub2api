@@ -10483,6 +10483,9 @@ type TempAPIKeyMutation struct {
 	clearedgroup            bool
 	creator                 *int64
 	clearedcreator          bool
+	usage_logs              map[int64]struct{}
+	removedusage_logs       map[int64]struct{}
+	clearedusage_logs       bool
 	done                    bool
 	oldValue                func(context.Context) (*TempAPIKey, error)
 	predicates              []predicate.TempAPIKey
@@ -11325,6 +11328,60 @@ func (m *TempAPIKeyMutation) ResetCreator() {
 	m.clearedcreator = false
 }
 
+// AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by ids.
+func (m *TempAPIKeyMutation) AddUsageLogIDs(ids ...int64) {
+	if m.usage_logs == nil {
+		m.usage_logs = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.usage_logs[ids[i]] = struct{}{}
+	}
+}
+
+// ClearUsageLogs clears the "usage_logs" edge to the UsageLog entity.
+func (m *TempAPIKeyMutation) ClearUsageLogs() {
+	m.clearedusage_logs = true
+}
+
+// UsageLogsCleared reports if the "usage_logs" edge to the UsageLog entity was cleared.
+func (m *TempAPIKeyMutation) UsageLogsCleared() bool {
+	return m.clearedusage_logs
+}
+
+// RemoveUsageLogIDs removes the "usage_logs" edge to the UsageLog entity by IDs.
+func (m *TempAPIKeyMutation) RemoveUsageLogIDs(ids ...int64) {
+	if m.removedusage_logs == nil {
+		m.removedusage_logs = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.usage_logs, ids[i])
+		m.removedusage_logs[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedUsageLogs returns the removed IDs of the "usage_logs" edge to the UsageLog entity.
+func (m *TempAPIKeyMutation) RemovedUsageLogsIDs() (ids []int64) {
+	for id := range m.removedusage_logs {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// UsageLogsIDs returns the "usage_logs" edge IDs in the mutation.
+func (m *TempAPIKeyMutation) UsageLogsIDs() (ids []int64) {
+	for id := range m.usage_logs {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetUsageLogs resets all changes to the "usage_logs" edge.
+func (m *TempAPIKeyMutation) ResetUsageLogs() {
+	m.usage_logs = nil
+	m.clearedusage_logs = false
+	m.removedusage_logs = nil
+}
+
 // Where appends a list predicates to the TempAPIKeyMutation builder.
 func (m *TempAPIKeyMutation) Where(ps ...predicate.TempAPIKey) {
 	m.predicates = append(m.predicates, ps...)
@@ -11774,12 +11831,15 @@ func (m *TempAPIKeyMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *TempAPIKeyMutation) AddedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.group != nil {
 		edges = append(edges, tempapikey.EdgeGroup)
 	}
 	if m.creator != nil {
 		edges = append(edges, tempapikey.EdgeCreator)
+	}
+	if m.usage_logs != nil {
+		edges = append(edges, tempapikey.EdgeUsageLogs)
 	}
 	return edges
 }
@@ -11796,30 +11856,50 @@ func (m *TempAPIKeyMutation) AddedIDs(name string) []ent.Value {
 		if id := m.creator; id != nil {
 			return []ent.Value{*id}
 		}
+	case tempapikey.EdgeUsageLogs:
+		ids := make([]ent.Value, 0, len(m.usage_logs))
+		for id := range m.usage_logs {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *TempAPIKeyMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
+	if m.removedusage_logs != nil {
+		edges = append(edges, tempapikey.EdgeUsageLogs)
+	}
 	return edges
 }
 
 // RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
 // the given name in this mutation.
 func (m *TempAPIKeyMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case tempapikey.EdgeUsageLogs:
+		ids := make([]ent.Value, 0, len(m.removedusage_logs))
+		for id := range m.removedusage_logs {
+			ids = append(ids, id)
+		}
+		return ids
+	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *TempAPIKeyMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.clearedgroup {
 		edges = append(edges, tempapikey.EdgeGroup)
 	}
 	if m.clearedcreator {
 		edges = append(edges, tempapikey.EdgeCreator)
+	}
+	if m.clearedusage_logs {
+		edges = append(edges, tempapikey.EdgeUsageLogs)
 	}
 	return edges
 }
@@ -11832,6 +11912,8 @@ func (m *TempAPIKeyMutation) EdgeCleared(name string) bool {
 		return m.clearedgroup
 	case tempapikey.EdgeCreator:
 		return m.clearedcreator
+	case tempapikey.EdgeUsageLogs:
+		return m.clearedusage_logs
 	}
 	return false
 }
@@ -11860,6 +11942,9 @@ func (m *TempAPIKeyMutation) ResetEdge(name string) error {
 	case tempapikey.EdgeCreator:
 		m.ResetCreator()
 		return nil
+	case tempapikey.EdgeUsageLogs:
+		m.ResetUsageLogs()
+		return nil
 	}
 	return fmt.Errorf("unknown TempAPIKey edge %s", name)
 }
@@ -11872,6 +11957,8 @@ type UsageLogMutation struct {
 	id                          *int64
 	request_id                  *string
 	model                       *string
+	temp_api_key_id             *int64
+	addtemp_api_key_id          *int64
 	input_tokens                *int
 	addinput_tokens             *int
 	output_tokens               *int
@@ -12303,6 +12390,76 @@ func (m *UsageLogMutation) SubscriptionIDCleared() bool {
 func (m *UsageLogMutation) ResetSubscriptionID() {
 	m.subscription = nil
 	delete(m.clearedFields, usagelog.FieldSubscriptionID)
+}
+
+// SetTempAPIKeyID sets the "temp_api_key_id" field.
+func (m *UsageLogMutation) SetTempAPIKeyID(i int64) {
+	m.temp_api_key_id = &i
+	m.addtemp_api_key_id = nil
+}
+
+// TempAPIKeyID returns the value of the "temp_api_key_id" field in the mutation.
+func (m *UsageLogMutation) TempAPIKeyID() (r int64, exists bool) {
+	v := m.temp_api_key_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTempAPIKeyID returns the old "temp_api_key_id" field's value of the UsageLog entity.
+// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageLogMutation) OldTempAPIKeyID(ctx context.Context) (v *int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTempAPIKeyID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTempAPIKeyID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTempAPIKeyID: %w", err)
+	}
+	return oldValue.TempAPIKeyID, nil
+}
+
+// AddTempAPIKeyID adds i to the "temp_api_key_id" field.
+func (m *UsageLogMutation) AddTempAPIKeyID(i int64) {
+	if m.addtemp_api_key_id != nil {
+		*m.addtemp_api_key_id += i
+	} else {
+		m.addtemp_api_key_id = &i
+	}
+}
+
+// AddedTempAPIKeyID returns the value that was added to the "temp_api_key_id" field in this mutation.
+func (m *UsageLogMutation) AddedTempAPIKeyID() (r int64, exists bool) {
+	v := m.addtemp_api_key_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearTempAPIKeyID clears the value of the "temp_api_key_id" field.
+func (m *UsageLogMutation) ClearTempAPIKeyID() {
+	m.temp_api_key_id = nil
+	m.addtemp_api_key_id = nil
+	m.clearedFields[usagelog.FieldTempAPIKeyID] = struct{}{}
+}
+
+// TempAPIKeyIDCleared returns if the "temp_api_key_id" field was cleared in this mutation.
+func (m *UsageLogMutation) TempAPIKeyIDCleared() bool {
+	_, ok := m.clearedFields[usagelog.FieldTempAPIKeyID]
+	return ok
+}
+
+// ResetTempAPIKeyID resets all changes to the "temp_api_key_id" field.
+func (m *UsageLogMutation) ResetTempAPIKeyID() {
+	m.temp_api_key_id = nil
+	m.addtemp_api_key_id = nil
+	delete(m.clearedFields, usagelog.FieldTempAPIKeyID)
 }
 
 // SetInputTokens sets the "input_tokens" field.
@@ -13743,7 +13900,7 @@ func (m *UsageLogMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UsageLogMutation) Fields() []string {
-	fields := make([]string, 0, 30)
+	fields := make([]string, 0, 31)
 	if m.user != nil {
 		fields = append(fields, usagelog.FieldUserID)
 	}
@@ -13764,6 +13921,9 @@ func (m *UsageLogMutation) Fields() []string {
 	}
 	if m.subscription != nil {
 		fields = append(fields, usagelog.FieldSubscriptionID)
+	}
+	if m.temp_api_key_id != nil {
+		fields = append(fields, usagelog.FieldTempAPIKeyID)
 	}
 	if m.input_tokens != nil {
 		fields = append(fields, usagelog.FieldInputTokens)
@@ -13856,6 +14016,8 @@ func (m *UsageLogMutation) Field(name string) (ent.Value, bool) {
 		return m.GroupID()
 	case usagelog.FieldSubscriptionID:
 		return m.SubscriptionID()
+	case usagelog.FieldTempAPIKeyID:
+		return m.TempAPIKeyID()
 	case usagelog.FieldInputTokens:
 		return m.InputTokens()
 	case usagelog.FieldOutputTokens:
@@ -13925,6 +14087,8 @@ func (m *UsageLogMutation) OldField(ctx context.Context, name string) (ent.Value
 		return m.OldGroupID(ctx)
 	case usagelog.FieldSubscriptionID:
 		return m.OldSubscriptionID(ctx)
+	case usagelog.FieldTempAPIKeyID:
+		return m.OldTempAPIKeyID(ctx)
 	case usagelog.FieldInputTokens:
 		return m.OldInputTokens(ctx)
 	case usagelog.FieldOutputTokens:
@@ -14028,6 +14192,13 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetSubscriptionID(v)
+		return nil
+	case usagelog.FieldTempAPIKeyID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTempAPIKeyID(v)
 		return nil
 	case usagelog.FieldInputTokens:
 		v, ok := value.(int)
@@ -14198,6 +14369,9 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
 // this mutation.
 func (m *UsageLogMutation) AddedFields() []string {
 	var fields []string
+	if m.addtemp_api_key_id != nil {
+		fields = append(fields, usagelog.FieldTempAPIKeyID)
+	}
 	if m.addinput_tokens != nil {
 		fields = append(fields, usagelog.FieldInputTokens)
 	}
@@ -14260,6 +14434,8 @@ func (m *UsageLogMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case usagelog.FieldTempAPIKeyID:
+		return m.AddedTempAPIKeyID()
 	case usagelog.FieldInputTokens:
 		return m.AddedInputTokens()
 	case usagelog.FieldOutputTokens:
@@ -14305,6 +14481,13 @@ func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *UsageLogMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case usagelog.FieldTempAPIKeyID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTempAPIKeyID(v)
+		return nil
 	case usagelog.FieldInputTokens:
 		v, ok := value.(int)
 		if !ok {
@@ -14445,6 +14628,9 @@ func (m *UsageLogMutation) ClearedFields() []string {
 	if m.FieldCleared(usagelog.FieldSubscriptionID) {
 		fields = append(fields, usagelog.FieldSubscriptionID)
 	}
+	if m.FieldCleared(usagelog.FieldTempAPIKeyID) {
+		fields = append(fields, usagelog.FieldTempAPIKeyID)
+	}
 	if m.FieldCleared(usagelog.FieldAccountRateMultiplier) {
 		fields = append(fields, usagelog.FieldAccountRateMultiplier)
 	}
@@ -14482,6 +14668,9 @@ func (m *UsageLogMutation) ClearField(name string) error {
 		return nil
 	case usagelog.FieldSubscriptionID:
 		m.ClearSubscriptionID()
+		return nil
+	case usagelog.FieldTempAPIKeyID:
+		m.ClearTempAPIKeyID()
 		return nil
 	case usagelog.FieldAccountRateMultiplier:
 		m.ClearAccountRateMultiplier()
@@ -14529,6 +14718,9 @@ func (m *UsageLogMutation) ResetField(name string) error {
 		return nil
 	case usagelog.FieldSubscriptionID:
 		m.ResetSubscriptionID()
+		return nil
+	case usagelog.FieldTempAPIKeyID:
+		m.ResetTempAPIKeyID()
 		return nil
 	case usagelog.FieldInputTokens:
 		m.ResetInputTokens()

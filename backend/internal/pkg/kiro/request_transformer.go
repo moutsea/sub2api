@@ -874,11 +874,14 @@ func processTools(tools []ClaudeTool) []ToolItem {
 
 // isWebSearchToolByType checks if the tool is a web_search tool by its type field
 // Claude web_search tools have a top-level "type" field like "web_search_20250305"
+// Aligned with kiro4api: check exact matches first, then prefix
 func isWebSearchToolByType(tool ClaudeTool) bool {
 	if tool.Type == "" {
 		return false
 	}
-	return strings.HasPrefix(tool.Type, "web_search")
+	return tool.Type == "web_search" ||
+		tool.Type == "web_search_20250305" ||
+		strings.HasPrefix(tool.Type, "web_search_")
 }
 
 // isWebSearchTool checks if the tool is a web_search tool

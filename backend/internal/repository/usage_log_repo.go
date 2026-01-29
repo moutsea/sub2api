@@ -22,7 +22,7 @@ import (
 	"github.com/lib/pq"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, stream, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, created_at"
+const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, group_id, subscription_id, temp_api_key_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, stream, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, created_at"
 
 type usageLogRepository struct {
 	client *dbent.Client
@@ -92,6 +92,7 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 			model,
 			group_id,
 			subscription_id,
+			temp_api_key_id,
 			input_tokens,
 			output_tokens,
 			cache_creation_tokens,
@@ -117,11 +118,11 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 			created_at
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7,
-			$8, $9, $10, $11,
-			$12, $13,
-			$14, $15, $16, $17, $18, $19,
-			$20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+			$6, $7, $8,
+			$9, $10, $11, $12,
+			$13, $14,
+			$15, $16, $17, $18, $19, $20,
+			$21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -129,6 +130,7 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 
 	groupID := nullInt64(log.GroupID)
 	subscriptionID := nullInt64(log.SubscriptionID)
+	tempAPIKeyID := nullInt64(log.TempAPIKeyID)
 	duration := nullInt(log.DurationMs)
 	firstToken := nullInt(log.FirstTokenMs)
 	userAgent := nullString(log.UserAgent)
@@ -148,6 +150,7 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 		log.Model,
 		groupID,
 		subscriptionID,
+		tempAPIKeyID,
 		log.InputTokens,
 		log.OutputTokens,
 		log.CacheCreationTokens,
@@ -2068,6 +2071,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		model                 string
 		groupID               sql.NullInt64
 		subscriptionID        sql.NullInt64
+		tempAPIKeyID          sql.NullInt64
 		inputTokens           int
 		outputTokens          int
 		cacheCreationTokens   int
@@ -2102,6 +2106,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&model,
 		&groupID,
 		&subscriptionID,
+		&tempAPIKeyID,
 		&inputTokens,
 		&outputTokens,
 		&cacheCreationTokens,
@@ -2165,6 +2170,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	if subscriptionID.Valid {
 		value := subscriptionID.Int64
 		log.SubscriptionID = &value
+	}
+	if tempAPIKeyID.Valid {
+		value := tempAPIKeyID.Int64
+		log.TempAPIKeyID = &value
 	}
 	if durationMs.Valid {
 		value := int(durationMs.Int64)

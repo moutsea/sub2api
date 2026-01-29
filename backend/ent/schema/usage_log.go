@@ -47,6 +47,10 @@ func (UsageLog) Fields() []ent.Field {
 		field.Int64("subscription_id").
 			Optional().
 			Nillable(),
+		field.Int64("temp_api_key_id").
+			Optional().
+			Nillable().
+			Comment("临时 API Key ID，用于追踪 sk-temp-xxx 的使用日志"),
 
 		// Token 计数字段
 		field.Int("input_tokens").
@@ -170,5 +174,6 @@ func (UsageLog) Indexes() []ent.Index {
 		// 复合索引用于时间范围查询
 		index.Fields("user_id", "created_at"),
 		index.Fields("api_key_id", "created_at"),
+		index.Fields("temp_api_key_id"),
 	}
 }

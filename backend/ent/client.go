@@ -2013,6 +2013,22 @@ func (c *TempAPIKeyClient) QueryCreator(_m *TempAPIKey) *UserQuery {
 	return query
 }
 
+// QueryUsageLogs queries the usage_logs edge of a TempAPIKey.
+func (c *TempAPIKeyClient) QueryUsageLogs(_m *TempAPIKey) *UsageLogQuery {
+	query := (&UsageLogClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(tempapikey.Table, tempapikey.FieldID, id),
+			sqlgraph.To(usagelog.Table, usagelog.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, tempapikey.UsageLogsTable, tempapikey.UsageLogsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *TempAPIKeyClient) Hooks() []Hook {
 	hooks := c.hooks.TempAPIKey

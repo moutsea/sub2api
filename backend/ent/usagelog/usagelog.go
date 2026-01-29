@@ -28,6 +28,8 @@ const (
 	FieldGroupID = "group_id"
 	// FieldSubscriptionID holds the string denoting the subscription_id field in the database.
 	FieldSubscriptionID = "subscription_id"
+	// FieldTempAPIKeyID holds the string denoting the temp_api_key_id field in the database.
+	FieldTempAPIKeyID = "temp_api_key_id"
 	// FieldInputTokens holds the string denoting the input_tokens field in the database.
 	FieldInputTokens = "input_tokens"
 	// FieldOutputTokens holds the string denoting the output_tokens field in the database.
@@ -133,6 +135,7 @@ var Columns = []string{
 	FieldModel,
 	FieldGroupID,
 	FieldSubscriptionID,
+	FieldTempAPIKeyID,
 	FieldInputTokens,
 	FieldOutputTokens,
 	FieldCacheCreationTokens,
@@ -158,10 +161,21 @@ var Columns = []string{
 	FieldCreatedAt,
 }
 
+// ForeignKeys holds the SQL foreign-keys that are owned by the "usage_logs"
+// table and are not defined as standalone fields in the schema.
+var ForeignKeys = []string{
+	"temp_api_key_usage_logs",
+}
+
 // ValidColumn reports if the column name is valid (part of the table columns).
 func ValidColumn(column string) bool {
 	for i := range Columns {
 		if column == Columns[i] {
+			return true
+		}
+	}
+	for i := range ForeignKeys {
+		if column == ForeignKeys[i] {
 			return true
 		}
 	}
@@ -256,6 +270,11 @@ func ByGroupID(opts ...sql.OrderTermOption) OrderOption {
 // BySubscriptionID orders the results by the subscription_id field.
 func BySubscriptionID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSubscriptionID, opts...).ToFunc()
+}
+
+// ByTempAPIKeyID orders the results by the temp_api_key_id field.
+func ByTempAPIKeyID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldTempAPIKeyID, opts...).ToFunc()
 }
 
 // ByInputTokens orders the results by the input_tokens field.

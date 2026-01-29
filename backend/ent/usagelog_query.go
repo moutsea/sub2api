@@ -33,6 +33,7 @@ type UsageLogQuery struct {
 	withAccount      *AccountQuery
 	withGroup        *GroupQuery
 	withSubscription *UserSubscriptionQuery
+	withFKs          bool
 	modifiers        []func(*sql.Selector)
 	// intermediate query (i.e. traversal path).
 	sql  *sql.Selector
@@ -515,6 +516,7 @@ func (_q *UsageLogQuery) prepareQuery(ctx context.Context) error {
 func (_q *UsageLogQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*UsageLog, error) {
 	var (
 		nodes       = []*UsageLog{}
+		withFKs     = _q.withFKs
 		_spec       = _q.querySpec()
 		loadedTypes = [5]bool{
 			_q.withUser != nil,
@@ -524,6 +526,9 @@ func (_q *UsageLogQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Usa
 			_q.withSubscription != nil,
 		}
 	)
+	if withFKs {
+		_spec.Node.Columns = append(_spec.Node.Columns, usagelog.ForeignKeys...)
+	}
 	_spec.ScanValues = func(columns []string) ([]any, error) {
 		return (*UsageLog).scanValues(nil, columns)
 	}

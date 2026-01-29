@@ -104,6 +104,8 @@ func (TempAPIKey) Edges() []ent.Edge {
 			Field("created_by").
 			Unique().
 			Required(),
+		// 使用日志
+		edge.To("usage_logs", UsageLog.Type),
 	}
 }
 

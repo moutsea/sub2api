@@ -90,6 +90,11 @@ func SubscriptionID(v int64) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldSubscriptionID, v))
 }
 
+// TempAPIKeyID applies equality check predicate on the "temp_api_key_id" field. It's identical to TempAPIKeyIDEQ.
+func TempAPIKeyID(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldTempAPIKeyID, v))
+}
+
 // InputTokens applies equality check predicate on the "input_tokens" field. It's identical to InputTokensEQ.
 func InputTokens(v int) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldInputTokens, v))
@@ -453,6 +458,56 @@ func SubscriptionIDIsNil() predicate.UsageLog {
 // SubscriptionIDNotNil applies the NotNil predicate on the "subscription_id" field.
 func SubscriptionIDNotNil() predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldNotNull(FieldSubscriptionID))
+}
+
+// TempAPIKeyIDEQ applies the EQ predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDEQ(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldTempAPIKeyID, v))
+}
+
+// TempAPIKeyIDNEQ applies the NEQ predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDNEQ(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldTempAPIKeyID, v))
+}
+
+// TempAPIKeyIDIn applies the In predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDIn(vs ...int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldTempAPIKeyID, vs...))
+}
+
+// TempAPIKeyIDNotIn applies the NotIn predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDNotIn(vs ...int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldTempAPIKeyID, vs...))
+}
+
+// TempAPIKeyIDGT applies the GT predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDGT(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldTempAPIKeyID, v))
+}
+
+// TempAPIKeyIDGTE applies the GTE predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDGTE(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldTempAPIKeyID, v))
+}
+
+// TempAPIKeyIDLT applies the LT predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDLT(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldTempAPIKeyID, v))
+}
+
+// TempAPIKeyIDLTE applies the LTE predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDLTE(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldTempAPIKeyID, v))
+}
+
+// TempAPIKeyIDIsNil applies the IsNil predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldTempAPIKeyID))
+}
+
+// TempAPIKeyIDNotNil applies the NotNil predicate on the "temp_api_key_id" field.
+func TempAPIKeyIDNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldTempAPIKeyID))
 }
 
 // InputTokensEQ applies the EQ predicate on the "input_tokens" field.
