@@ -143,7 +143,7 @@
 
       <template #pagination>
         <Pagination
-          v-if="pagination.total > 0"
+          v-if="!loading"
           :page="pagination.page"
           :total="pagination.total"
           :page-size="pagination.page_size"
