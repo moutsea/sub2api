@@ -148,6 +148,7 @@
           :total="pagination.total"
           :page-size="pagination.page_size"
           @update:page="handlePageChange"
+          @update:page-size="handlePageSizeChange"
         />
       </template>
     </TablePageLayout>
@@ -419,6 +420,12 @@ const loadGroups = async () => {
 
 const handlePageChange = (page: number) => {
   pagination.value.page = page
+  loadKeys()
+}
+
+const handlePageSizeChange = (pageSize: number) => {
+  pagination.value.page_size = pageSize
+  pagination.value.page = 1
   loadKeys()
 }
 
