@@ -9,10 +9,10 @@ type PaginationParams struct {
 
 // PaginationResult 分页结果
 type PaginationResult struct {
-	Total    int64
-	Page     int
-	PageSize int
-	Pages    int
+	Total    int64 `json:"total"`
+	Page     int   `json:"page"`
+	PageSize int   `json:"page_size"`
+	Pages    int   `json:"pages"`
 }
 
 // DefaultPagination 默认分页参数
