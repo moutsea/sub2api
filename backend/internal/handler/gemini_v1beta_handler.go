@@ -319,9 +319,14 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
+		var tempAPIKeyID *int64
+		if tempKey, ok := middleware.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
+			tempAPIKeyID = new(int64)
+			*tempAPIKeyID = tempKey.ID
+		}
 
 		// 6) record usage async
-		go func(result *service.ForwardResult, usedAccount *service.Account, ua, ip string) {
+		go func(result *service.ForwardResult, usedAccount *service.Account, ua, ip string, tempKeyID *int64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
@@ -332,10 +337,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				Subscription: subscription,
 				UserAgent:    ua,
 				IPAddress:    ip,
+				TempAPIKeyID: tempKeyID,
 			}); err != nil {
 				log.Printf("Record usage failed: %v", err)
 			}
-		}(result, account, userAgent, clientIP)
+		}(result, account, userAgent, clientIP, tempAPIKeyID)
 		return
 	}
 }

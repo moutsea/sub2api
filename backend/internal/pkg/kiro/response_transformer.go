@@ -908,18 +908,8 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 		outputTokens = 1
 	}
 
-	// Use contextPct to calculate more accurate input tokens if available
-	// contextPct is the percentage of context window used (0-100)
-	// KiroContextWindowLimit is 150000 tokens
+	// Use estimated input tokens directly (aligned with kiro4api)
 	inputTokens := c.inputTokens
-	if c.contextPct > 0 {
-		// Calculate input tokens from context percentage
-		// input_tokens = contextPct / 100 * KiroContextWindowLimit
-		calculatedTokens := int(c.contextPct / 100.0 * float64(KiroContextWindowLimit))
-		if calculatedTokens > 0 {
-			inputTokens = calculatedTokens
-		}
-	}
 
 	// Apply inflation to trigger client-side context compression earlier
 	inflatedTokens := InflateInputTokens(inputTokens)

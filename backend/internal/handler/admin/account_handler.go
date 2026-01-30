@@ -1150,8 +1150,9 @@ func (h *AccountHandler) RefreshKiroStates(c *gin.Context) {
 			continue
 		}
 
-		// Try to get access token, which will refresh if needed
-		_, err := h.kiroTokenProvider.GetAccessToken(c.Request.Context(), acc)
+		// Use ForceRefreshToken to refresh all accounts including those in error state
+		// This is different from GetAccessToken which skips cooldown/banned/exhausted accounts
+		err := h.kiroTokenProvider.ForceRefreshToken(c.Request.Context(), acc)
 		if err != nil {
 			failed++
 			errors = append(errors, fmt.Sprintf("Account %d (%s): %v", acc.ID, acc.Name, err))

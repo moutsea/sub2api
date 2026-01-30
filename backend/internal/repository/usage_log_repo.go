@@ -229,6 +229,10 @@ func (r *usageLogRepository) ListByAPIKey(ctx context.Context, apiKeyID int64, p
 	return r.listUsageLogsWithPagination(ctx, "WHERE api_key_id = $1", []any{apiKeyID}, params)
 }
 
+func (r *usageLogRepository) ListByTempAPIKey(ctx context.Context, tempAPIKeyID int64, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
+	return r.listUsageLogsWithPagination(ctx, "WHERE temp_api_key_id = $1", []any{tempAPIKeyID}, params)
+}
+
 // UserStats 用户使用统计
 type UserStats struct {
 	TotalRequests   int64   `json:"total_requests"`
@@ -1356,7 +1360,7 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 	query := `
 		SELECT api_key_id, COALESCE(SUM(actual_cost), 0) as total_cost
 		FROM usage_logs
-		WHERE api_key_id = ANY($1)
+		WHERE api_key_id = ANY($1) AND api_key_id IS NOT NULL
 		GROUP BY api_key_id
 	`
 	rows, err := r.sql.QueryContext(ctx, query, pq.Array(apiKeyIDs))
@@ -1385,7 +1389,7 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 	todayQuery := `
 		SELECT api_key_id, COALESCE(SUM(actual_cost), 0) as today_cost
 		FROM usage_logs
-		WHERE api_key_id = ANY($1) AND created_at >= $2
+		WHERE api_key_id = ANY($1) AND api_key_id IS NOT NULL AND created_at >= $2
 		GROUP BY api_key_id
 	`
 	rows, err = r.sql.QueryContext(ctx, todayQuery, pq.Array(apiKeyIDs), today)
@@ -1928,8 +1932,10 @@ func (r *usageLogRepository) hydrateUsageLogAssociations(ctx context.Context, lo
 		if user, ok := users[logs[i].UserID]; ok {
 			logs[i].User = user
 		}
-		if key, ok := apiKeys[logs[i].APIKeyID]; ok {
-			logs[i].APIKey = key
+		if logs[i].APIKeyID != nil {
+			if key, ok := apiKeys[*logs[i].APIKeyID]; ok {
+				logs[i].APIKey = key
+			}
 		}
 		if acc, ok := accounts[logs[i].AccountID]; ok {
 			logs[i].Account = acc
@@ -1967,7 +1973,9 @@ func collectUsageLogIDs(logs []service.UsageLog) usageLogIDs {
 
 	for i := range logs {
 		userIDs[logs[i].UserID] = struct{}{}
-		apiKeyIDs[logs[i].APIKeyID] = struct{}{}
+		if logs[i].APIKeyID != nil {
+			apiKeyIDs[*logs[i].APIKeyID] = struct{}{}
+		}
 		accountIDs[logs[i].AccountID] = struct{}{}
 		if logs[i].GroupID != nil {
 			groupIDs[*logs[i].GroupID] = struct{}{}
@@ -2065,7 +2073,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	var (
 		id                    int64
 		userID                int64
-		apiKeyID              int64
+		apiKeyID              sql.NullInt64
 		accountID             int64
 		requestID             sql.NullString
 		model                 string
@@ -2137,7 +2145,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	log := &service.UsageLog{
 		ID:                    id,
 		UserID:                userID,
-		APIKeyID:              apiKeyID,
+		APIKeyID:              nullInt64Ptr(apiKeyID),
 		AccountID:             accountID,
 		Model:                 model,
 		InputTokens:           inputTokens,
@@ -2269,6 +2277,14 @@ func nullFloat64Ptr(v sql.NullFloat64) *float64 {
 		return nil
 	}
 	out := v.Float64
+	return &out
+}
+
+func nullInt64Ptr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	out := v.Int64
 	return &out
 }
 

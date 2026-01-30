@@ -26,7 +26,13 @@ export default {
       expired: 'Expired',
       active: 'Active',
       pending: 'Pending'
-    }
+    },
+    usageLogs: 'Usage Logs',
+    logTime: 'Time',
+    logModel: 'Model',
+    logTokens: 'Tokens',
+    logDuration: 'Duration',
+    noLogs: 'No usage records'
   },
 
   // Home Page
@@ -362,6 +368,7 @@ export default {
     noGroup: 'No group',
     created: 'Created',
     copyToClipboard: 'Copy to clipboard',
+    copiedToClipboard: 'Copied to clipboard',
     copied: 'Copied!',
     importToCcSwitch: 'Import to CCS',
     enable: 'Enable',
@@ -1652,6 +1659,9 @@ export default {
         batchNamePrefixPlaceholder: 'e.g., fromqq',
         batchNamePrefixHint: 'Accounts will be named as BatchName_1, BatchName_2, ... Defaults to Kiro if empty',
         dragDropJson: 'Drag and drop JSON file here',
+        multipleFilesSupported: 'Multiple files supported',
+        selectFiles: 'Select Files',
+        uploadedFiles: 'Uploaded Files',
         selectFile: 'Select File',
         orPasteJson: 'Or paste JSON',
         batchJsonPlaceholderSocial: '[{\'{\'}\"refreshToken\": \"...\"{\'}\'}] or {\'{\'}\"tokens\": [{\'{\'}\"refreshToken\": \"...\"{\'}\'}]{\'}\'}',
@@ -1666,6 +1676,8 @@ export default {
         pleaseSelectJson: 'Please select a JSON file',
         fileReadError: 'Failed to read file',
         noValidTokens: 'No valid tokens found (supports refreshToken/refresh_token fields)',
+        allTokensDuplicate: 'All {count} tokens already exist, skipped',
+        someTokensDuplicate: 'Added {added} tokens, skipped {skipped} duplicates',
         jsonParseError: 'JSON parse error, please check format',
         pleaseParseFirst: 'Please parse JSON first',
         pleaseEnterIdcCredentials: 'Please enter Client ID and Client Secret',

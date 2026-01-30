@@ -10,7 +10,7 @@ const (
 type UsageLog struct {
 	ID        int64
 	UserID    int64
-	APIKeyID  int64
+	APIKeyID  *int64 // 可空，使用临时 API Key 时为 nil
 	AccountID int64
 	RequestID string
 	Model     string

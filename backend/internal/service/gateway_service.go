@@ -3478,9 +3478,13 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		imageSize = &result.ImageSize
 	}
 	accountRateMultiplier := account.BillingRateMultiplier()
+	var apiKeyIDPtr *int64
+	if apiKey.ID != 0 {
+		apiKeyIDPtr = &apiKey.ID
+	}
 	usageLog := &UsageLog{
 		UserID:                user.ID,
-		APIKeyID:              apiKey.ID,
+		APIKeyID:              apiKeyIDPtr,
 		AccountID:             account.ID,
 		RequestID:             result.RequestID,
 		Model:                 result.Model,

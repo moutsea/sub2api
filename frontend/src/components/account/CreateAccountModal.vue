@@ -712,11 +712,39 @@
             <p class="text-sm text-gray-600 dark:text-gray-400">
               {{ t('admin.accounts.kiro.dragDropJson') }}
             </p>
+            <p class="text-xs text-gray-500 dark:text-gray-500">
+              {{ t('admin.accounts.kiro.multipleFilesSupported') }}
+            </p>
             <label class="mt-2 inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-600 transition-colors hover:bg-cyan-500/20 dark:text-cyan-400">
               <Icon name="document" size="xs" />
-              {{ t('admin.accounts.kiro.selectFile') }}
-              <input type="file" accept=".json" class="hidden" @change="handleKiroFileSelect" />
+              {{ t('admin.accounts.kiro.selectFiles') }}
+              <input type="file" accept=".json" multiple class="hidden" @change="handleKiroFileSelect" />
             </label>
+          </div>
+
+          <!-- Uploaded Files List -->
+          <div v-if="kiroUploadedFiles.length > 0" class="space-y-2">
+            <label class="input-label">{{ t('admin.accounts.kiro.uploadedFiles') }}</label>
+            <div class="max-h-32 overflow-y-auto rounded-lg border border-gray-200 dark:border-dark-600">
+              <div
+                v-for="(file, index) in kiroUploadedFiles"
+                :key="index"
+                class="flex items-center justify-between border-b border-gray-100 px-3 py-2 last:border-b-0 dark:border-dark-700"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <Icon name="document" size="sm" class="flex-shrink-0 text-cyan-500" />
+                  <span class="truncate text-sm text-gray-700 dark:text-gray-300">{{ file.name }}</span>
+                  <span class="flex-shrink-0 text-xs text-gray-500 dark:text-gray-400">({{ file.tokenCount }} tokens)</span>
+                </div>
+                <button
+                  type="button"
+                  @click="removeKiroUploadedFile(index)"
+                  class="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-red-500 dark:hover:bg-dark-600"
+                >
+                  <Icon name="x" size="sm" />
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- Or paste JSON -->
@@ -1939,6 +1967,7 @@ const kiroBatchJson = ref('') // For batch import
 const kiroIsDragging = ref(false) // For drag-drop
 const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }>>([])
 const kiroParseError = ref('')
+const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }> }>>([])
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
@@ -2119,6 +2148,7 @@ watch(
       kiroBatchJson.value = ''
       kiroParsedTokens.value = []
       kiroParseError.value = ''
+      kiroUploadedFiles.value = []
     }
     // Reset OAuth states
     oauth.resetState()
@@ -2350,6 +2380,7 @@ const resetForm = () => {
   kiroBatchJson.value = ''
   kiroParsedTokens.value = []
   kiroParseError.value = ''
+  kiroUploadedFiles.value = []
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -2370,14 +2401,22 @@ const handleClose = () => {
 // Kiro file handling methods
 const handleKiroFileDrop = (e: DragEvent) => {
   kiroIsDragging.value = false
-  const file = e.dataTransfer?.files[0]
-  if (file) readKiroJsonFile(file)
+  const files = e.dataTransfer?.files
+  if (files && files.length > 0) {
+    for (let i = 0; i < files.length; i++) {
+      readKiroJsonFile(files[i])
+    }
+  }
 }
 
 const handleKiroFileSelect = (e: Event) => {
   const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (file) readKiroJsonFile(file)
+  const files = input.files
+  if (files && files.length > 0) {
+    for (let i = 0; i < files.length; i++) {
+      readKiroJsonFile(files[i])
+    }
+  }
   input.value = ''
 }
 
@@ -2388,8 +2427,8 @@ const readKiroJsonFile = (file: File) => {
   }
   const reader = new FileReader()
   reader.onload = (e) => {
-    kiroBatchJson.value = (e.target?.result as string) || ''
-    parseKiroBatchJson()
+    const jsonText = (e.target?.result as string) || ''
+    parseKiroJsonFileContent(file.name, jsonText)
   }
   reader.onerror = () => {
     kiroParseError.value = t('admin.accounts.kiro.fileReadError')
@@ -2397,9 +2436,75 @@ const readKiroJsonFile = (file: File) => {
   reader.readAsText(file)
 }
 
+const parseKiroJsonFileContent = (fileName: string, jsonText: string) => {
+  kiroParseError.value = ''
+  if (!jsonText.trim()) {
+    kiroParseError.value = t('admin.accounts.kiro.jsonParseError')
+    return
+  }
+
+  try {
+    const data = JSON.parse(jsonText)
+    const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
+    const tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }> = []
+
+    // Get existing refresh tokens for deduplication
+    const existingTokens = new Set(kiroParsedTokens.value.map(t => t.refreshToken))
+    let skippedCount = 0
+
+    for (const item of items) {
+      const rt = item?.refreshToken || item?.refresh_token || item?.RefreshToken
+      if (rt && typeof rt === 'string') {
+        if (existingTokens.has(rt)) {
+          skippedCount++
+          continue
+        }
+        existingTokens.add(rt)
+        tokens.push({
+          refreshToken: rt,
+          clientId: item?.clientId || item?.client_id,
+          clientSecret: item?.clientSecret || item?.client_secret,
+          name: item?.name
+        })
+      }
+    }
+
+    if (tokens.length === 0 && skippedCount === 0) {
+      kiroParseError.value = t('admin.accounts.kiro.noValidTokens')
+      return
+    }
+
+    if (tokens.length === 0 && skippedCount > 0) {
+      kiroParseError.value = t('admin.accounts.kiro.allTokensDuplicate', { count: skippedCount })
+      return
+    }
+
+    kiroUploadedFiles.value.push({
+      name: fileName,
+      tokenCount: tokens.length,
+      tokens
+    })
+    aggregateKiroParsedTokens()
+
+    if (skippedCount > 0) {
+      kiroParseError.value = t('admin.accounts.kiro.someTokensDuplicate', { added: tokens.length, skipped: skippedCount })
+    }
+  } catch {
+    kiroParseError.value = t('admin.accounts.kiro.jsonParseError')
+  }
+}
+
+const removeKiroUploadedFile = (index: number) => {
+  kiroUploadedFiles.value.splice(index, 1)
+  aggregateKiroParsedTokens()
+}
+
+const aggregateKiroParsedTokens = () => {
+  kiroParsedTokens.value = kiroUploadedFiles.value.flatMap(file => file.tokens)
+}
+
 const parseKiroBatchJson = () => {
   kiroParseError.value = ''
-  kiroParsedTokens.value = []
 
   const jsonText = kiroBatchJson.value.trim()
   if (!jsonText) {
@@ -2410,11 +2515,22 @@ const parseKiroBatchJson = () => {
   try {
     const data = JSON.parse(jsonText)
     const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
+    const newTokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }> = []
+
+    // Get existing refresh tokens from uploaded files for deduplication
+    const fileTokens = kiroUploadedFiles.value.flatMap(file => file.tokens)
+    const existingTokens = new Set(fileTokens.map(t => t.refreshToken))
+    let skippedCount = 0
 
     for (const item of items) {
       const rt = item?.refreshToken || item?.refresh_token || item?.RefreshToken
       if (rt && typeof rt === 'string') {
-        kiroParsedTokens.value.push({
+        if (existingTokens.has(rt)) {
+          skippedCount++
+          continue
+        }
+        existingTokens.add(rt)
+        newTokens.push({
           refreshToken: rt,
           clientId: item?.clientId || item?.client_id,
           clientSecret: item?.clientSecret || item?.client_secret,
@@ -2423,8 +2539,21 @@ const parseKiroBatchJson = () => {
       }
     }
 
-    if (kiroParsedTokens.value.length === 0) {
+    if (newTokens.length === 0 && skippedCount === 0) {
       kiroParseError.value = t('admin.accounts.kiro.noValidTokens')
+      return
+    }
+
+    if (newTokens.length === 0 && skippedCount > 0) {
+      kiroParseError.value = t('admin.accounts.kiro.allTokensDuplicate', { count: skippedCount })
+      return
+    }
+
+    // Merge with tokens from uploaded files
+    kiroParsedTokens.value = [...fileTokens, ...newTokens]
+
+    if (skippedCount > 0) {
+      kiroParseError.value = t('admin.accounts.kiro.someTokensDuplicate', { added: newTokens.length, skipped: skippedCount })
     }
   } catch {
     kiroParseError.value = t('admin.accounts.kiro.jsonParseError')

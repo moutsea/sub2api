@@ -1460,6 +1460,7 @@ type OpenAIRecordUsageInput struct {
 	Subscription *UserSubscription
 	UserAgent    string // 请求的 User-Agent
 	IPAddress    string // 请求的客户端 IP 地址
+	TempAPIKeyID *int64 // 临时 API Key ID
 }
 
 // RecordUsage records usage and deducts balance
@@ -1506,9 +1507,13 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Create usage log
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
+	var apiKeyIDPtr *int64
+	if apiKey.ID != 0 {
+		apiKeyIDPtr = &apiKey.ID
+	}
 	usageLog := &UsageLog{
 		UserID:                user.ID,
-		APIKeyID:              apiKey.ID,
+		APIKeyID:              apiKeyIDPtr,
 		AccountID:             account.ID,
 		RequestID:             result.RequestID,
 		Model:                 result.Model,
@@ -1546,6 +1551,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if subscription != nil {
 		usageLog.SubscriptionID = &subscription.ID
+	}
+	if input.TempAPIKeyID != nil {
+		usageLog.TempAPIKeyID = input.TempAPIKeyID
 	}
 
 	inserted, err := s.usageLogRepo.Create(ctx, usageLog)

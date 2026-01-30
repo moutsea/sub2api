@@ -19,7 +19,7 @@ var (
 // CreateUsageLogRequest 创建使用日志请求
 type CreateUsageLogRequest struct {
 	UserID                int64   `json:"user_id"`
-	APIKeyID              int64   `json:"api_key_id"`
+	APIKeyID              *int64  `json:"api_key_id"` // 可空，使用临时 API Key 时为 nil
 	AccountID             int64   `json:"account_id"`
 	RequestID             string  `json:"request_id"`
 	Model                 string  `json:"model"`

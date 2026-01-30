@@ -10,7 +10,7 @@
 # All configuration is done via environment variables.
 # No Setup Wizard needed - the system auto-initializes on first run.
 # =============================================================================
-
+# docker builder prune -f
 # docker buildx build --platform linux/amd64 -t cfjwlchangji/sub2api:v1.0.3 --push .
 
 services:

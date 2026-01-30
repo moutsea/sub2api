@@ -42,10 +42,10 @@ const (
 
 	// Input token inflation for client-side context compression trigger
 	// Anthropic API max_tokens is typically 200k
-	// By adding 10k to actual input_tokens, client calculates higher usage:
-	//   e.g., actual 130k + 10k = 140k, usage = 140k/200k = 70%
+	// By adding to actual input_tokens, client calculates higher usage
 	// Client triggers auto-compression when usage >= 92%
-	InputTokenInflation = 10000
+	// Set to 0 to disable inflation
+	InputTokenInflation = 0
 )
 
 // EstimateInputTokens estimates the number of input tokens for a Claude request.
@@ -354,25 +354,15 @@ func estimateToolsTokens(tools []ClaudeTool) int {
 }
 
 // estimateTextTokens estimates tokens for plain text
-// Uses a simple heuristic: ~4 characters per token for English
+// Uses official Anthropic tokenizer for accurate counting
 func estimateTextTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	return (len(text) + CharsPerToken - 1) / CharsPerToken
+	return CountTokens(text)
 }
 
 // estimateToolNameTokens estimates tokens for a tool name
-// Tool names with underscores may tokenize differently
+// Uses official Anthropic tokenizer for accurate counting
 func estimateToolNameTokens(name string) int {
-	if name == "" {
-		return 0
-	}
-	// Underscore-separated names tend to have more tokens
-	// Count underscores and add extra tokens
-	underscores := strings.Count(name, "_")
-	baseTokens := estimateTextTokens(name)
-	return baseTokens + underscores
+	return CountTokens(name)
 }
 
 // InflateInputTokens adds the inflation amount to input tokens for client-side

@@ -7,6 +7,23 @@ import axios from 'axios'
 const { t, locale } = useI18n()
 const appStore = useAppStore()
 
+interface UsageLogEntry {
+  id: number
+  model: string
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  stream: boolean
+  duration_ms?: number
+  created_at: string
+}
+
+interface PaginationInfo {
+  page: number
+  page_size: number
+  total: number
+}
+
 interface KeyInfo {
   name: string
   group_name?: string
@@ -20,14 +37,18 @@ interface KeyInfo {
   remaining_requests: number
   is_expired: boolean
   is_activated: boolean
+  usage_logs?: UsageLogEntry[]
+  pagination?: PaginationInfo
 }
 
 const keyInput = ref('')
 const loading = ref(false)
 const keyInfo = ref<KeyInfo | null>(null)
 const error = ref('')
+const currentPage = ref(1)
+const pageSize = ref(10)
 
-const queryKey = async () => {
+const queryKey = async (page = 1) => {
   if (!keyInput.value.trim()) {
     appStore.showError(t('keyQuery.enterKey'))
     return
@@ -35,14 +56,21 @@ const queryKey = async () => {
 
   loading.value = true
   error.value = ''
-  keyInfo.value = null
+  if (page === 1) {
+    keyInfo.value = null
+  }
 
   try {
     const resp = await axios.get('/api/v1/temp-api-keys/query', {
-      params: { key: keyInput.value.trim() }
+      params: {
+        key: keyInput.value.trim(),
+        page: page,
+        page_size: pageSize.value
+      }
     })
     if (resp.data.code === 0) {
       keyInfo.value = resp.data.data
+      currentPage.value = page
     } else {
       error.value = resp.data.message || t('keyQuery.notFound')
     }
@@ -69,6 +97,18 @@ const formatDate = (dateStr: string | null) => {
   return date.toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US', options)
 }
 
+const formatLogDate = (dateStr: string) => {
+  const date = new Date(dateStr)
+  return date.toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
+}
+
 const getStatusText = (info: KeyInfo) => {
   if (info.status === 'disabled') return t('keyQuery.status.disabled')
   if (info.is_expired) return t('keyQuery.status.expired')
@@ -93,11 +133,22 @@ const progressColor = computed(() => {
   if (usagePercent.value >= 70) return 'progress-warning'
   return 'progress-success'
 })
+
+const totalPages = computed(() => {
+  if (!keyInfo.value?.pagination) return 1
+  return Math.ceil(keyInfo.value.pagination.total / keyInfo.value.pagination.page_size)
+})
+
+const goToPage = (page: number) => {
+  if (page >= 1 && page <= totalPages.value) {
+    queryKey(page)
+  }
+}
 </script>
 
 <template>
   <div class="min-h-screen bg-gradient-to-br from-base-200 via-base-100 to-base-200 flex items-center justify-center p-4">
-    <div class="w-full max-w-md">
+    <div class="w-full max-w-2xl">
       <div class="text-center mb-8">
         <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 mb-4">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -117,12 +168,12 @@ const progressColor = computed(() => {
                 class="input input-bordered w-full pr-24 focus:input-primary transition-all"
                 v-model="keyInput"
                 :placeholder="t('keyQuery.placeholder')"
-                @keyup.enter="queryKey"
+                @keyup.enter="queryKey(1)"
               />
               <button
                 class="btn btn-primary absolute right-0 top-0 rounded-l-none"
                 :disabled="loading"
-                @click="queryKey"
+                @click="queryKey(1)"
               >
                 <span v-if="loading" class="loading loading-spinner loading-sm"></span>
                 <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -197,6 +248,71 @@ const progressColor = computed(() => {
                   {{ keyInfo.remaining_requests }}
                 </span>
               </div>
+            </div>
+
+            <!-- Usage Logs Section -->
+            <div v-if="keyInfo.usage_logs && keyInfo.usage_logs.length > 0">
+              <div class="divider text-xs text-base-content/40">{{ t('keyQuery.usageLogs') || '使用日志' }}</div>
+
+              <div class="overflow-x-auto">
+                <table class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th class="text-xs">{{ t('keyQuery.logTime') || '时间' }}</th>
+                      <th class="text-xs">{{ t('keyQuery.logModel') || '模型' }}</th>
+                      <th class="text-xs text-right">{{ t('keyQuery.logTokens') || 'Tokens' }}</th>
+                      <th class="text-xs text-right">{{ t('keyQuery.logDuration') || '耗时' }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="log in keyInfo.usage_logs" :key="log.id" class="hover">
+                      <td class="font-mono text-xs">{{ formatLogDate(log.created_at) }}</td>
+                      <td>
+                        <span class="badge badge-ghost badge-sm">{{ log.model }}</span>
+                      </td>
+                      <td class="text-right">
+                        <span class="text-xs text-base-content/60">{{ log.input_tokens }}</span>
+                        <span class="text-xs text-base-content/40 mx-1">/</span>
+                        <span class="text-xs text-base-content/60">{{ log.output_tokens }}</span>
+                        <span class="text-xs text-base-content/40 mx-1">=</span>
+                        <span class="font-semibold text-sm">{{ log.total_tokens }}</span>
+                      </td>
+                      <td class="text-right text-xs">
+                        <span v-if="log.duration_ms" class="font-mono">{{ (log.duration_ms / 1000).toFixed(1) }}s</span>
+                        <span v-else class="text-base-content/40">-</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Pagination -->
+              <div v-if="keyInfo.pagination && totalPages > 1" class="flex justify-center mt-4">
+                <div class="join">
+                  <button
+                    class="join-item btn btn-sm"
+                    :disabled="currentPage <= 1"
+                    @click="goToPage(currentPage - 1)"
+                  >
+                    «
+                  </button>
+                  <button class="join-item btn btn-sm">
+                    {{ currentPage }} / {{ totalPages }}
+                  </button>
+                  <button
+                    class="join-item btn btn-sm"
+                    :disabled="currentPage >= totalPages"
+                    @click="goToPage(currentPage + 1)"
+                  >
+                    »
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- No logs message -->
+            <div v-else-if="keyInfo.total_requests === 0" class="text-center py-4">
+              <p class="text-base-content/40 text-sm">{{ t('keyQuery.noLogs') || '暂无使用记录' }}</p>
             </div>
           </div>
         </div>

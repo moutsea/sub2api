@@ -26,7 +26,13 @@ export default {
       expired: '已过期',
       active: '使用中',
       pending: '待激活'
-    }
+    },
+    usageLogs: '使用日志',
+    logTime: '时间',
+    logModel: '模型',
+    logTokens: 'Tokens',
+    logDuration: '耗时',
+    noLogs: '暂无使用记录'
   },
 
   // Home Page
@@ -359,6 +365,7 @@ export default {
     noGroup: '无分组',
     created: '创建时间',
     copyToClipboard: '复制到剪贴板',
+    copiedToClipboard: '已复制到剪贴板',
     copied: '已复制！',
     importToCcSwitch: '导入到 CCS',
     enable: '启用',
@@ -1764,6 +1771,9 @@ export default {
         batchNamePrefixPlaceholder: '例如：fromqq',
         batchNamePrefixHint: '账号将自动命名为 批次名称_1, 批次名称_2, ... 如不填写则默认为 Kiro',
         dragDropJson: '拖拽 JSON 文件到此处',
+        multipleFilesSupported: '支持多文件选择',
+        selectFiles: '选择文件',
+        uploadedFiles: '已上传文件',
         selectFile: '选择文件',
         orPasteJson: '或粘贴 JSON',
         batchJsonPlaceholderSocial: '[{\'{\'}\"refreshToken\": \"...\"{\'}\'}] 或 {\'{\'}\"tokens\": [{\'{\'}\"refreshToken\": \"...\"{\'}\'}]{\'}\'}',
@@ -1778,6 +1788,8 @@ export default {
         pleaseSelectJson: '请选择 JSON 文件',
         fileReadError: '文件读取失败',
         noValidTokens: '未找到有效的 Token（支持 refreshToken/refresh_token 字段）',
+        allTokensDuplicate: '所有 {count} 个 Token 均已存在，已跳过',
+        someTokensDuplicate: '已添加 {added} 个 Token，跳过 {skipped} 个重复项',
         jsonParseError: 'JSON 解析失败，请检查格式',
         pleaseParseFirst: '请先解析 JSON',
         pleaseEnterIdcCredentials: '请输入 Client ID 和 Client Secret',
