@@ -77,25 +77,6 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	originalModel := claudeReq.Model
 
-	// Cache estimation for billing
-	cacheEstimation := kiro.EstimateCache(claudeReq)
-	var cacheHit bool
-	if cacheEstimation.MeetsCacheThreshold {
-		// Generate cache key from system + tools
-		systemText := kiro.ExtractSystemPromptText(claudeReq.System)
-		toolsJSON := ""
-		if len(claudeReq.Tools) > 0 {
-			if toolsBytes, err := json.Marshal(claudeReq.Tools); err == nil {
-				toolsJSON = string(toolsBytes)
-			}
-		}
-		cacheKey := kiro.GenerateCacheKey(systemText, toolsJSON)
-		cacheHit = kiro.GlobalCacheTracker.CheckAndMark(cacheKey)
-		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d meets_threshold=%v cache_hit=%v",
-			prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
-			cacheEstimation.MeetsCacheThreshold, cacheHit)
-	}
-
 	// Pre-check: Estimate input tokens and truncate messages if exceeding context limit
 	// This prevents 400 errors from Kiro upstream due to context length exceeding threshold
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
@@ -134,6 +115,26 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			}
 		}
 	}
+
+	// Cache estimation for billing (must be after truncation to use actual request)
+	cacheEstimation := kiro.EstimateCache(claudeReq)
+	var cacheHit bool
+	var cacheKey string
+	// Generate cache key from system + tools (always generate for logging)
+	systemText := kiro.ExtractSystemPromptText(claudeReq.System)
+	toolsJSON := ""
+	if len(claudeReq.Tools) > 0 {
+		if toolsBytes, err := json.Marshal(claudeReq.Tools); err == nil {
+			toolsJSON = string(toolsBytes)
+		}
+	}
+	cacheKey = kiro.GenerateCacheKey(systemText, toolsJSON)
+	if cacheEstimation.MeetsCacheThreshold {
+		cacheHit = kiro.GlobalCacheTracker.CheckAndMark(cacheKey)
+	}
+	log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d meets_threshold=%v cache_hit=%v cache_key=%s system_len=%d tools_len=%d tools_count=%d",
+		prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
+		cacheEstimation.MeetsCacheThreshold, cacheHit, cacheKey[:8], len(systemText), len(toolsJSON), len(claudeReq.Tools))
 
 	// Get access token
 	if s.tokenProvider == nil {
@@ -316,17 +317,25 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		c.Header("x-request-id", requestID)
 	}
 
-	// Estimate input tokens from the Claude request
-	inputTokens := kiro.EstimateInputTokens(claudeReq)
-
 	// Build tool name reverse map for restoring original names in response
 	toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
 
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 
-	// Calculate cache tokens to pass to handlers
+	// Calculate cache tokens and input_tokens for billing/logging:
+	// - For billing/logging: input_tokens = TOTAL input tokens (cacheable + non-cacheable)
+	// - cache_creation_input_tokens: tokens written to cache (on cache miss)
+	// - cache_read_input_tokens: tokens read from cache (on cache hit)
+	//
+	// Note: We use TotalInputTokens for billing to ensure accurate usage tracking.
+	// The cache tokens are tracked separately for transparency.
 	var cacheCreationTokens, cacheReadTokens int
+	var inputTokens int
+
+	// Always use total input tokens for billing/logging
+	inputTokens = cacheEstimation.TotalInputTokens
+
 	if cacheEstimation.MeetsCacheThreshold {
 		if cacheHit {
 			cacheReadTokens = cacheEstimation.CacheableTokens
@@ -334,6 +343,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			cacheCreationTokens = cacheEstimation.CacheableTokens
 		}
 	}
+
+	log.Printf("%s cache_tokens: creation=%d read=%d input=%d total=%d meets_threshold=%v cache_hit=%v",
+		prefix, cacheCreationTokens, cacheReadTokens, inputTokens, cacheEstimation.TotalInputTokens, cacheEstimation.MeetsCacheThreshold, cacheHit)
 
 	if claudeReq.Stream {
 		// Streaming response
@@ -355,17 +367,6 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		firstTokenMs = streamRes.firstTokenMs
 	}
 
-	// Apply cache token estimation to usage (for billing/logging)
-	if cacheEstimation.MeetsCacheThreshold {
-		if cacheHit {
-			// Cache hit: attribute cacheable tokens to cache_read
-			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
-		} else {
-			// Cache miss: attribute cacheable tokens to cache_creation
-			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
-		}
-	}
-
 	return &ForwardResult{
 		RequestID:    requestID,
 		Usage:        *usage,
@@ -383,7 +384,7 @@ type kiroStreamResult struct {
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens int, cacheReadTokens int) (*kiroStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -406,10 +407,6 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	// Set tool name reverse map for restoring original names
 	if toolNameReverseMap != nil {
 		converter.SetToolNameReverseMap(toolNameReverseMap)
-	}
-	// Set cache tokens for response
-	if cacheCreationTokens > 0 || cacheReadTokens > 0 {
-		converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
 	}
 
 	// Send initial events
@@ -538,10 +535,12 @@ finishStream:
 	}
 
 	// Set context percentage before building final events
-	// This allows BuildFinalEvents to calculate accurate input_tokens
 	if contextPct > 0 {
 		converter.SetContextPercentage(contextPct)
 	}
+
+	// Set cache tokens directly (aligned with kiro4api)
+	converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
 
 	// Send final events
 	finalEvents := converter.BuildFinalEvents()
@@ -554,32 +553,25 @@ finishStream:
 	}
 	flusher.Flush()
 
-	// Calculate accurate input tokens from context percentage if available
-	accurateInputTokens := inputTokens
-	if contextPct > 0 {
-		calculatedTokens := int(contextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
-		if calculatedTokens > 0 {
-			accurateInputTokens = calculatedTokens
-		}
-	}
-
 	// Build usage from converter stats
 	usage := &ClaudeUsage{
-		InputTokens:         accurateInputTokens,
-		OutputTokens:        converter.TotalOutputTokens(),
-		ContextUsagePercent: contextPct,
+		InputTokens:              inputTokens,
+		OutputTokens:             converter.TotalOutputTokens(),
+		ContextUsagePercent:      contextPct,
+		CacheCreationInputTokens: cacheCreationTokens,
+		CacheReadInputTokens:     cacheReadTokens,
 	}
 
 	// Log credits/context usage if available
 	if credits > 0 || contextPct > 0 {
-		log.Printf("[kiro-Forward] credits=%.4f context_pct=%.2f input_tokens=%d", credits, contextPct, accurateInputTokens)
+		log.Printf("[kiro-Forward] credits=%.4f context_pct=%.2f input_tokens=%d", credits, contextPct, inputTokens)
 	}
 
 	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
 }
 
 // handleNonStreamingResponse handles non-streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens int, cacheReadTokens int) (*kiroStreamResult, error) {
 	// Read entire response
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
@@ -594,21 +586,12 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	messageID := "msg_" + uuid.New().String()[:24]
 	parsedResp := kiro.ParseCompleteResponseWithNameRestore(respBody, toolNameReverseMap)
 
-	// Calculate accurate input tokens from context percentage if available
-	accurateInputTokens := inputTokens
-	if parsedResp.ContextPct > 0 {
-		calculatedTokens := int(parsedResp.ContextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
-		if calculatedTokens > 0 {
-			accurateInputTokens = calculatedTokens
-		}
-	}
-
-	// Set cache tokens for response
+	// Set cache tokens for response (aligned with kiro4api)
 	parsedResp.CacheCreationTokens = cacheCreationTokens
 	parsedResp.CacheReadTokens = cacheReadTokens
 
-	// Build Claude response with accurate input tokens
-	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, accurateInputTokens, parsedResp)
+	// Build Claude response with estimated input tokens
+	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, inputTokens, parsedResp)
 
 	// Serialize and send
 	respJSON, err := json.Marshal(claudeResp)
@@ -620,9 +603,11 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 
 	// Extract usage
 	usage := &ClaudeUsage{
-		InputTokens:         accurateInputTokens,
-		OutputTokens:        (len(parsedResp.Text) + 3) / 4, // Rough estimate
-		ContextUsagePercent: parsedResp.ContextPct,
+		InputTokens:              inputTokens,
+		OutputTokens:             (len(parsedResp.Text) + 3) / 4, // Rough estimate
+		ContextUsagePercent:      parsedResp.ContextPct,
+		CacheCreationInputTokens: cacheCreationTokens,
+		CacheReadInputTokens:     cacheReadTokens,
 	}
 
 	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
