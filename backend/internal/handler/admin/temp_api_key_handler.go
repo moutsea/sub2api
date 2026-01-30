@@ -28,16 +28,19 @@ type CreateTempAPIKeyRequest struct {
 	Count      int    `json:"count" binding:"required,min=1,max=100"` // 批量创建数量
 	NamePrefix string `json:"name_prefix" binding:"required"`         // 名称前缀
 	GroupID    int64  `json:"group_id" binding:"required"`            // 关联分组
-	ValidDays  int    `json:"valid_days" binding:"required,min=1"`    // 有效天数
-	DailyLimit int    `json:"daily_limit"`                            // 每日限制（默认1000）
+	KeyType    string `json:"key_type"`                               // 类型：time_limited（默认）、quota_only
+	ValidDays  int    `json:"valid_days"`                             // 有效天数（time_limited 必填）
+	DailyLimit int    `json:"daily_limit"`                            // 每日限制（time_limited 使用，默认1000）
+	TotalQuota int64  `json:"total_quota"`                            // 总额度（quota_only 必填）
 }
 
 // UpdateTempAPIKeyRequest represents the request to update a temp API key
 type UpdateTempAPIKeyRequest struct {
 	Name       string `json:"name"`
-	Status     string `json:"status" binding:"omitempty,oneof=active inactive"`
+	Status     string `json:"status" binding:"omitempty,oneof=active inactive exhausted"`
 	ValidDays  *int   `json:"valid_days"`
 	DailyLimit *int   `json:"daily_limit"`
+	TotalQuota *int64 `json:"total_quota"`
 }
 
 // BatchUpdateRequest represents the request for batch operations
@@ -55,6 +58,8 @@ type TempAPIKeyResponse struct {
 	Name               string  `json:"name"`
 	GroupID            int64   `json:"group_id"`
 	GroupName          string  `json:"group_name,omitempty"`
+	KeyType            string  `json:"key_type"`
+	TotalQuota         int64   `json:"total_quota"`
 	ValidDays          int     `json:"valid_days"`
 	ActivatedAt        *string `json:"activated_at"`
 	ExpiresAt          *string `json:"expires_at"`
@@ -69,6 +74,7 @@ type TempAPIKeyResponse struct {
 	RemainingRequests  int     `json:"remaining_requests"`
 	IsExpired          bool    `json:"is_expired"`
 	IsActivated        bool    `json:"is_activated"`
+	IsExhausted        bool    `json:"is_exhausted"`
 }
 
 // List lists all temp API keys with pagination
@@ -114,6 +120,25 @@ func (h *TempAPIKeyHandler) Create(c *gin.Context) {
 	}
 	userID := authSubject.(middleware.AuthSubject).UserID
 
+	// 确定 key 类型
+	keyType := req.KeyType
+	if keyType == "" {
+		keyType = service.TempAPIKeyTypeLimited // 默认限时限额
+	}
+
+	// 验证参数
+	if keyType == service.TempAPIKeyTypeQuotaOnly {
+		if req.TotalQuota <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "total_quota is required for quota_only type"})
+			return
+		}
+	} else {
+		if req.ValidDays <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "valid_days is required for time_limited type"})
+			return
+		}
+	}
+
 	dailyLimit := req.DailyLimit
 	if dailyLimit <= 0 {
 		dailyLimit = 1000 // Default
@@ -125,6 +150,8 @@ func (h *TempAPIKeyHandler) Create(c *gin.Context) {
 			Key:        generateTempAPIKey(),
 			Name:       req.NamePrefix + "-" + strconv.Itoa(i+1),
 			GroupID:    req.GroupID,
+			KeyType:    keyType,
+			TotalQuota: req.TotalQuota,
 			ValidDays:  req.ValidDays,
 			DailyLimit: dailyLimit,
 			Status:     service.TempAPIKeyStatusActive,
@@ -298,6 +325,8 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 		Key:                key.Key,
 		Name:               key.Name,
 		GroupID:            key.GroupID,
+		KeyType:            key.KeyType,
+		TotalQuota:         key.TotalQuota,
 		ValidDays:          key.ValidDays,
 		DailyLimit:         key.DailyLimit,
 		CurrentPeriodCount: key.CurrentPeriodCount,
@@ -309,6 +338,7 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 		RemainingRequests:  key.RemainingRequests(),
 		IsExpired:          key.IsExpired(),
 		IsActivated:        key.IsActivated(),
+		IsExhausted:        key.IsExhausted(),
 	}
 
 	if key.ActivatedAt != nil {

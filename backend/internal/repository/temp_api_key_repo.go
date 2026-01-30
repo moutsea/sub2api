@@ -27,15 +27,23 @@ func (r *TempAPIKeyRepo) activeQuery() *dbent.TempAPIKeyQuery {
 
 // Create creates a new temp API key
 func (r *TempAPIKeyRepo) Create(ctx context.Context, key *service.TempAPIKey) error {
-	created, err := r.client.TempAPIKey.Create().
+	creator := r.client.TempAPIKey.Create().
 		SetKey(key.Key).
 		SetName(key.Name).
 		SetGroupID(key.GroupID).
 		SetValidDays(key.ValidDays).
 		SetDailyLimit(key.DailyLimit).
 		SetStatus(key.Status).
-		SetCreatedBy(key.CreatedBy).
-		Save(ctx)
+		SetCreatedBy(key.CreatedBy)
+
+	if key.KeyType != "" {
+		creator.SetKeyType(key.KeyType)
+	}
+	if key.TotalQuota > 0 {
+		creator.SetTotalQuota(key.TotalQuota)
+	}
+
+	created, err := creator.Save(ctx)
 	if err != nil {
 		return err
 	}
@@ -228,39 +236,60 @@ func (r *TempAPIKeyRepo) ActivateAndIncrement(ctx context.Context, id int64) (*s
 	}
 
 	now := time.Now()
-
-	// Check rate limit first (before any update)
-	// 如果已激活且在当前周期内，检查是否超限
-	if row.ActivatedAt != nil && row.CurrentPeriodStart != nil {
-		periodExpired := now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour
-		if !periodExpired && row.CurrentPeriodCount >= row.DailyLimit {
-			return r.toServiceModel(row), true, nil // Rate limited
-		}
-	}
-
 	updater := r.client.TempAPIKey.UpdateOneID(id)
 
-	// Activate if not yet activated
-	if row.ActivatedAt == nil {
-		expiresAt := now.Add(time.Duration(row.ValidDays) * 24 * time.Hour)
-		updater.SetActivatedAt(now)
-		updater.SetExpiresAt(expiresAt)
-		updater.SetCurrentPeriodStart(now)
-		updater.SetCurrentPeriodCount(1)
+	// quota_only 类型：仅检查总额度
+	if row.KeyType == service.TempAPIKeyTypeQuotaOnly {
+		// 检查是否已用完额度
+		if row.TotalQuota > 0 && row.TotalRequests >= row.TotalQuota {
+			return r.toServiceModel(row), true, nil // Quota exhausted
+		}
+
+		// 首次使用时记录激活时间
+		if row.ActivatedAt == nil {
+			updater.SetActivatedAt(now)
+		}
+
+		// 递增总请求数
+		updater.AddTotalRequests(1)
+
+		// 检查递增后是否达到限额，如果是则更新状态为 exhausted
+		if row.TotalQuota > 0 && row.TotalRequests+1 >= row.TotalQuota {
+			updater.SetStatus(service.TempAPIKeyStatusExhausted)
+		}
 	} else {
-		// Check if current period has expired (24 hours)
-		if row.CurrentPeriodStart != nil && now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour {
-			// Reset period
+		// time_limited 类型：原有逻辑
+		// Check rate limit first (before any update)
+		// 如果已激活且在当前周期内，检查是否超限
+		if row.ActivatedAt != nil && row.CurrentPeriodStart != nil {
+			periodExpired := now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour
+			if !periodExpired && row.CurrentPeriodCount >= row.DailyLimit {
+				return r.toServiceModel(row), true, nil // Rate limited
+			}
+		}
+
+		// Activate if not yet activated
+		if row.ActivatedAt == nil {
+			expiresAt := now.Add(time.Duration(row.ValidDays) * 24 * time.Hour)
+			updater.SetActivatedAt(now)
+			updater.SetExpiresAt(expiresAt)
 			updater.SetCurrentPeriodStart(now)
 			updater.SetCurrentPeriodCount(1)
 		} else {
-			// Increment count - 使用 AddCurrentPeriodCount 进行原子增加
-			updater.AddCurrentPeriodCount(1)
+			// Check if current period has expired (24 hours)
+			if row.CurrentPeriodStart != nil && now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour {
+				// Reset period
+				updater.SetCurrentPeriodStart(now)
+				updater.SetCurrentPeriodCount(1)
+			} else {
+				// Increment count - 使用 AddCurrentPeriodCount 进行原子增加
+				updater.AddCurrentPeriodCount(1)
+			}
 		}
-	}
 
-	// Increment total requests - 使用 AddTotalRequests 进行原子增加
-	updater.AddTotalRequests(1)
+		// Increment total requests - 使用 AddTotalRequests 进行原子增加
+		updater.AddTotalRequests(1)
+	}
 
 	_, err = updater.Save(ctx)
 	if err != nil {
@@ -325,6 +354,8 @@ func (r *TempAPIKeyRepo) toServiceModel(row *dbent.TempAPIKey) *service.TempAPIK
 		Key:                row.Key,
 		Name:               row.Name,
 		GroupID:            row.GroupID,
+		KeyType:            row.KeyType,
+		TotalQuota:         row.TotalQuota,
 		ValidDays:          row.ValidDays,
 		DailyLimit:         row.DailyLimit,
 		CurrentPeriodCount: row.CurrentPeriodCount,

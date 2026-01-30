@@ -28,6 +28,7 @@ var (
 	ErrTempAPIKeyExpired     = errors.New("temp API key has expired")
 	ErrTempAPIKeyInactive    = errors.New("temp API key is inactive")
 	ErrTempAPIKeyRateLimited = errors.New("temp API key rate limit exceeded")
+	ErrTempAPIKeyExhausted   = errors.New("temp API key quota exhausted")
 )
 
 // GetByKey retrieves a temp API key by key string
@@ -43,9 +44,21 @@ func (s *TempAPIKeyService) ValidateAndIncrement(ctx context.Context, key *TempA
 		return nil, ErrTempAPIKeyInactive
 	}
 
-	// Check if already expired (for activated keys)
-	if key.ExpiresAt != nil && time.Now().After(*key.ExpiresAt) {
-		return nil, ErrTempAPIKeyExpired
+	// Check exhausted status (for quota_only keys)
+	if key.Status == TempAPIKeyStatusExhausted {
+		return nil, ErrTempAPIKeyExhausted
+	}
+
+	// For quota_only type, check if quota is exhausted
+	if key.KeyType == TempAPIKeyTypeQuotaOnly {
+		if key.IsExhausted() {
+			return nil, ErrTempAPIKeyExhausted
+		}
+	} else {
+		// For time_limited type, check if already expired (for activated keys)
+		if key.ExpiresAt != nil && time.Now().After(*key.ExpiresAt) {
+			return nil, ErrTempAPIKeyExpired
+		}
 	}
 
 	// Activate (if needed) and increment usage

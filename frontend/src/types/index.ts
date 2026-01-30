@@ -319,19 +319,23 @@ export interface UpdateApiKeyRequest {
 
 // ==================== Temp API Key Types ====================
 
+export type TempApiKeyType = 'time_limited' | 'quota_only'
+
 export interface TempApiKey {
   id: number
   key: string
   name: string
   group_id: number
   group_name?: string
+  key_type: TempApiKeyType
+  total_quota: number
   valid_days: number
   activated_at: string | null
   expires_at: string | null
   daily_limit: number
   current_period_count: number
   total_requests: number
-  status: 'active' | 'inactive' | 'expired'
+  status: 'active' | 'inactive' | 'expired' | 'exhausted'
   created_by: number
   creator_email?: string
   created_at: string
@@ -339,21 +343,25 @@ export interface TempApiKey {
   remaining_requests: number
   is_expired: boolean
   is_activated: boolean
+  is_exhausted: boolean
 }
 
 export interface CreateTempApiKeyRequest {
   count: number
   name_prefix: string
   group_id: number
-  valid_days: number
+  key_type?: TempApiKeyType
+  valid_days?: number
   daily_limit?: number
+  total_quota?: number
 }
 
 export interface UpdateTempApiKeyRequest {
   name?: string
-  status?: 'active' | 'inactive'
+  status?: 'active' | 'inactive' | 'exhausted'
   valid_days?: number
   daily_limit?: number
+  total_quota?: number
 }
 
 export interface BatchUpdateTempApiKeyRequest {

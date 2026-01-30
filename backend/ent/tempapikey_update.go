@@ -99,6 +99,41 @@ func (_u *TempAPIKeyUpdate) SetNillableGroupID(v *int64) *TempAPIKeyUpdate {
 	return _u
 }
 
+// SetKeyType sets the "key_type" field.
+func (_u *TempAPIKeyUpdate) SetKeyType(v string) *TempAPIKeyUpdate {
+	_u.mutation.SetKeyType(v)
+	return _u
+}
+
+// SetNillableKeyType sets the "key_type" field if the given value is not nil.
+func (_u *TempAPIKeyUpdate) SetNillableKeyType(v *string) *TempAPIKeyUpdate {
+	if v != nil {
+		_u.SetKeyType(*v)
+	}
+	return _u
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (_u *TempAPIKeyUpdate) SetTotalQuota(v int64) *TempAPIKeyUpdate {
+	_u.mutation.ResetTotalQuota()
+	_u.mutation.SetTotalQuota(v)
+	return _u
+}
+
+// SetNillableTotalQuota sets the "total_quota" field if the given value is not nil.
+func (_u *TempAPIKeyUpdate) SetNillableTotalQuota(v *int64) *TempAPIKeyUpdate {
+	if v != nil {
+		_u.SetTotalQuota(*v)
+	}
+	return _u
+}
+
+// AddTotalQuota adds value to the "total_quota" field.
+func (_u *TempAPIKeyUpdate) AddTotalQuota(v int64) *TempAPIKeyUpdate {
+	_u.mutation.AddTotalQuota(v)
+	return _u
+}
+
 // SetValidDays sets the "valid_days" field.
 func (_u *TempAPIKeyUpdate) SetValidDays(v int) *TempAPIKeyUpdate {
 	_u.mutation.ResetValidDays()
@@ -430,6 +465,15 @@ func (_u *TempAPIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) 
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(tempapikey.FieldName, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.KeyType(); ok {
+		_spec.SetField(tempapikey.FieldKeyType, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.TotalQuota(); ok {
+		_spec.SetField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedTotalQuota(); ok {
+		_spec.AddField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	}
 	if value, ok := _u.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)
 	}
@@ -663,6 +707,41 @@ func (_u *TempAPIKeyUpdateOne) SetNillableGroupID(v *int64) *TempAPIKeyUpdateOne
 	if v != nil {
 		_u.SetGroupID(*v)
 	}
+	return _u
+}
+
+// SetKeyType sets the "key_type" field.
+func (_u *TempAPIKeyUpdateOne) SetKeyType(v string) *TempAPIKeyUpdateOne {
+	_u.mutation.SetKeyType(v)
+	return _u
+}
+
+// SetNillableKeyType sets the "key_type" field if the given value is not nil.
+func (_u *TempAPIKeyUpdateOne) SetNillableKeyType(v *string) *TempAPIKeyUpdateOne {
+	if v != nil {
+		_u.SetKeyType(*v)
+	}
+	return _u
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (_u *TempAPIKeyUpdateOne) SetTotalQuota(v int64) *TempAPIKeyUpdateOne {
+	_u.mutation.ResetTotalQuota()
+	_u.mutation.SetTotalQuota(v)
+	return _u
+}
+
+// SetNillableTotalQuota sets the "total_quota" field if the given value is not nil.
+func (_u *TempAPIKeyUpdateOne) SetNillableTotalQuota(v *int64) *TempAPIKeyUpdateOne {
+	if v != nil {
+		_u.SetTotalQuota(*v)
+	}
+	return _u
+}
+
+// AddTotalQuota adds value to the "total_quota" field.
+func (_u *TempAPIKeyUpdateOne) AddTotalQuota(v int64) *TempAPIKeyUpdateOne {
+	_u.mutation.AddTotalQuota(v)
 	return _u
 }
 
@@ -1026,6 +1105,15 @@ func (_u *TempAPIKeyUpdateOne) sqlSave(ctx context.Context) (_node *TempAPIKey, 
 	}
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(tempapikey.FieldName, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.KeyType(); ok {
+		_spec.SetField(tempapikey.FieldKeyType, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.TotalQuota(); ok {
+		_spec.SetField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedTotalQuota(); ok {
+		_spec.AddField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
 	}
 	if value, ok := _u.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)

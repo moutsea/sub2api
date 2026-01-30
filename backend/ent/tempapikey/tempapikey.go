@@ -27,6 +27,10 @@ const (
 	FieldName = "name"
 	// FieldGroupID holds the string denoting the group_id field in the database.
 	FieldGroupID = "group_id"
+	// FieldKeyType holds the string denoting the key_type field in the database.
+	FieldKeyType = "key_type"
+	// FieldTotalQuota holds the string denoting the total_quota field in the database.
+	FieldTotalQuota = "total_quota"
 	// FieldValidDays holds the string denoting the valid_days field in the database.
 	FieldValidDays = "valid_days"
 	// FieldActivatedAt holds the string denoting the activated_at field in the database.
@@ -85,6 +89,8 @@ var Columns = []string{
 	FieldKey,
 	FieldName,
 	FieldGroupID,
+	FieldKeyType,
+	FieldTotalQuota,
 	FieldValidDays,
 	FieldActivatedAt,
 	FieldExpiresAt,
@@ -124,6 +130,10 @@ var (
 	KeyValidator func(string) error
 	// NameValidator is a validator for the "name" field. It is called by the builders before save.
 	NameValidator func(string) error
+	// DefaultKeyType holds the default value on creation for the "key_type" field.
+	DefaultKeyType string
+	// DefaultTotalQuota holds the default value on creation for the "total_quota" field.
+	DefaultTotalQuota int64
 	// DefaultValidDays holds the default value on creation for the "valid_days" field.
 	DefaultValidDays int
 	// DefaultDailyLimit holds the default value on creation for the "daily_limit" field.
@@ -172,6 +182,16 @@ func ByName(opts ...sql.OrderTermOption) OrderOption {
 // ByGroupID orders the results by the group_id field.
 func ByGroupID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldGroupID, opts...).ToFunc()
+}
+
+// ByKeyType orders the results by the key_type field.
+func ByKeyType(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldKeyType, opts...).ToFunc()
+}
+
+// ByTotalQuota orders the results by the total_quota field.
+func ByTotalQuota(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldTotalQuota, opts...).ToFunc()
 }
 
 // ByValidDays orders the results by the valid_days field.

@@ -85,6 +85,34 @@ func (_c *TempAPIKeyCreate) SetGroupID(v int64) *TempAPIKeyCreate {
 	return _c
 }
 
+// SetKeyType sets the "key_type" field.
+func (_c *TempAPIKeyCreate) SetKeyType(v string) *TempAPIKeyCreate {
+	_c.mutation.SetKeyType(v)
+	return _c
+}
+
+// SetNillableKeyType sets the "key_type" field if the given value is not nil.
+func (_c *TempAPIKeyCreate) SetNillableKeyType(v *string) *TempAPIKeyCreate {
+	if v != nil {
+		_c.SetKeyType(*v)
+	}
+	return _c
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (_c *TempAPIKeyCreate) SetTotalQuota(v int64) *TempAPIKeyCreate {
+	_c.mutation.SetTotalQuota(v)
+	return _c
+}
+
+// SetNillableTotalQuota sets the "total_quota" field if the given value is not nil.
+func (_c *TempAPIKeyCreate) SetNillableTotalQuota(v *int64) *TempAPIKeyCreate {
+	if v != nil {
+		_c.SetTotalQuota(*v)
+	}
+	return _c
+}
+
 // SetValidDays sets the "valid_days" field.
 func (_c *TempAPIKeyCreate) SetValidDays(v int) *TempAPIKeyCreate {
 	_c.mutation.SetValidDays(v)
@@ -285,6 +313,14 @@ func (_c *TempAPIKeyCreate) defaults() error {
 		v := tempapikey.DefaultUpdatedAt()
 		_c.mutation.SetUpdatedAt(v)
 	}
+	if _, ok := _c.mutation.KeyType(); !ok {
+		v := tempapikey.DefaultKeyType
+		_c.mutation.SetKeyType(v)
+	}
+	if _, ok := _c.mutation.TotalQuota(); !ok {
+		v := tempapikey.DefaultTotalQuota
+		_c.mutation.SetTotalQuota(v)
+	}
 	if _, ok := _c.mutation.ValidDays(); !ok {
 		v := tempapikey.DefaultValidDays
 		_c.mutation.SetValidDays(v)
@@ -334,6 +370,12 @@ func (_c *TempAPIKeyCreate) check() error {
 	}
 	if _, ok := _c.mutation.GroupID(); !ok {
 		return &ValidationError{Name: "group_id", err: errors.New(`ent: missing required field "TempAPIKey.group_id"`)}
+	}
+	if _, ok := _c.mutation.KeyType(); !ok {
+		return &ValidationError{Name: "key_type", err: errors.New(`ent: missing required field "TempAPIKey.key_type"`)}
+	}
+	if _, ok := _c.mutation.TotalQuota(); !ok {
+		return &ValidationError{Name: "total_quota", err: errors.New(`ent: missing required field "TempAPIKey.total_quota"`)}
 	}
 	if _, ok := _c.mutation.ValidDays(); !ok {
 		return &ValidationError{Name: "valid_days", err: errors.New(`ent: missing required field "TempAPIKey.valid_days"`)}
@@ -405,6 +447,14 @@ func (_c *TempAPIKeyCreate) createSpec() (*TempAPIKey, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Name(); ok {
 		_spec.SetField(tempapikey.FieldName, field.TypeString, value)
 		_node.Name = value
+	}
+	if value, ok := _c.mutation.KeyType(); ok {
+		_spec.SetField(tempapikey.FieldKeyType, field.TypeString, value)
+		_node.KeyType = value
+	}
+	if value, ok := _c.mutation.TotalQuota(); ok {
+		_spec.SetField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+		_node.TotalQuota = value
 	}
 	if value, ok := _c.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)
@@ -603,6 +653,36 @@ func (u *TempAPIKeyUpsert) SetGroupID(v int64) *TempAPIKeyUpsert {
 // UpdateGroupID sets the "group_id" field to the value that was provided on create.
 func (u *TempAPIKeyUpsert) UpdateGroupID() *TempAPIKeyUpsert {
 	u.SetExcluded(tempapikey.FieldGroupID)
+	return u
+}
+
+// SetKeyType sets the "key_type" field.
+func (u *TempAPIKeyUpsert) SetKeyType(v string) *TempAPIKeyUpsert {
+	u.Set(tempapikey.FieldKeyType, v)
+	return u
+}
+
+// UpdateKeyType sets the "key_type" field to the value that was provided on create.
+func (u *TempAPIKeyUpsert) UpdateKeyType() *TempAPIKeyUpsert {
+	u.SetExcluded(tempapikey.FieldKeyType)
+	return u
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (u *TempAPIKeyUpsert) SetTotalQuota(v int64) *TempAPIKeyUpsert {
+	u.Set(tempapikey.FieldTotalQuota, v)
+	return u
+}
+
+// UpdateTotalQuota sets the "total_quota" field to the value that was provided on create.
+func (u *TempAPIKeyUpsert) UpdateTotalQuota() *TempAPIKeyUpsert {
+	u.SetExcluded(tempapikey.FieldTotalQuota)
+	return u
+}
+
+// AddTotalQuota adds v to the "total_quota" field.
+func (u *TempAPIKeyUpsert) AddTotalQuota(v int64) *TempAPIKeyUpsert {
+	u.Add(tempapikey.FieldTotalQuota, v)
 	return u
 }
 
@@ -875,6 +955,41 @@ func (u *TempAPIKeyUpsertOne) SetGroupID(v int64) *TempAPIKeyUpsertOne {
 func (u *TempAPIKeyUpsertOne) UpdateGroupID() *TempAPIKeyUpsertOne {
 	return u.Update(func(s *TempAPIKeyUpsert) {
 		s.UpdateGroupID()
+	})
+}
+
+// SetKeyType sets the "key_type" field.
+func (u *TempAPIKeyUpsertOne) SetKeyType(v string) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetKeyType(v)
+	})
+}
+
+// UpdateKeyType sets the "key_type" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertOne) UpdateKeyType() *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateKeyType()
+	})
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (u *TempAPIKeyUpsertOne) SetTotalQuota(v int64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetTotalQuota(v)
+	})
+}
+
+// AddTotalQuota adds v to the "total_quota" field.
+func (u *TempAPIKeyUpsertOne) AddTotalQuota(v int64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddTotalQuota(v)
+	})
+}
+
+// UpdateTotalQuota sets the "total_quota" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertOne) UpdateTotalQuota() *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateTotalQuota()
 	})
 }
 
@@ -1338,6 +1453,41 @@ func (u *TempAPIKeyUpsertBulk) SetGroupID(v int64) *TempAPIKeyUpsertBulk {
 func (u *TempAPIKeyUpsertBulk) UpdateGroupID() *TempAPIKeyUpsertBulk {
 	return u.Update(func(s *TempAPIKeyUpsert) {
 		s.UpdateGroupID()
+	})
+}
+
+// SetKeyType sets the "key_type" field.
+func (u *TempAPIKeyUpsertBulk) SetKeyType(v string) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetKeyType(v)
+	})
+}
+
+// UpdateKeyType sets the "key_type" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertBulk) UpdateKeyType() *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateKeyType()
+	})
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (u *TempAPIKeyUpsertBulk) SetTotalQuota(v int64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetTotalQuota(v)
+	})
+}
+
+// AddTotalQuota adds v to the "total_quota" field.
+func (u *TempAPIKeyUpsertBulk) AddTotalQuota(v int64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddTotalQuota(v)
+	})
+}
+
+// UpdateTotalQuota sets the "total_quota" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertBulk) UpdateTotalQuota() *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateTotalQuota()
 	})
 }
 

@@ -10,6 +10,10 @@ type TempAPIKey struct {
 	GroupID   int64
 	Group     *Group
 
+	// Key 类型
+	KeyType    string // time_limited（限时限额）、quota_only（仅限额不限时）
+	TotalQuota int64  // 总额度限制（请求次数），仅 quota_only 类型使用
+
 	// 有效期设置
 	ValidDays   int        // 有效天数
 	ActivatedAt *time.Time // 首次激活时间
@@ -26,7 +30,7 @@ type TempAPIKey struct {
 	TotalRequests int64 // 总请求次数
 
 	// 状态
-	Status string // active, inactive, expired
+	Status string // active, inactive, expired, exhausted
 
 	// 创建信息
 	CreatedBy int64
@@ -37,17 +41,39 @@ type TempAPIKey struct {
 
 // TempAPIKeyStatus constants
 const (
-	TempAPIKeyStatusActive   = "active"
-	TempAPIKeyStatusInactive = "inactive"
-	TempAPIKeyStatusExpired  = "expired"
+	TempAPIKeyStatusActive    = "active"
+	TempAPIKeyStatusInactive  = "inactive"
+	TempAPIKeyStatusExpired   = "expired"
+	TempAPIKeyStatusExhausted = "exhausted" // 额度用尽
+)
+
+// TempAPIKeyType constants
+const (
+	TempAPIKeyTypeLimited   = "time_limited" // 限时限额（默认）
+	TempAPIKeyTypeQuotaOnly = "quota_only"   // 仅限额不限时
 )
 
 // IsExpired checks if the temp API key is expired
+// quota_only 类型永不过期
 func (k *TempAPIKey) IsExpired() bool {
+	if k.KeyType == TempAPIKeyTypeQuotaOnly {
+		return false // quota_only 类型不限时间
+	}
 	if k.ExpiresAt == nil {
 		return false // Not activated yet
 	}
 	return time.Now().After(*k.ExpiresAt)
+}
+
+// IsExhausted checks if the quota_only key has exhausted its total quota
+func (k *TempAPIKey) IsExhausted() bool {
+	if k.KeyType != TempAPIKeyTypeQuotaOnly {
+		return false
+	}
+	if k.TotalQuota <= 0 {
+		return false // 0 表示不限制
+	}
+	return k.TotalRequests >= k.TotalQuota
 }
 
 // IsActivated checks if the temp API key has been activated
@@ -68,7 +94,18 @@ func (k *TempAPIKey) IsRateLimited() bool {
 }
 
 // RemainingRequests returns the number of remaining requests in current period
+// 对于 quota_only 类型，返回剩余总额度
 func (k *TempAPIKey) RemainingRequests() int {
+	if k.KeyType == TempAPIKeyTypeQuotaOnly {
+		if k.TotalQuota <= 0 {
+			return -1 // 不限制，返回 -1 表示无限
+		}
+		remaining := k.TotalQuota - k.TotalRequests
+		if remaining < 0 {
+			return 0
+		}
+		return int(remaining)
+	}
 	if k.CurrentPeriodStart == nil {
 		return k.DailyLimit
 	}

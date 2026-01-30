@@ -31,6 +31,10 @@ type TempAPIKey struct {
 	Name string `json:"name,omitempty"`
 	// 关联分组 ID
 	GroupID int64 `json:"group_id,omitempty"`
+	// 类型：time_limited（限时限额）、quota_only（仅限额不限时）
+	KeyType string `json:"key_type,omitempty"`
+	// 总额度限制（请求次数），0 表示不限制，仅 quota_only 类型使用
+	TotalQuota int64 `json:"total_quota,omitempty"`
 	// 有效天数，从首次使用开始计算
 	ValidDays int `json:"valid_days,omitempty"`
 	// 首次激活时间
@@ -104,9 +108,9 @@ func (*TempAPIKey) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case tempapikey.FieldID, tempapikey.FieldGroupID, tempapikey.FieldValidDays, tempapikey.FieldDailyLimit, tempapikey.FieldCurrentPeriodCount, tempapikey.FieldTotalRequests, tempapikey.FieldCreatedBy:
+		case tempapikey.FieldID, tempapikey.FieldGroupID, tempapikey.FieldTotalQuota, tempapikey.FieldValidDays, tempapikey.FieldDailyLimit, tempapikey.FieldCurrentPeriodCount, tempapikey.FieldTotalRequests, tempapikey.FieldCreatedBy:
 			values[i] = new(sql.NullInt64)
-		case tempapikey.FieldKey, tempapikey.FieldName, tempapikey.FieldStatus:
+		case tempapikey.FieldKey, tempapikey.FieldName, tempapikey.FieldKeyType, tempapikey.FieldStatus:
 			values[i] = new(sql.NullString)
 		case tempapikey.FieldCreatedAt, tempapikey.FieldUpdatedAt, tempapikey.FieldDeletedAt, tempapikey.FieldActivatedAt, tempapikey.FieldExpiresAt, tempapikey.FieldCurrentPeriodStart:
 			values[i] = new(sql.NullTime)
@@ -167,6 +171,18 @@ func (_m *TempAPIKey) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field group_id", values[i])
 			} else if value.Valid {
 				_m.GroupID = value.Int64
+			}
+		case tempapikey.FieldKeyType:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field key_type", values[i])
+			} else if value.Valid {
+				_m.KeyType = value.String
+			}
+		case tempapikey.FieldTotalQuota:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field total_quota", values[i])
+			} else if value.Valid {
+				_m.TotalQuota = value.Int64
 			}
 		case tempapikey.FieldValidDays:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -295,6 +311,12 @@ func (_m *TempAPIKey) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("group_id=")
 	builder.WriteString(fmt.Sprintf("%v", _m.GroupID))
+	builder.WriteString(", ")
+	builder.WriteString("key_type=")
+	builder.WriteString(_m.KeyType)
+	builder.WriteString(", ")
+	builder.WriteString("total_quota=")
+	builder.WriteString(fmt.Sprintf("%v", _m.TotalQuota))
 	builder.WriteString(", ")
 	builder.WriteString("valid_days=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ValidDays))

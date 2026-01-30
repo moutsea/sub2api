@@ -83,16 +83,26 @@
             <span
               :class="[
                 'badge',
-                row.is_expired ? 'badge-danger' : row.status === 'inactive' ? 'badge-secondary' : 'badge-success'
+                row.is_exhausted || row.status === 'exhausted' ? 'badge-warning' :
+                row.is_expired ? 'badge-danger' :
+                row.status === 'inactive' ? 'badge-secondary' : 'badge-success'
               ]"
             >
-              {{ row.is_expired ? t('admin.tempApiKeys.expired') : row.status === 'inactive' ? t('admin.tempApiKeys.inactive') : t('admin.tempApiKeys.active') }}
+              {{ row.is_exhausted || row.status === 'exhausted' ? t('admin.tempApiKeys.exhausted') :
+                 row.is_expired ? t('admin.tempApiKeys.expired') :
+                 row.status === 'inactive' ? t('admin.tempApiKeys.inactive') : t('admin.tempApiKeys.active') }}
             </span>
           </template>
 
           <template #cell-validity="{ row }">
             <div class="text-sm">
-              <template v-if="row.is_activated">
+              <template v-if="row.key_type === 'quota_only'">
+                <span class="badge badge-info">{{ t('admin.tempApiKeys.quotaOnly') }}</span>
+                <div class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.tempApiKeys.quota') }}: {{ row.total_requests }} / {{ row.total_quota }}
+                </div>
+              </template>
+              <template v-else-if="row.is_activated">
                 <span>{{ row.valid_days }}{{ t('admin.tempApiKeys.days') }}</span>
                 <div class="text-xs text-gray-500 dark:text-gray-400">
                   {{ t('admin.tempApiKeys.expiresAt') }}: {{ formatDate(row.expires_at) }}
@@ -107,9 +117,16 @@
           </template>
 
           <template #cell-usage="{ row }">
-            <span :class="row.remaining_requests === 0 ? 'text-red-500' : ''">
-              {{ row.current_period_count }} / {{ row.daily_limit }}
-            </span>
+            <template v-if="row.key_type === 'quota_only'">
+              <span :class="row.remaining_requests === 0 ? 'text-red-500' : ''">
+                {{ row.remaining_requests === -1 ? '∞' : row.remaining_requests }}
+              </span>
+            </template>
+            <template v-else>
+              <span :class="row.remaining_requests === 0 ? 'text-red-500' : ''">
+                {{ row.current_period_count }} / {{ row.daily_limit }}
+              </span>
+            </template>
           </template>
 
           <template #cell-total_requests="{ value }">
@@ -190,23 +207,44 @@
           />
         </div>
         <div>
-          <label class="label">{{ t('admin.tempApiKeys.validDays') }}</label>
-          <input
-            v-model.number="createForm.valid_days"
-            type="number"
-            min="1"
-            class="input"
+          <label class="label">{{ t('admin.tempApiKeys.keyType') }}</label>
+          <Select
+            v-model="createForm.key_type"
+            :options="keyTypeOptions"
           />
         </div>
-        <div>
-          <label class="label">{{ t('admin.tempApiKeys.dailyLimit') }}</label>
-          <input
-            v-model.number="createForm.daily_limit"
-            type="number"
-            min="1"
-            class="input"
-          />
-        </div>
+        <template v-if="createForm.key_type === 'time_limited'">
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.validDays') }} *</label>
+            <input
+              v-model.number="createForm.valid_days"
+              type="number"
+              min="1"
+              class="input"
+            />
+          </div>
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.dailyLimit') }}</label>
+            <input
+              v-model.number="createForm.daily_limit"
+              type="number"
+              min="1"
+              class="input"
+            />
+          </div>
+        </template>
+        <template v-else>
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.totalQuota') }} *</label>
+            <input
+              v-model.number="createForm.total_quota"
+              type="number"
+              min="1"
+              class="input"
+              :placeholder="t('admin.tempApiKeys.totalQuotaPlaceholder')"
+            />
+          </div>
+        </template>
       </form>
       <template #footer>
         <div class="flex justify-end gap-2">
@@ -346,16 +384,19 @@ const createForm = ref({
   count: 1,
   name_prefix: '',
   group_id: 0,
+  key_type: 'time_limited' as 'time_limited' | 'quota_only',
   valid_days: 7,
   daily_limit: 1000,
+  total_quota: 1000,
 })
 
 const editingKey = ref<TempApiKey | null>(null)
 const editForm = ref({
   name: '',
-  status: 'active' as 'active' | 'inactive',
+  status: 'active' as 'active' | 'inactive' | 'exhausted',
   valid_days: 7,
   daily_limit: 1000,
+  total_quota: 0,
 })
 
 const batchForm = ref({
@@ -371,6 +412,11 @@ const selectedIds = ref<number[]>([])
 const groupOptions = computed(() =>
   groups.value.map((g) => ({ value: g.id, label: g.name }))
 )
+
+const keyTypeOptions = [
+  { value: 'time_limited', label: 'Time Limited' },
+  { value: 'quota_only', label: 'Quota Only' },
+]
 
 const statusOptions = [
   { value: 'active', label: 'Active' },

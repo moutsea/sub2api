@@ -85,6 +85,16 @@ func GroupID(v int64) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldEQ(FieldGroupID, v))
 }
 
+// KeyType applies equality check predicate on the "key_type" field. It's identical to KeyTypeEQ.
+func KeyType(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldKeyType, v))
+}
+
+// TotalQuota applies equality check predicate on the "total_quota" field. It's identical to TotalQuotaEQ.
+func TotalQuota(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalQuota, v))
+}
+
 // ValidDays applies equality check predicate on the "valid_days" field. It's identical to ValidDaysEQ.
 func ValidDays(v int) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldEQ(FieldValidDays, v))
@@ -408,6 +418,111 @@ func GroupIDIn(vs ...int64) predicate.TempAPIKey {
 // GroupIDNotIn applies the NotIn predicate on the "group_id" field.
 func GroupIDNotIn(vs ...int64) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldNotIn(FieldGroupID, vs...))
+}
+
+// KeyTypeEQ applies the EQ predicate on the "key_type" field.
+func KeyTypeEQ(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldKeyType, v))
+}
+
+// KeyTypeNEQ applies the NEQ predicate on the "key_type" field.
+func KeyTypeNEQ(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNEQ(FieldKeyType, v))
+}
+
+// KeyTypeIn applies the In predicate on the "key_type" field.
+func KeyTypeIn(vs ...string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldIn(FieldKeyType, vs...))
+}
+
+// KeyTypeNotIn applies the NotIn predicate on the "key_type" field.
+func KeyTypeNotIn(vs ...string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNotIn(FieldKeyType, vs...))
+}
+
+// KeyTypeGT applies the GT predicate on the "key_type" field.
+func KeyTypeGT(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGT(FieldKeyType, v))
+}
+
+// KeyTypeGTE applies the GTE predicate on the "key_type" field.
+func KeyTypeGTE(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGTE(FieldKeyType, v))
+}
+
+// KeyTypeLT applies the LT predicate on the "key_type" field.
+func KeyTypeLT(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLT(FieldKeyType, v))
+}
+
+// KeyTypeLTE applies the LTE predicate on the "key_type" field.
+func KeyTypeLTE(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLTE(FieldKeyType, v))
+}
+
+// KeyTypeContains applies the Contains predicate on the "key_type" field.
+func KeyTypeContains(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldContains(FieldKeyType, v))
+}
+
+// KeyTypeHasPrefix applies the HasPrefix predicate on the "key_type" field.
+func KeyTypeHasPrefix(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldHasPrefix(FieldKeyType, v))
+}
+
+// KeyTypeHasSuffix applies the HasSuffix predicate on the "key_type" field.
+func KeyTypeHasSuffix(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldHasSuffix(FieldKeyType, v))
+}
+
+// KeyTypeEqualFold applies the EqualFold predicate on the "key_type" field.
+func KeyTypeEqualFold(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEqualFold(FieldKeyType, v))
+}
+
+// KeyTypeContainsFold applies the ContainsFold predicate on the "key_type" field.
+func KeyTypeContainsFold(v string) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldContainsFold(FieldKeyType, v))
+}
+
+// TotalQuotaEQ applies the EQ predicate on the "total_quota" field.
+func TotalQuotaEQ(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalQuota, v))
+}
+
+// TotalQuotaNEQ applies the NEQ predicate on the "total_quota" field.
+func TotalQuotaNEQ(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNEQ(FieldTotalQuota, v))
+}
+
+// TotalQuotaIn applies the In predicate on the "total_quota" field.
+func TotalQuotaIn(vs ...int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldIn(FieldTotalQuota, vs...))
+}
+
+// TotalQuotaNotIn applies the NotIn predicate on the "total_quota" field.
+func TotalQuotaNotIn(vs ...int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNotIn(FieldTotalQuota, vs...))
+}
+
+// TotalQuotaGT applies the GT predicate on the "total_quota" field.
+func TotalQuotaGT(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGT(FieldTotalQuota, v))
+}
+
+// TotalQuotaGTE applies the GTE predicate on the "total_quota" field.
+func TotalQuotaGTE(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGTE(FieldTotalQuota, v))
+}
+
+// TotalQuotaLT applies the LT predicate on the "total_quota" field.
+func TotalQuotaLT(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLT(FieldTotalQuota, v))
+}
+
+// TotalQuotaLTE applies the LTE predicate on the "total_quota" field.
+func TotalQuotaLTE(v int64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLTE(FieldTotalQuota, v))
 }
 
 // ValidDaysEQ applies the EQ predicate on the "valid_days" field.

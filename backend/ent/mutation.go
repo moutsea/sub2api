@@ -10466,6 +10466,9 @@ type TempAPIKeyMutation struct {
 	deleted_at              *time.Time
 	key                     *string
 	name                    *string
+	key_type                *string
+	total_quota             *int64
+	addtotal_quota          *int64
 	valid_days              *int
 	addvalid_days           *int
 	activated_at            *time.Time
@@ -10816,6 +10819,98 @@ func (m *TempAPIKeyMutation) OldGroupID(ctx context.Context) (v int64, err error
 // ResetGroupID resets all changes to the "group_id" field.
 func (m *TempAPIKeyMutation) ResetGroupID() {
 	m.group = nil
+}
+
+// SetKeyType sets the "key_type" field.
+func (m *TempAPIKeyMutation) SetKeyType(s string) {
+	m.key_type = &s
+}
+
+// KeyType returns the value of the "key_type" field in the mutation.
+func (m *TempAPIKeyMutation) KeyType() (r string, exists bool) {
+	v := m.key_type
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldKeyType returns the old "key_type" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldKeyType(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldKeyType is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldKeyType requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldKeyType: %w", err)
+	}
+	return oldValue.KeyType, nil
+}
+
+// ResetKeyType resets all changes to the "key_type" field.
+func (m *TempAPIKeyMutation) ResetKeyType() {
+	m.key_type = nil
+}
+
+// SetTotalQuota sets the "total_quota" field.
+func (m *TempAPIKeyMutation) SetTotalQuota(i int64) {
+	m.total_quota = &i
+	m.addtotal_quota = nil
+}
+
+// TotalQuota returns the value of the "total_quota" field in the mutation.
+func (m *TempAPIKeyMutation) TotalQuota() (r int64, exists bool) {
+	v := m.total_quota
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTotalQuota returns the old "total_quota" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldTotalQuota(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTotalQuota is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTotalQuota requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTotalQuota: %w", err)
+	}
+	return oldValue.TotalQuota, nil
+}
+
+// AddTotalQuota adds i to the "total_quota" field.
+func (m *TempAPIKeyMutation) AddTotalQuota(i int64) {
+	if m.addtotal_quota != nil {
+		*m.addtotal_quota += i
+	} else {
+		m.addtotal_quota = &i
+	}
+}
+
+// AddedTotalQuota returns the value that was added to the "total_quota" field in this mutation.
+func (m *TempAPIKeyMutation) AddedTotalQuota() (r int64, exists bool) {
+	v := m.addtotal_quota
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetTotalQuota resets all changes to the "total_quota" field.
+func (m *TempAPIKeyMutation) ResetTotalQuota() {
+	m.total_quota = nil
+	m.addtotal_quota = nil
 }
 
 // SetValidDays sets the "valid_days" field.
@@ -11416,7 +11511,7 @@ func (m *TempAPIKeyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *TempAPIKeyMutation) Fields() []string {
-	fields := make([]string, 0, 15)
+	fields := make([]string, 0, 17)
 	if m.created_at != nil {
 		fields = append(fields, tempapikey.FieldCreatedAt)
 	}
@@ -11434,6 +11529,12 @@ func (m *TempAPIKeyMutation) Fields() []string {
 	}
 	if m.group != nil {
 		fields = append(fields, tempapikey.FieldGroupID)
+	}
+	if m.key_type != nil {
+		fields = append(fields, tempapikey.FieldKeyType)
+	}
+	if m.total_quota != nil {
+		fields = append(fields, tempapikey.FieldTotalQuota)
 	}
 	if m.valid_days != nil {
 		fields = append(fields, tempapikey.FieldValidDays)
@@ -11482,6 +11583,10 @@ func (m *TempAPIKeyMutation) Field(name string) (ent.Value, bool) {
 		return m.Name()
 	case tempapikey.FieldGroupID:
 		return m.GroupID()
+	case tempapikey.FieldKeyType:
+		return m.KeyType()
+	case tempapikey.FieldTotalQuota:
+		return m.TotalQuota()
 	case tempapikey.FieldValidDays:
 		return m.ValidDays()
 	case tempapikey.FieldActivatedAt:
@@ -11521,6 +11626,10 @@ func (m *TempAPIKeyMutation) OldField(ctx context.Context, name string) (ent.Val
 		return m.OldName(ctx)
 	case tempapikey.FieldGroupID:
 		return m.OldGroupID(ctx)
+	case tempapikey.FieldKeyType:
+		return m.OldKeyType(ctx)
+	case tempapikey.FieldTotalQuota:
+		return m.OldTotalQuota(ctx)
 	case tempapikey.FieldValidDays:
 		return m.OldValidDays(ctx)
 	case tempapikey.FieldActivatedAt:
@@ -11589,6 +11698,20 @@ func (m *TempAPIKeyMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetGroupID(v)
+		return nil
+	case tempapikey.FieldKeyType:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetKeyType(v)
+		return nil
+	case tempapikey.FieldTotalQuota:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTotalQuota(v)
 		return nil
 	case tempapikey.FieldValidDays:
 		v, ok := value.(int)
@@ -11661,6 +11784,9 @@ func (m *TempAPIKeyMutation) SetField(name string, value ent.Value) error {
 // this mutation.
 func (m *TempAPIKeyMutation) AddedFields() []string {
 	var fields []string
+	if m.addtotal_quota != nil {
+		fields = append(fields, tempapikey.FieldTotalQuota)
+	}
 	if m.addvalid_days != nil {
 		fields = append(fields, tempapikey.FieldValidDays)
 	}
@@ -11681,6 +11807,8 @@ func (m *TempAPIKeyMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *TempAPIKeyMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case tempapikey.FieldTotalQuota:
+		return m.AddedTotalQuota()
 	case tempapikey.FieldValidDays:
 		return m.AddedValidDays()
 	case tempapikey.FieldDailyLimit:
@@ -11698,6 +11826,13 @@ func (m *TempAPIKeyMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *TempAPIKeyMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case tempapikey.FieldTotalQuota:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTotalQuota(v)
+		return nil
 	case tempapikey.FieldValidDays:
 		v, ok := value.(int)
 		if !ok {
@@ -11797,6 +11932,12 @@ func (m *TempAPIKeyMutation) ResetField(name string) error {
 		return nil
 	case tempapikey.FieldGroupID:
 		m.ResetGroupID()
+		return nil
+	case tempapikey.FieldKeyType:
+		m.ResetKeyType()
+		return nil
+	case tempapikey.FieldTotalQuota:
+		m.ResetTotalQuota()
 		return nil
 	case tempapikey.FieldValidDays:
 		m.ResetValidDays()
