@@ -99,16 +99,30 @@ func (_c *TempAPIKeyCreate) SetNillableKeyType(v *string) *TempAPIKeyCreate {
 	return _c
 }
 
-// SetTotalQuota sets the "total_quota" field.
-func (_c *TempAPIKeyCreate) SetTotalQuota(v int64) *TempAPIKeyCreate {
-	_c.mutation.SetTotalQuota(v)
+// SetTotalQuotaUsd sets the "total_quota_usd" field.
+func (_c *TempAPIKeyCreate) SetTotalQuotaUsd(v float64) *TempAPIKeyCreate {
+	_c.mutation.SetTotalQuotaUsd(v)
 	return _c
 }
 
-// SetNillableTotalQuota sets the "total_quota" field if the given value is not nil.
-func (_c *TempAPIKeyCreate) SetNillableTotalQuota(v *int64) *TempAPIKeyCreate {
+// SetNillableTotalQuotaUsd sets the "total_quota_usd" field if the given value is not nil.
+func (_c *TempAPIKeyCreate) SetNillableTotalQuotaUsd(v *float64) *TempAPIKeyCreate {
 	if v != nil {
-		_c.SetTotalQuota(*v)
+		_c.SetTotalQuotaUsd(*v)
+	}
+	return _c
+}
+
+// SetTotalCostUsd sets the "total_cost_usd" field.
+func (_c *TempAPIKeyCreate) SetTotalCostUsd(v float64) *TempAPIKeyCreate {
+	_c.mutation.SetTotalCostUsd(v)
+	return _c
+}
+
+// SetNillableTotalCostUsd sets the "total_cost_usd" field if the given value is not nil.
+func (_c *TempAPIKeyCreate) SetNillableTotalCostUsd(v *float64) *TempAPIKeyCreate {
+	if v != nil {
+		_c.SetTotalCostUsd(*v)
 	}
 	return _c
 }
@@ -317,9 +331,13 @@ func (_c *TempAPIKeyCreate) defaults() error {
 		v := tempapikey.DefaultKeyType
 		_c.mutation.SetKeyType(v)
 	}
-	if _, ok := _c.mutation.TotalQuota(); !ok {
-		v := tempapikey.DefaultTotalQuota
-		_c.mutation.SetTotalQuota(v)
+	if _, ok := _c.mutation.TotalQuotaUsd(); !ok {
+		v := tempapikey.DefaultTotalQuotaUsd
+		_c.mutation.SetTotalQuotaUsd(v)
+	}
+	if _, ok := _c.mutation.TotalCostUsd(); !ok {
+		v := tempapikey.DefaultTotalCostUsd
+		_c.mutation.SetTotalCostUsd(v)
 	}
 	if _, ok := _c.mutation.ValidDays(); !ok {
 		v := tempapikey.DefaultValidDays
@@ -374,8 +392,11 @@ func (_c *TempAPIKeyCreate) check() error {
 	if _, ok := _c.mutation.KeyType(); !ok {
 		return &ValidationError{Name: "key_type", err: errors.New(`ent: missing required field "TempAPIKey.key_type"`)}
 	}
-	if _, ok := _c.mutation.TotalQuota(); !ok {
-		return &ValidationError{Name: "total_quota", err: errors.New(`ent: missing required field "TempAPIKey.total_quota"`)}
+	if _, ok := _c.mutation.TotalQuotaUsd(); !ok {
+		return &ValidationError{Name: "total_quota_usd", err: errors.New(`ent: missing required field "TempAPIKey.total_quota_usd"`)}
+	}
+	if _, ok := _c.mutation.TotalCostUsd(); !ok {
+		return &ValidationError{Name: "total_cost_usd", err: errors.New(`ent: missing required field "TempAPIKey.total_cost_usd"`)}
 	}
 	if _, ok := _c.mutation.ValidDays(); !ok {
 		return &ValidationError{Name: "valid_days", err: errors.New(`ent: missing required field "TempAPIKey.valid_days"`)}
@@ -452,9 +473,13 @@ func (_c *TempAPIKeyCreate) createSpec() (*TempAPIKey, *sqlgraph.CreateSpec) {
 		_spec.SetField(tempapikey.FieldKeyType, field.TypeString, value)
 		_node.KeyType = value
 	}
-	if value, ok := _c.mutation.TotalQuota(); ok {
-		_spec.SetField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
-		_node.TotalQuota = value
+	if value, ok := _c.mutation.TotalQuotaUsd(); ok {
+		_spec.SetField(tempapikey.FieldTotalQuotaUsd, field.TypeFloat64, value)
+		_node.TotalQuotaUsd = value
+	}
+	if value, ok := _c.mutation.TotalCostUsd(); ok {
+		_spec.SetField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
+		_node.TotalCostUsd = value
 	}
 	if value, ok := _c.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)
@@ -668,21 +693,39 @@ func (u *TempAPIKeyUpsert) UpdateKeyType() *TempAPIKeyUpsert {
 	return u
 }
 
-// SetTotalQuota sets the "total_quota" field.
-func (u *TempAPIKeyUpsert) SetTotalQuota(v int64) *TempAPIKeyUpsert {
-	u.Set(tempapikey.FieldTotalQuota, v)
+// SetTotalQuotaUsd sets the "total_quota_usd" field.
+func (u *TempAPIKeyUpsert) SetTotalQuotaUsd(v float64) *TempAPIKeyUpsert {
+	u.Set(tempapikey.FieldTotalQuotaUsd, v)
 	return u
 }
 
-// UpdateTotalQuota sets the "total_quota" field to the value that was provided on create.
-func (u *TempAPIKeyUpsert) UpdateTotalQuota() *TempAPIKeyUpsert {
-	u.SetExcluded(tempapikey.FieldTotalQuota)
+// UpdateTotalQuotaUsd sets the "total_quota_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsert) UpdateTotalQuotaUsd() *TempAPIKeyUpsert {
+	u.SetExcluded(tempapikey.FieldTotalQuotaUsd)
 	return u
 }
 
-// AddTotalQuota adds v to the "total_quota" field.
-func (u *TempAPIKeyUpsert) AddTotalQuota(v int64) *TempAPIKeyUpsert {
-	u.Add(tempapikey.FieldTotalQuota, v)
+// AddTotalQuotaUsd adds v to the "total_quota_usd" field.
+func (u *TempAPIKeyUpsert) AddTotalQuotaUsd(v float64) *TempAPIKeyUpsert {
+	u.Add(tempapikey.FieldTotalQuotaUsd, v)
+	return u
+}
+
+// SetTotalCostUsd sets the "total_cost_usd" field.
+func (u *TempAPIKeyUpsert) SetTotalCostUsd(v float64) *TempAPIKeyUpsert {
+	u.Set(tempapikey.FieldTotalCostUsd, v)
+	return u
+}
+
+// UpdateTotalCostUsd sets the "total_cost_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsert) UpdateTotalCostUsd() *TempAPIKeyUpsert {
+	u.SetExcluded(tempapikey.FieldTotalCostUsd)
+	return u
+}
+
+// AddTotalCostUsd adds v to the "total_cost_usd" field.
+func (u *TempAPIKeyUpsert) AddTotalCostUsd(v float64) *TempAPIKeyUpsert {
+	u.Add(tempapikey.FieldTotalCostUsd, v)
 	return u
 }
 
@@ -972,24 +1015,45 @@ func (u *TempAPIKeyUpsertOne) UpdateKeyType() *TempAPIKeyUpsertOne {
 	})
 }
 
-// SetTotalQuota sets the "total_quota" field.
-func (u *TempAPIKeyUpsertOne) SetTotalQuota(v int64) *TempAPIKeyUpsertOne {
+// SetTotalQuotaUsd sets the "total_quota_usd" field.
+func (u *TempAPIKeyUpsertOne) SetTotalQuotaUsd(v float64) *TempAPIKeyUpsertOne {
 	return u.Update(func(s *TempAPIKeyUpsert) {
-		s.SetTotalQuota(v)
+		s.SetTotalQuotaUsd(v)
 	})
 }
 
-// AddTotalQuota adds v to the "total_quota" field.
-func (u *TempAPIKeyUpsertOne) AddTotalQuota(v int64) *TempAPIKeyUpsertOne {
+// AddTotalQuotaUsd adds v to the "total_quota_usd" field.
+func (u *TempAPIKeyUpsertOne) AddTotalQuotaUsd(v float64) *TempAPIKeyUpsertOne {
 	return u.Update(func(s *TempAPIKeyUpsert) {
-		s.AddTotalQuota(v)
+		s.AddTotalQuotaUsd(v)
 	})
 }
 
-// UpdateTotalQuota sets the "total_quota" field to the value that was provided on create.
-func (u *TempAPIKeyUpsertOne) UpdateTotalQuota() *TempAPIKeyUpsertOne {
+// UpdateTotalQuotaUsd sets the "total_quota_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertOne) UpdateTotalQuotaUsd() *TempAPIKeyUpsertOne {
 	return u.Update(func(s *TempAPIKeyUpsert) {
-		s.UpdateTotalQuota()
+		s.UpdateTotalQuotaUsd()
+	})
+}
+
+// SetTotalCostUsd sets the "total_cost_usd" field.
+func (u *TempAPIKeyUpsertOne) SetTotalCostUsd(v float64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetTotalCostUsd(v)
+	})
+}
+
+// AddTotalCostUsd adds v to the "total_cost_usd" field.
+func (u *TempAPIKeyUpsertOne) AddTotalCostUsd(v float64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddTotalCostUsd(v)
+	})
+}
+
+// UpdateTotalCostUsd sets the "total_cost_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertOne) UpdateTotalCostUsd() *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateTotalCostUsd()
 	})
 }
 
@@ -1470,24 +1534,45 @@ func (u *TempAPIKeyUpsertBulk) UpdateKeyType() *TempAPIKeyUpsertBulk {
 	})
 }
 
-// SetTotalQuota sets the "total_quota" field.
-func (u *TempAPIKeyUpsertBulk) SetTotalQuota(v int64) *TempAPIKeyUpsertBulk {
+// SetTotalQuotaUsd sets the "total_quota_usd" field.
+func (u *TempAPIKeyUpsertBulk) SetTotalQuotaUsd(v float64) *TempAPIKeyUpsertBulk {
 	return u.Update(func(s *TempAPIKeyUpsert) {
-		s.SetTotalQuota(v)
+		s.SetTotalQuotaUsd(v)
 	})
 }
 
-// AddTotalQuota adds v to the "total_quota" field.
-func (u *TempAPIKeyUpsertBulk) AddTotalQuota(v int64) *TempAPIKeyUpsertBulk {
+// AddTotalQuotaUsd adds v to the "total_quota_usd" field.
+func (u *TempAPIKeyUpsertBulk) AddTotalQuotaUsd(v float64) *TempAPIKeyUpsertBulk {
 	return u.Update(func(s *TempAPIKeyUpsert) {
-		s.AddTotalQuota(v)
+		s.AddTotalQuotaUsd(v)
 	})
 }
 
-// UpdateTotalQuota sets the "total_quota" field to the value that was provided on create.
-func (u *TempAPIKeyUpsertBulk) UpdateTotalQuota() *TempAPIKeyUpsertBulk {
+// UpdateTotalQuotaUsd sets the "total_quota_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertBulk) UpdateTotalQuotaUsd() *TempAPIKeyUpsertBulk {
 	return u.Update(func(s *TempAPIKeyUpsert) {
-		s.UpdateTotalQuota()
+		s.UpdateTotalQuotaUsd()
+	})
+}
+
+// SetTotalCostUsd sets the "total_cost_usd" field.
+func (u *TempAPIKeyUpsertBulk) SetTotalCostUsd(v float64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetTotalCostUsd(v)
+	})
+}
+
+// AddTotalCostUsd adds v to the "total_cost_usd" field.
+func (u *TempAPIKeyUpsertBulk) AddTotalCostUsd(v float64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddTotalCostUsd(v)
+	})
+}
+
+// UpdateTotalCostUsd sets the "total_cost_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertBulk) UpdateTotalCostUsd() *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateTotalCostUsd()
 	})
 }
 

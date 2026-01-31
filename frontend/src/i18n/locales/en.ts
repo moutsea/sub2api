@@ -25,13 +25,19 @@ export default {
       disabled: 'Disabled',
       expired: 'Expired',
       active: 'Active',
-      pending: 'Pending'
+      pending: 'Pending',
+      exhausted: 'Exhausted'
     },
+    totalQuota: 'Total Quota',
+    costUsed: 'Cost Used',
+    remainingQuota: 'Remaining Quota',
     usageLogs: 'Usage Logs',
     logTime: 'Time',
     logModel: 'Model',
     logTokens: 'Tokens',
+    logCost: 'Cost',
     logDuration: 'Duration',
+    cache: 'Cache',
     noLogs: 'No usage records'
   },
 

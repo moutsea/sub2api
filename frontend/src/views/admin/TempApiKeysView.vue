@@ -486,13 +486,16 @@ const handleCreate = async () => {
     // 自动复制所有新建 key 到剪贴板
     if (res.data && res.data.length > 0) {
       const keysText = res.data.map((k: TempApiKey) => k.key).join('\n')
-      await navigator.clipboard.writeText(keysText)
-      appStore.showSuccess(t('admin.tempApiKeys.createSuccessAndCopied', { count: res.created }))
+      if (await copyToClipboard(keysText)) {
+        appStore.showSuccess(t('admin.tempApiKeys.createSuccessAndCopied', { count: res.created }))
+      } else {
+        appStore.showSuccess(t('admin.tempApiKeys.createSuccess', { count: res.created }))
+      }
     } else {
       appStore.showSuccess(t('admin.tempApiKeys.createSuccess', { count: res.created }))
     }
     showCreateDialog.value = false
-    createForm.value = { count: 1, name_prefix: '', group_id: 0, valid_days: 7, daily_limit: 1000 }
+    createForm.value = { count: 1, name_prefix: '', group_id: 0, key_type: 'time_limited', valid_days: 7, daily_limit: 1000, total_quota: 1000 }
     loadKeys()
   } catch (e: unknown) {
     appStore.showError((e as Error).message || t('admin.tempApiKeys.createFailed'))
@@ -508,6 +511,7 @@ const handleEdit = (key: TempApiKey) => {
     status: key.status === 'expired' ? 'inactive' : key.status,
     valid_days: key.valid_days,
     daily_limit: key.daily_limit,
+    total_quota: key.total_quota || 0,
   }
   showEditDialog.value = true
 }
@@ -598,9 +602,37 @@ const toggleSelectAll = () => {
   }
 }
 
-const copyKey = (key: string) => {
-  navigator.clipboard.writeText(key)
-  appStore.showSuccess(t('keys.copiedToClipboard'))
+// 复制文本到剪贴板（兼容非 HTTPS 环境）
+const copyToClipboard = async (text: string): Promise<boolean> => {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fallback
+    }
+  }
+  // Fallback: 使用 execCommand
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    document.execCommand('copy')
+    return true
+  } catch {
+    return false
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+const copyKey = async (key: string) => {
+  if (await copyToClipboard(key)) {
+    appStore.showSuccess(t('keys.copiedToClipboard'))
+  }
 }
 
 const copySelectedKeys = async () => {
@@ -608,8 +640,9 @@ const copySelectedKeys = async () => {
   const selectedKeys = keys.value
     .filter(k => selectedIds.value.includes(k.id))
     .map(k => k.key)
-  await navigator.clipboard.writeText(selectedKeys.join('\n'))
-  appStore.showSuccess(t('admin.tempApiKeys.keysCopied', { count: selectedKeys.length }))
+  if (await copyToClipboard(selectedKeys.join('\n'))) {
+    appStore.showSuccess(t('admin.tempApiKeys.keysCopied', { count: selectedKeys.length }))
+  }
 }
 
 const formatDate = (date: string | null) => {

@@ -25,22 +25,22 @@ func NewTempAPIKeyHandler(repo *repository.TempAPIKeyRepo) *TempAPIKeyHandler {
 
 // CreateTempAPIKeyRequest represents the request to create temp API keys
 type CreateTempAPIKeyRequest struct {
-	Count      int    `json:"count" binding:"required,min=1,max=100"` // 批量创建数量
-	NamePrefix string `json:"name_prefix" binding:"required"`         // 名称前缀
-	GroupID    int64  `json:"group_id" binding:"required"`            // 关联分组
-	KeyType    string `json:"key_type"`                               // 类型：time_limited（默认）、quota_only
-	ValidDays  int    `json:"valid_days"`                             // 有效天数（time_limited 必填）
-	DailyLimit int    `json:"daily_limit"`                            // 每日限制（time_limited 使用，默认1000）
-	TotalQuota int64  `json:"total_quota"`                            // 总额度（quota_only 必填）
+	Count      int     `json:"count" binding:"required,min=1,max=100"` // 批量创建数量
+	NamePrefix string  `json:"name_prefix" binding:"required"`         // 名称前缀
+	GroupID    int64   `json:"group_id" binding:"required"`            // 关联分组
+	KeyType    string  `json:"key_type"`                               // 类型：time_limited（默认）、quota_only
+	ValidDays  int     `json:"valid_days"`                             // 有效天数（time_limited 必填）
+	DailyLimit int     `json:"daily_limit"`                            // 每日限制（time_limited 使用，默认1000）
+	TotalQuota float64 `json:"total_quota"`                            // 总额度（quota_only 必填，单位 USD）
 }
 
 // UpdateTempAPIKeyRequest represents the request to update a temp API key
 type UpdateTempAPIKeyRequest struct {
-	Name       string `json:"name"`
-	Status     string `json:"status" binding:"omitempty,oneof=active inactive exhausted"`
-	ValidDays  *int   `json:"valid_days"`
-	DailyLimit *int   `json:"daily_limit"`
-	TotalQuota *int64 `json:"total_quota"`
+	Name       string   `json:"name"`
+	Status     string   `json:"status" binding:"omitempty,oneof=active inactive exhausted"`
+	ValidDays  *int     `json:"valid_days"`
+	DailyLimit *int     `json:"daily_limit"`
+	TotalQuota *float64 `json:"total_quota"`
 }
 
 // BatchUpdateRequest represents the request for batch operations
@@ -59,7 +59,8 @@ type TempAPIKeyResponse struct {
 	GroupID            int64   `json:"group_id"`
 	GroupName          string  `json:"group_name,omitempty"`
 	KeyType            string  `json:"key_type"`
-	TotalQuota         int64   `json:"total_quota"`
+	TotalQuota         float64 `json:"total_quota"`
+	TotalCost          float64 `json:"total_cost"`
 	ValidDays          int     `json:"valid_days"`
 	ActivatedAt        *string `json:"activated_at"`
 	ExpiresAt          *string `json:"expires_at"`
@@ -147,15 +148,15 @@ func (h *TempAPIKeyHandler) Create(c *gin.Context) {
 	createdKeys := make([]*service.TempAPIKey, 0, req.Count)
 	for i := 0; i < req.Count; i++ {
 		key := &service.TempAPIKey{
-			Key:        generateTempAPIKey(),
-			Name:       req.NamePrefix + "-" + strconv.Itoa(i+1),
-			GroupID:    req.GroupID,
-			KeyType:    keyType,
-			TotalQuota: req.TotalQuota,
-			ValidDays:  req.ValidDays,
-			DailyLimit: dailyLimit,
-			Status:     service.TempAPIKeyStatusActive,
-			CreatedBy:  userID,
+			Key:           generateTempAPIKey(),
+			Name:          req.NamePrefix + "-" + strconv.Itoa(i+1),
+			GroupID:       req.GroupID,
+			KeyType:       keyType,
+			TotalQuotaUSD: req.TotalQuota,
+			ValidDays:     req.ValidDays,
+			DailyLimit:    dailyLimit,
+			Status:        service.TempAPIKeyStatusActive,
+			CreatedBy:     userID,
 		}
 
 		if err := h.repo.Create(c.Request.Context(), key); err != nil {
@@ -227,6 +228,9 @@ func (h *TempAPIKeyHandler) Update(c *gin.Context) {
 	}
 	if req.DailyLimit != nil {
 		key.DailyLimit = *req.DailyLimit
+	}
+	if req.TotalQuota != nil {
+		key.TotalQuotaUSD = *req.TotalQuota
 	}
 
 	if err := h.repo.Update(c.Request.Context(), key); err != nil {
@@ -326,7 +330,8 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 		Name:               key.Name,
 		GroupID:            key.GroupID,
 		KeyType:            key.KeyType,
-		TotalQuota:         key.TotalQuota,
+		TotalQuota:         key.TotalQuotaUSD,
+		TotalCost:          key.TotalCostUSD,
 		ValidDays:          key.ValidDays,
 		DailyLimit:         key.DailyLimit,
 		CurrentPeriodCount: key.CurrentPeriodCount,

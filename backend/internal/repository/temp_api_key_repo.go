@@ -39,8 +39,8 @@ func (r *TempAPIKeyRepo) Create(ctx context.Context, key *service.TempAPIKey) er
 	if key.KeyType != "" {
 		creator.SetKeyType(key.KeyType)
 	}
-	if key.TotalQuota > 0 {
-		creator.SetTotalQuota(key.TotalQuota)
+	if key.TotalQuotaUSD > 0 {
+		creator.SetTotalQuotaUsd(key.TotalQuotaUSD)
 	}
 
 	created, err := creator.Save(ctx)
@@ -224,6 +224,7 @@ func (r *TempAPIKeyRepo) ListByGroupID(ctx context.Context, groupID int64, param
 // ActivateAndIncrement activates (if needed) and increments usage count
 // Returns updated key and whether rate limit is exceeded
 // 注意：此方法使用乐观锁策略，在高并发下可能有轻微的计数误差，但不会影响限流的有效性
+// 对于 quota_only 类型，此方法只检查是否已耗尽额度，实际消费金额在 RecordUsage 中更新
 func (r *TempAPIKeyRepo) ActivateAndIncrement(ctx context.Context, id int64) (*service.TempAPIKey, bool, error) {
 	// Get current state with edges
 	row, err := r.client.TempAPIKey.Query().
@@ -236,28 +237,46 @@ func (r *TempAPIKeyRepo) ActivateAndIncrement(ctx context.Context, id int64) (*s
 	}
 
 	now := time.Now()
-	updater := r.client.TempAPIKey.UpdateOneID(id)
 
-	// quota_only 类型：仅检查总额度
+	// quota_only 类型：基于美元消费金额检查
 	if row.KeyType == service.TempAPIKeyTypeQuotaOnly {
-		// 检查是否已用完额度
-		if row.TotalQuota > 0 && row.TotalRequests >= row.TotalQuota {
+		// 检查是否已用完额度（基于美元消费金额）
+		if row.TotalQuotaUsd > 0 && row.TotalCostUsd >= row.TotalQuotaUsd {
 			return r.toServiceModel(row), true, nil // Quota exhausted
 		}
 
+		// 更新激活时间和请求次数（消费金额在 RecordUsage 中更新）
+		updateBuilder := r.client.TempAPIKey.Update().
+			Where(tempapikey.ID(id))
+
 		// 首次使用时记录激活时间
 		if row.ActivatedAt == nil {
-			updater.SetActivatedAt(now)
+			updateBuilder.SetActivatedAt(now)
 		}
 
-		// 递增总请求数
-		updater.AddTotalRequests(1)
+		// 递增总请求数（用于统计，不用于限额检查）
+		updateBuilder.AddTotalRequests(1)
 
-		// 检查递增后是否达到限额，如果是则更新状态为 exhausted
-		if row.TotalQuota > 0 && row.TotalRequests+1 >= row.TotalQuota {
-			updater.SetStatus(service.TempAPIKeyStatusExhausted)
+		_, err := updateBuilder.Save(ctx)
+		if err != nil {
+			return nil, false, err
 		}
-	} else {
+
+		// 查询更新后的记录
+		updated, err := r.client.TempAPIKey.Query().
+			Where(tempapikey.ID(id)).
+			WithGroup().
+			WithCreator().
+			Only(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		return r.toServiceModel(updated), false, nil
+	}
+
+	// time_limited 类型：原有逻辑
+	updater := r.client.TempAPIKey.UpdateOneID(id)
+	{
 		// time_limited 类型：原有逻辑
 		// Check rate limit first (before any update)
 		// 如果已激活且在当前周期内，检查是否超限
@@ -343,6 +362,46 @@ func (r *TempAPIKeyRepo) CountByGroupID(ctx context.Context, groupID int64) (int
 	return r.activeQuery().Where(tempapikey.GroupID(groupID)).Count(ctx)
 }
 
+// AddCostUSD adds cost to a quota_only temp API key and checks if exhausted
+// Returns the updated key and whether the quota is now exhausted
+func (r *TempAPIKeyRepo) AddCostUSD(ctx context.Context, id int64, costUSD float64) (*service.TempAPIKey, bool, error) {
+	// 使用原子操作增加消费金额
+	_, err := r.client.TempAPIKey.Update().
+		Where(tempapikey.ID(id)).
+		AddTotalCostUsd(costUSD).
+		Save(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// 查询更新后的记录
+	row, err := r.client.TempAPIKey.Query().
+		Where(tempapikey.ID(id)).
+		WithGroup().
+		WithCreator().
+		Only(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	key := r.toServiceModel(row)
+
+	// 检查是否已耗尽额度，如果是则更新状态
+	exhausted := false
+	if row.TotalQuotaUsd > 0 && row.TotalCostUsd >= row.TotalQuotaUsd {
+		exhausted = true
+		_, err = r.client.TempAPIKey.UpdateOneID(id).
+			SetStatus(service.TempAPIKeyStatusExhausted).
+			Save(ctx)
+		if err != nil {
+			return key, exhausted, err
+		}
+		key.Status = service.TempAPIKeyStatusExhausted
+	}
+
+	return key, exhausted, nil
+}
+
 // toServiceModel converts ent model to service model
 func (r *TempAPIKeyRepo) toServiceModel(row *dbent.TempAPIKey) *service.TempAPIKey {
 	if row == nil {
@@ -355,7 +414,8 @@ func (r *TempAPIKeyRepo) toServiceModel(row *dbent.TempAPIKey) *service.TempAPIK
 		Name:               row.Name,
 		GroupID:            row.GroupID,
 		KeyType:            row.KeyType,
-		TotalQuota:         row.TotalQuota,
+		TotalQuotaUSD:      row.TotalQuotaUsd,
+		TotalCostUSD:       row.TotalCostUsd,
 		ValidDays:          row.ValidDays,
 		DailyLimit:         row.DailyLimit,
 		CurrentPeriodCount: row.CurrentPeriodCount,

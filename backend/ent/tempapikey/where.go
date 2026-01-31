@@ -90,9 +90,14 @@ func KeyType(v string) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldEQ(FieldKeyType, v))
 }
 
-// TotalQuota applies equality check predicate on the "total_quota" field. It's identical to TotalQuotaEQ.
-func TotalQuota(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalQuota, v))
+// TotalQuotaUsd applies equality check predicate on the "total_quota_usd" field. It's identical to TotalQuotaUsdEQ.
+func TotalQuotaUsd(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalQuotaUsd, v))
+}
+
+// TotalCostUsd applies equality check predicate on the "total_cost_usd" field. It's identical to TotalCostUsdEQ.
+func TotalCostUsd(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalCostUsd, v))
 }
 
 // ValidDays applies equality check predicate on the "valid_days" field. It's identical to ValidDaysEQ.
@@ -485,44 +490,84 @@ func KeyTypeContainsFold(v string) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldContainsFold(FieldKeyType, v))
 }
 
-// TotalQuotaEQ applies the EQ predicate on the "total_quota" field.
-func TotalQuotaEQ(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalQuota, v))
+// TotalQuotaUsdEQ applies the EQ predicate on the "total_quota_usd" field.
+func TotalQuotaUsdEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalQuotaUsd, v))
 }
 
-// TotalQuotaNEQ applies the NEQ predicate on the "total_quota" field.
-func TotalQuotaNEQ(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldNEQ(FieldTotalQuota, v))
+// TotalQuotaUsdNEQ applies the NEQ predicate on the "total_quota_usd" field.
+func TotalQuotaUsdNEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNEQ(FieldTotalQuotaUsd, v))
 }
 
-// TotalQuotaIn applies the In predicate on the "total_quota" field.
-func TotalQuotaIn(vs ...int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldIn(FieldTotalQuota, vs...))
+// TotalQuotaUsdIn applies the In predicate on the "total_quota_usd" field.
+func TotalQuotaUsdIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldIn(FieldTotalQuotaUsd, vs...))
 }
 
-// TotalQuotaNotIn applies the NotIn predicate on the "total_quota" field.
-func TotalQuotaNotIn(vs ...int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldNotIn(FieldTotalQuota, vs...))
+// TotalQuotaUsdNotIn applies the NotIn predicate on the "total_quota_usd" field.
+func TotalQuotaUsdNotIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNotIn(FieldTotalQuotaUsd, vs...))
 }
 
-// TotalQuotaGT applies the GT predicate on the "total_quota" field.
-func TotalQuotaGT(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldGT(FieldTotalQuota, v))
+// TotalQuotaUsdGT applies the GT predicate on the "total_quota_usd" field.
+func TotalQuotaUsdGT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGT(FieldTotalQuotaUsd, v))
 }
 
-// TotalQuotaGTE applies the GTE predicate on the "total_quota" field.
-func TotalQuotaGTE(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldGTE(FieldTotalQuota, v))
+// TotalQuotaUsdGTE applies the GTE predicate on the "total_quota_usd" field.
+func TotalQuotaUsdGTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGTE(FieldTotalQuotaUsd, v))
 }
 
-// TotalQuotaLT applies the LT predicate on the "total_quota" field.
-func TotalQuotaLT(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldLT(FieldTotalQuota, v))
+// TotalQuotaUsdLT applies the LT predicate on the "total_quota_usd" field.
+func TotalQuotaUsdLT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLT(FieldTotalQuotaUsd, v))
 }
 
-// TotalQuotaLTE applies the LTE predicate on the "total_quota" field.
-func TotalQuotaLTE(v int64) predicate.TempAPIKey {
-	return predicate.TempAPIKey(sql.FieldLTE(FieldTotalQuota, v))
+// TotalQuotaUsdLTE applies the LTE predicate on the "total_quota_usd" field.
+func TotalQuotaUsdLTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLTE(FieldTotalQuotaUsd, v))
+}
+
+// TotalCostUsdEQ applies the EQ predicate on the "total_cost_usd" field.
+func TotalCostUsdEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalCostUsd, v))
+}
+
+// TotalCostUsdNEQ applies the NEQ predicate on the "total_cost_usd" field.
+func TotalCostUsdNEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNEQ(FieldTotalCostUsd, v))
+}
+
+// TotalCostUsdIn applies the In predicate on the "total_cost_usd" field.
+func TotalCostUsdIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldIn(FieldTotalCostUsd, vs...))
+}
+
+// TotalCostUsdNotIn applies the NotIn predicate on the "total_cost_usd" field.
+func TotalCostUsdNotIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNotIn(FieldTotalCostUsd, vs...))
+}
+
+// TotalCostUsdGT applies the GT predicate on the "total_cost_usd" field.
+func TotalCostUsdGT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGT(FieldTotalCostUsd, v))
+}
+
+// TotalCostUsdGTE applies the GTE predicate on the "total_cost_usd" field.
+func TotalCostUsdGTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGTE(FieldTotalCostUsd, v))
+}
+
+// TotalCostUsdLT applies the LT predicate on the "total_cost_usd" field.
+func TotalCostUsdLT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLT(FieldTotalCostUsd, v))
+}
+
+// TotalCostUsdLTE applies the LTE predicate on the "total_cost_usd" field.
+func TotalCostUsdLTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLTE(FieldTotalCostUsd, v))
 }
 
 // ValidDaysEQ applies the EQ predicate on the "valid_days" field.

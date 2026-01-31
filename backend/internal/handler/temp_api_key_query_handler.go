@@ -27,6 +27,7 @@ type TempAPIKeyQueryResponse struct {
 	Name               string          `json:"name"`
 	GroupName          string          `json:"group_name,omitempty"`
 	Status             string          `json:"status"`
+	KeyType            string          `json:"key_type"`
 	ValidDays          int             `json:"valid_days"`
 	ActivatedAt        *string         `json:"activated_at"`
 	ExpiresAt          *string         `json:"expires_at"`
@@ -36,20 +37,28 @@ type TempAPIKeyQueryResponse struct {
 	RemainingRequests  int             `json:"remaining_requests"`
 	IsExpired          bool            `json:"is_expired"`
 	IsActivated        bool            `json:"is_activated"`
-	UsageLogs          []UsageLogEntry `json:"usage_logs,omitempty"`
-	Pagination         *PaginationInfo `json:"pagination,omitempty"`
+	// quota_only 类型专用字段
+	TotalQuotaUSD     float64 `json:"total_quota_usd,omitempty"`
+	TotalCostUSD      float64 `json:"total_cost_usd,omitempty"`
+	RemainingQuotaUSD float64 `json:"remaining_quota_usd,omitempty"`
+	IsExhausted       bool    `json:"is_exhausted,omitempty"`
+	UsageLogs         []UsageLogEntry `json:"usage_logs,omitempty"`
+	Pagination        *PaginationInfo `json:"pagination,omitempty"`
 }
 
 // UsageLogEntry represents a single usage log entry for public display
 type UsageLogEntry struct {
-	ID           int64   `json:"id"`
-	Model        string  `json:"model"`
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
-	TotalTokens  int     `json:"total_tokens"`
-	Stream       bool    `json:"stream"`
-	DurationMs   *int    `json:"duration_ms,omitempty"`
-	CreatedAt    string  `json:"created_at"`
+	ID                  int64   `json:"id"`
+	Model               string  `json:"model"`
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	CacheCreationTokens int     `json:"cache_creation_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+	TotalTokens         int     `json:"total_tokens"`
+	ActualCost          float64 `json:"actual_cost"`
+	Stream              bool    `json:"stream"`
+	DurationMs          *int    `json:"duration_ms,omitempty"`
+	CreatedAt           string  `json:"created_at"`
 }
 
 // PaginationInfo represents pagination information
@@ -76,6 +85,7 @@ func (h *TempAPIKeyQueryHandler) Query(c *gin.Context) {
 	resp := TempAPIKeyQueryResponse{
 		Name:               key.Name,
 		Status:             key.Status,
+		KeyType:            key.KeyType,
 		ValidDays:          key.ValidDays,
 		DailyLimit:         key.DailyLimit,
 		CurrentPeriodCount: key.CurrentPeriodCount,
@@ -83,6 +93,14 @@ func (h *TempAPIKeyQueryHandler) Query(c *gin.Context) {
 		RemainingRequests:  key.RemainingRequests(),
 		IsExpired:          key.IsExpired(),
 		IsActivated:        key.IsActivated(),
+	}
+
+	// quota_only 类型：填充额度相关字段
+	if key.KeyType == service.TempAPIKeyTypeQuotaOnly {
+		resp.TotalQuotaUSD = key.TotalQuotaUSD
+		resp.TotalCostUSD = key.TotalCostUSD
+		resp.RemainingQuotaUSD = key.RemainingQuotaUSD()
+		resp.IsExhausted = key.IsExhausted()
 	}
 
 	if key.ActivatedAt != nil {
@@ -114,14 +132,17 @@ func (h *TempAPIKeyQueryHandler) Query(c *gin.Context) {
 		resp.UsageLogs = make([]UsageLogEntry, len(logs))
 		for i, log := range logs {
 			resp.UsageLogs[i] = UsageLogEntry{
-				ID:           log.ID,
-				Model:        log.Model,
-				InputTokens:  log.InputTokens,
-				OutputTokens: log.OutputTokens,
-				TotalTokens:  log.TotalTokens(),
-				Stream:       log.Stream,
-				DurationMs:   log.DurationMs,
-				CreatedAt:    log.CreatedAt.Format(time.RFC3339),
+				ID:                  log.ID,
+				Model:               log.Model,
+				InputTokens:         log.InputTokens,
+				OutputTokens:        log.OutputTokens,
+				CacheCreationTokens: log.CacheCreationTokens,
+				CacheReadTokens:     log.CacheReadTokens,
+				TotalTokens:         log.TotalTokens(),
+				ActualCost:          log.ActualCost,
+				Stream:              log.Stream,
+				DurationMs:          log.DurationMs,
+				CreatedAt:           log.CreatedAt.Format(time.RFC3339),
 			}
 		}
 		if paginationResult != nil {

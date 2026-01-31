@@ -29,8 +29,10 @@ const (
 	FieldGroupID = "group_id"
 	// FieldKeyType holds the string denoting the key_type field in the database.
 	FieldKeyType = "key_type"
-	// FieldTotalQuota holds the string denoting the total_quota field in the database.
-	FieldTotalQuota = "total_quota"
+	// FieldTotalQuotaUsd holds the string denoting the total_quota_usd field in the database.
+	FieldTotalQuotaUsd = "total_quota_usd"
+	// FieldTotalCostUsd holds the string denoting the total_cost_usd field in the database.
+	FieldTotalCostUsd = "total_cost_usd"
 	// FieldValidDays holds the string denoting the valid_days field in the database.
 	FieldValidDays = "valid_days"
 	// FieldActivatedAt holds the string denoting the activated_at field in the database.
@@ -90,7 +92,8 @@ var Columns = []string{
 	FieldName,
 	FieldGroupID,
 	FieldKeyType,
-	FieldTotalQuota,
+	FieldTotalQuotaUsd,
+	FieldTotalCostUsd,
 	FieldValidDays,
 	FieldActivatedAt,
 	FieldExpiresAt,
@@ -132,8 +135,10 @@ var (
 	NameValidator func(string) error
 	// DefaultKeyType holds the default value on creation for the "key_type" field.
 	DefaultKeyType string
-	// DefaultTotalQuota holds the default value on creation for the "total_quota" field.
-	DefaultTotalQuota int64
+	// DefaultTotalQuotaUsd holds the default value on creation for the "total_quota_usd" field.
+	DefaultTotalQuotaUsd float64
+	// DefaultTotalCostUsd holds the default value on creation for the "total_cost_usd" field.
+	DefaultTotalCostUsd float64
 	// DefaultValidDays holds the default value on creation for the "valid_days" field.
 	DefaultValidDays int
 	// DefaultDailyLimit holds the default value on creation for the "daily_limit" field.
@@ -189,9 +194,14 @@ func ByKeyType(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldKeyType, opts...).ToFunc()
 }
 
-// ByTotalQuota orders the results by the total_quota field.
-func ByTotalQuota(opts ...sql.OrderTermOption) OrderOption {
-	return sql.OrderByField(FieldTotalQuota, opts...).ToFunc()
+// ByTotalQuotaUsd orders the results by the total_quota_usd field.
+func ByTotalQuotaUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldTotalQuotaUsd, opts...).ToFunc()
+}
+
+// ByTotalCostUsd orders the results by the total_cost_usd field.
+func ByTotalCostUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldTotalCostUsd, opts...).ToFunc()
 }
 
 // ByValidDays orders the results by the valid_days field.

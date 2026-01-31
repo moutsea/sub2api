@@ -12,7 +12,10 @@ interface UsageLogEntry {
   model: string
   input_tokens: number
   output_tokens: number
+  cache_creation_tokens: number
+  cache_read_tokens: number
   total_tokens: number
+  actual_cost: number
   stream: boolean
   duration_ms?: number
   created_at: string
@@ -28,6 +31,7 @@ interface KeyInfo {
   name: string
   group_name?: string
   status: string
+  key_type: string
   valid_days: number
   activated_at: string | null
   expires_at: string | null
@@ -37,6 +41,11 @@ interface KeyInfo {
   remaining_requests: number
   is_expired: boolean
   is_activated: boolean
+  // quota_only 类型专用字段
+  total_quota_usd?: number
+  total_cost_usd?: number
+  remaining_quota_usd?: number
+  is_exhausted?: boolean
   usage_logs?: UsageLogEntry[]
   pagination?: PaginationInfo
 }
@@ -111,6 +120,7 @@ const formatLogDate = (dateStr: string) => {
 
 const getStatusText = (info: KeyInfo) => {
   if (info.status === 'disabled') return t('keyQuery.status.disabled')
+  if (info.status === 'exhausted' || info.is_exhausted) return t('keyQuery.status.exhausted')
   if (info.is_expired) return t('keyQuery.status.expired')
   if (info.is_activated) return t('keyQuery.status.active')
   return t('keyQuery.status.pending')
@@ -118,13 +128,25 @@ const getStatusText = (info: KeyInfo) => {
 
 const getStatusBadge = (info: KeyInfo) => {
   if (info.status === 'disabled') return 'badge-error'
+  if (info.status === 'exhausted' || info.is_exhausted) return 'badge-error'
   if (info.is_expired) return 'badge-warning'
   if (info.is_activated) return 'badge-success'
   return 'badge-info'
 }
 
+// 判断是否为 quota_only 类型
+const isQuotaOnly = computed(() => {
+  return keyInfo.value?.key_type === 'quota_only'
+})
+
 const usagePercent = computed(() => {
   if (!keyInfo.value) return 0
+  // quota_only 类型：基于美元消费计算
+  if (keyInfo.value.key_type === 'quota_only') {
+    if (!keyInfo.value.total_quota_usd || keyInfo.value.total_quota_usd <= 0) return 0
+    return Math.min(100, ((keyInfo.value.total_cost_usd || 0) / keyInfo.value.total_quota_usd) * 100)
+  }
+  // time_limited 类型：基于请求次数计算
   return Math.min(100, (keyInfo.value.current_period_count / keyInfo.value.daily_limit) * 100)
 })
 
@@ -204,7 +226,14 @@ const goToPage = (page: number) => {
             </div>
 
             <div class="grid grid-cols-2 gap-4">
-              <div class="stat bg-base-200/30 rounded-xl p-4">
+              <!-- quota_only 类型：显示总额度 -->
+              <div v-if="isQuotaOnly" class="stat bg-base-200/30 rounded-xl p-4">
+                <div class="stat-title text-xs">{{ t('keyQuery.totalQuota') }}</div>
+                <div class="stat-value text-xl text-primary">${{ keyInfo.total_quota_usd?.toFixed(2) || '0.00' }}</div>
+                <div class="stat-desc">USD</div>
+              </div>
+              <!-- time_limited 类型：显示有效天数 -->
+              <div v-else class="stat bg-base-200/30 rounded-xl p-4">
                 <div class="stat-title text-xs">{{ t('keyQuery.validDays') }}</div>
                 <div class="stat-value text-xl text-primary">{{ keyInfo.valid_days }}</div>
                 <div class="stat-desc">{{ t('keyQuery.days') }}</div>
@@ -220,7 +249,8 @@ const goToPage = (page: number) => {
                 <span class="text-base-content/60">{{ t('keyQuery.activatedAt') }}</span>
                 <span class="font-mono">{{ formatDate(keyInfo.activated_at) }}</span>
               </div>
-              <div class="flex items-center justify-between text-sm">
+              <!-- time_limited 类型才显示过期时间 -->
+              <div v-if="!isQuotaOnly" class="flex items-center justify-between text-sm">
                 <span class="text-base-content/60">{{ t('keyQuery.expiresAt') }}</span>
                 <span class="font-mono" :class="keyInfo.is_expired ? 'text-error' : ''">{{ formatDate(keyInfo.expires_at) }}</span>
               </div>
@@ -229,25 +259,50 @@ const goToPage = (page: number) => {
             <div class="divider text-xs text-base-content/40">{{ t('keyQuery.usageInfo') }}</div>
 
             <div class="space-y-3">
-              <div class="flex items-center justify-between text-sm">
-                <span class="text-base-content/60">{{ t('keyQuery.todayUsed') }} / {{ t('keyQuery.dailyLimit') }}</span>
-                <span class="font-semibold">{{ keyInfo.current_period_count }} / {{ keyInfo.daily_limit }}</span>
-              </div>
-              <progress
-                class="progress w-full h-3"
-                :class="progressColor"
-                :value="keyInfo.current_period_count"
-                :max="keyInfo.daily_limit"
-              ></progress>
-              <div class="flex items-center justify-between">
-                <span class="text-base-content/60 text-sm">{{ t('keyQuery.remaining') }}</span>
-                <span
-                  class="text-2xl font-bold"
-                  :class="keyInfo.remaining_requests > 0 ? 'text-success' : 'text-error'"
-                >
-                  {{ keyInfo.remaining_requests }}
-                </span>
-              </div>
+              <!-- quota_only 类型：显示美元消费 -->
+              <template v-if="isQuotaOnly">
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">{{ t('keyQuery.costUsed') }} / {{ t('keyQuery.totalQuota') }}</span>
+                  <span class="font-semibold">${{ (keyInfo.total_cost_usd || 0).toFixed(4) }} / ${{ (keyInfo.total_quota_usd || 0).toFixed(2) }}</span>
+                </div>
+                <progress
+                  class="progress w-full h-3"
+                  :class="progressColor"
+                  :value="keyInfo.total_cost_usd || 0"
+                  :max="keyInfo.total_quota_usd || 1"
+                ></progress>
+                <div class="flex items-center justify-between">
+                  <span class="text-base-content/60 text-sm">{{ t('keyQuery.remainingQuota') }}</span>
+                  <span
+                    class="text-2xl font-bold"
+                    :class="(keyInfo.remaining_quota_usd || 0) > 0 ? 'text-success' : 'text-error'"
+                  >
+                    ${{ (keyInfo.remaining_quota_usd || 0).toFixed(4) }}
+                  </span>
+                </div>
+              </template>
+              <!-- time_limited 类型：显示请求次数 -->
+              <template v-else>
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">{{ t('keyQuery.todayUsed') }} / {{ t('keyQuery.dailyLimit') }}</span>
+                  <span class="font-semibold">{{ keyInfo.current_period_count }} / {{ keyInfo.daily_limit }}</span>
+                </div>
+                <progress
+                  class="progress w-full h-3"
+                  :class="progressColor"
+                  :value="keyInfo.current_period_count"
+                  :max="keyInfo.daily_limit"
+                ></progress>
+                <div class="flex items-center justify-between">
+                  <span class="text-base-content/60 text-sm">{{ t('keyQuery.remaining') }}</span>
+                  <span
+                    class="text-2xl font-bold"
+                    :class="keyInfo.remaining_requests > 0 ? 'text-success' : 'text-error'"
+                  >
+                    {{ keyInfo.remaining_requests }}
+                  </span>
+                </div>
+              </template>
             </div>
 
             <!-- Usage Logs Section -->
@@ -261,6 +316,7 @@ const goToPage = (page: number) => {
                       <th class="text-xs">{{ t('keyQuery.logTime') || '时间' }}</th>
                       <th class="text-xs">{{ t('keyQuery.logModel') || '模型' }}</th>
                       <th class="text-xs text-right">{{ t('keyQuery.logTokens') || 'Tokens' }}</th>
+                      <th class="text-xs text-right">{{ t('keyQuery.logCost') || '消耗' }}</th>
                       <th class="text-xs text-right">{{ t('keyQuery.logDuration') || '耗时' }}</th>
                     </tr>
                   </thead>
@@ -271,11 +327,22 @@ const goToPage = (page: number) => {
                         <span class="badge badge-ghost badge-sm">{{ log.model }}</span>
                       </td>
                       <td class="text-right">
-                        <span class="text-xs text-base-content/60">{{ log.input_tokens }}</span>
-                        <span class="text-xs text-base-content/40 mx-1">/</span>
-                        <span class="text-xs text-base-content/60">{{ log.output_tokens }}</span>
-                        <span class="text-xs text-base-content/40 mx-1">=</span>
-                        <span class="font-semibold text-sm">{{ log.total_tokens }}</span>
+                        <div>
+                          <span class="text-xs text-base-content/60">{{ log.input_tokens.toLocaleString() }}</span>
+                          <span class="text-xs text-base-content/40 mx-1">/</span>
+                          <span class="text-xs text-base-content/60">{{ log.output_tokens.toLocaleString() }}</span>
+                          <span class="text-xs text-base-content/40 mx-1">=</span>
+                          <span class="font-semibold text-sm">{{ log.total_tokens.toLocaleString() }}</span>
+                        </div>
+                        <div v-if="log.cache_creation_tokens > 0 || log.cache_read_tokens > 0" class="text-xs text-base-content/50">
+                          <span>{{ t('keyQuery.cache') || '缓存' }}: </span>
+                          <span v-if="log.cache_creation_tokens > 0">+{{ log.cache_creation_tokens.toLocaleString() }}</span>
+                          <span v-if="log.cache_creation_tokens > 0 && log.cache_read_tokens > 0"> / </span>
+                          <span v-if="log.cache_read_tokens > 0">{{ log.cache_read_tokens.toLocaleString() }}</span>
+                        </div>
+                      </td>
+                      <td class="text-right">
+                        <span class="text-xs font-mono text-warning">${{ log.actual_cost.toFixed(4) }}</span>
                       </td>
                       <td class="text-right text-xs">
                         <span v-if="log.duration_ms" class="font-mono">{{ (log.duration_ms / 1000).toFixed(1) }}s</span>

@@ -51,10 +51,15 @@ func (TempAPIKey) Fields() []ent.Field {
 			Default("time_limited").
 			Comment("类型：time_limited（限时限额）、quota_only（仅限额不限时）"),
 
-		// 总额度限制（仅 quota_only 类型使用）
-		field.Int64("total_quota").
+		// 总额度限制（仅 quota_only 类型使用，单位：美元）
+		field.Float("total_quota_usd").
 			Default(0).
-			Comment("总额度限制（请求次数），0 表示不限制，仅 quota_only 类型使用"),
+			Comment("总额度限制（美元），0 表示不限制，仅 quota_only 类型使用"),
+
+		// 已消费金额（仅 quota_only 类型使用，单位：美元）
+		field.Float("total_cost_usd").
+			Default(0).
+			Comment("已消费金额（美元），仅 quota_only 类型使用"),
 
 		// 有效期设置
 		field.Int("valid_days").

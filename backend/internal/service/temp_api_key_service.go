@@ -15,6 +15,7 @@ type TempAPIKeyService struct {
 type TempAPIKeyRepository interface {
 	GetByKey(ctx context.Context, key string) (*TempAPIKey, error)
 	ActivateAndIncrement(ctx context.Context, id int64) (*TempAPIKey, bool, error)
+	AddCostUSD(ctx context.Context, id int64, costUSD float64) (*TempAPIKey, bool, error)
 }
 
 // NewTempAPIKeyService creates a new TempAPIKeyService

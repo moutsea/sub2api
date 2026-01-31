@@ -238,6 +238,8 @@ func handleTempAPIKey(c *gin.Context, apiKeyString string, tempAPIKeyService *se
 			AbortWithError(c, 401, "TEMP_API_KEY_INACTIVE", "Temporary API key is inactive")
 		case errors.Is(err, service.ErrTempAPIKeyRateLimited):
 			AbortWithError(c, 429, "TEMP_API_KEY_RATE_LIMITED", "Temporary API key daily limit exceeded")
+		case errors.Is(err, service.ErrTempAPIKeyExhausted):
+			AbortWithError(c, 429, "TEMP_API_KEY_EXHAUSTED", "Temporary API key quota exhausted")
 		default:
 			AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate temporary API key")
 		}

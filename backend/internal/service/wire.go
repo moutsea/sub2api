@@ -229,13 +229,14 @@ func ProvideGatewayService(
 	sessionLimitCache SessionLimitCache,
 	usageCache *UsageCache,
 	accountUsageService *AccountUsageService,
+	tempAPIKeyRepo TempAPIKeyRepository,
 ) *GatewayService {
 	svc := NewGatewayService(
 		accountRepo, groupRepo, usageLogRepo, userRepo, userSubRepo,
 		cache, cfg, schedulerSnapshot, concurrencyService, billingService,
 		rateLimitService, billingCacheService, identityService, httpUpstream,
 		deferredService, claudeTokenProvider, kiroTokenProvider, sessionLimitCache, usageCache,
-		accountUsageService,
+		accountUsageService, tempAPIKeyRepo,
 	)
 	// 启动后台配额恢复任务（每 30 分钟检查配额不健康的 Antigravity 账号）
 	svc.StartQuotaRecoveryTask(context.Background())

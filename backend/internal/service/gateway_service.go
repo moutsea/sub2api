@@ -192,6 +192,7 @@ type GatewayService struct {
 	sessionLimitCache   SessionLimitCache     // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
 	usageCache          *UsageCache           // 用量缓存，用于账号选择时检查配额
 	accountUsageService *AccountUsageService  // 账号用量服务，用于主动刷新配额
+	tempAPIKeyRepo      TempAPIKeyRepository  // 临时 API Key 仓库，用于更新 quota_only 消费金额
 }
 
 // NewGatewayService creates a new GatewayService
@@ -216,6 +217,7 @@ func NewGatewayService(
 	sessionLimitCache SessionLimitCache,
 	usageCache *UsageCache,
 	accountUsageService *AccountUsageService,
+	tempAPIKeyRepo TempAPIKeyRepository,
 ) *GatewayService {
 	return &GatewayService{
 		accountRepo:         accountRepo,
@@ -238,6 +240,7 @@ func NewGatewayService(
 		sessionLimitCache:   sessionLimitCache,
 		usageCache:          usageCache,
 		accountUsageService: accountUsageService,
+		tempAPIKeyRepo:      tempAPIKeyRepo,
 	}
 }
 
@@ -3364,6 +3367,12 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		Usage ClaudeUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
+		// 打印上游返回的实际内容（截取前 500 字节用于调试）
+		bodyPreview := string(body)
+		if len(bodyPreview) > 500 {
+			bodyPreview = bodyPreview[:500] + "..."
+		}
+		log.Printf("Account %d: failed to parse upstream response (status=%d): %s", account.ID, resp.StatusCode, bodyPreview)
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
@@ -3418,6 +3427,7 @@ type RecordUsageInput struct {
 	UserAgent    string            // 请求的 User-Agent
 	IPAddress    string            // 请求的客户端 IP 地址
 	TempAPIKeyID *int64            // 临时 API Key ID
+	TempAPIKey   *TempAPIKey       // 临时 API Key 对象（用于 quota_only 类型更新消费金额）
 }
 
 // RecordUsage 记录使用量并扣费（或更新订阅用量）
@@ -3561,6 +3571,15 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 			}
 			// 异步更新余额缓存
 			s.billingCacheService.QueueDeductBalance(user.ID, cost.ActualCost)
+		}
+	}
+
+	// 更新 quota_only 临时 API Key 的消费金额
+	if input.TempAPIKey != nil && input.TempAPIKey.KeyType == TempAPIKeyTypeQuotaOnly && cost.ActualCost > 0 {
+		if s.tempAPIKeyRepo != nil {
+			if _, _, err := s.tempAPIKeyRepo.AddCostUSD(ctx, input.TempAPIKey.ID, cost.ActualCost); err != nil {
+				log.Printf("Update temp API key cost failed: %v", err)
+			}
 		}
 	}
 

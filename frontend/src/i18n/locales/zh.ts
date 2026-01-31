@@ -25,13 +25,19 @@ export default {
       disabled: '已禁用',
       expired: '已过期',
       active: '使用中',
-      pending: '待激活'
+      pending: '待激活',
+      exhausted: '已用尽'
     },
+    totalQuota: '总额度',
+    costUsed: '已消费',
+    remainingQuota: '剩余额度',
     usageLogs: '使用日志',
     logTime: '时间',
     logModel: '模型',
     logTokens: 'Tokens',
+    logCost: '消耗',
     logDuration: '耗时',
+    cache: '缓存',
     noLogs: '暂无使用记录'
   },
 

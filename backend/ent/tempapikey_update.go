@@ -113,24 +113,45 @@ func (_u *TempAPIKeyUpdate) SetNillableKeyType(v *string) *TempAPIKeyUpdate {
 	return _u
 }
 
-// SetTotalQuota sets the "total_quota" field.
-func (_u *TempAPIKeyUpdate) SetTotalQuota(v int64) *TempAPIKeyUpdate {
-	_u.mutation.ResetTotalQuota()
-	_u.mutation.SetTotalQuota(v)
+// SetTotalQuotaUsd sets the "total_quota_usd" field.
+func (_u *TempAPIKeyUpdate) SetTotalQuotaUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.ResetTotalQuotaUsd()
+	_u.mutation.SetTotalQuotaUsd(v)
 	return _u
 }
 
-// SetNillableTotalQuota sets the "total_quota" field if the given value is not nil.
-func (_u *TempAPIKeyUpdate) SetNillableTotalQuota(v *int64) *TempAPIKeyUpdate {
+// SetNillableTotalQuotaUsd sets the "total_quota_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdate) SetNillableTotalQuotaUsd(v *float64) *TempAPIKeyUpdate {
 	if v != nil {
-		_u.SetTotalQuota(*v)
+		_u.SetTotalQuotaUsd(*v)
 	}
 	return _u
 }
 
-// AddTotalQuota adds value to the "total_quota" field.
-func (_u *TempAPIKeyUpdate) AddTotalQuota(v int64) *TempAPIKeyUpdate {
-	_u.mutation.AddTotalQuota(v)
+// AddTotalQuotaUsd adds value to the "total_quota_usd" field.
+func (_u *TempAPIKeyUpdate) AddTotalQuotaUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.AddTotalQuotaUsd(v)
+	return _u
+}
+
+// SetTotalCostUsd sets the "total_cost_usd" field.
+func (_u *TempAPIKeyUpdate) SetTotalCostUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.ResetTotalCostUsd()
+	_u.mutation.SetTotalCostUsd(v)
+	return _u
+}
+
+// SetNillableTotalCostUsd sets the "total_cost_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdate) SetNillableTotalCostUsd(v *float64) *TempAPIKeyUpdate {
+	if v != nil {
+		_u.SetTotalCostUsd(*v)
+	}
+	return _u
+}
+
+// AddTotalCostUsd adds value to the "total_cost_usd" field.
+func (_u *TempAPIKeyUpdate) AddTotalCostUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.AddTotalCostUsd(v)
 	return _u
 }
 
@@ -468,11 +489,17 @@ func (_u *TempAPIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) 
 	if value, ok := _u.mutation.KeyType(); ok {
 		_spec.SetField(tempapikey.FieldKeyType, field.TypeString, value)
 	}
-	if value, ok := _u.mutation.TotalQuota(); ok {
-		_spec.SetField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	if value, ok := _u.mutation.TotalQuotaUsd(); ok {
+		_spec.SetField(tempapikey.FieldTotalQuotaUsd, field.TypeFloat64, value)
 	}
-	if value, ok := _u.mutation.AddedTotalQuota(); ok {
-		_spec.AddField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	if value, ok := _u.mutation.AddedTotalQuotaUsd(); ok {
+		_spec.AddField(tempapikey.FieldTotalQuotaUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.TotalCostUsd(); ok {
+		_spec.SetField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedTotalCostUsd(); ok {
+		_spec.AddField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)
@@ -724,24 +751,45 @@ func (_u *TempAPIKeyUpdateOne) SetNillableKeyType(v *string) *TempAPIKeyUpdateOn
 	return _u
 }
 
-// SetTotalQuota sets the "total_quota" field.
-func (_u *TempAPIKeyUpdateOne) SetTotalQuota(v int64) *TempAPIKeyUpdateOne {
-	_u.mutation.ResetTotalQuota()
-	_u.mutation.SetTotalQuota(v)
+// SetTotalQuotaUsd sets the "total_quota_usd" field.
+func (_u *TempAPIKeyUpdateOne) SetTotalQuotaUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.ResetTotalQuotaUsd()
+	_u.mutation.SetTotalQuotaUsd(v)
 	return _u
 }
 
-// SetNillableTotalQuota sets the "total_quota" field if the given value is not nil.
-func (_u *TempAPIKeyUpdateOne) SetNillableTotalQuota(v *int64) *TempAPIKeyUpdateOne {
+// SetNillableTotalQuotaUsd sets the "total_quota_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdateOne) SetNillableTotalQuotaUsd(v *float64) *TempAPIKeyUpdateOne {
 	if v != nil {
-		_u.SetTotalQuota(*v)
+		_u.SetTotalQuotaUsd(*v)
 	}
 	return _u
 }
 
-// AddTotalQuota adds value to the "total_quota" field.
-func (_u *TempAPIKeyUpdateOne) AddTotalQuota(v int64) *TempAPIKeyUpdateOne {
-	_u.mutation.AddTotalQuota(v)
+// AddTotalQuotaUsd adds value to the "total_quota_usd" field.
+func (_u *TempAPIKeyUpdateOne) AddTotalQuotaUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.AddTotalQuotaUsd(v)
+	return _u
+}
+
+// SetTotalCostUsd sets the "total_cost_usd" field.
+func (_u *TempAPIKeyUpdateOne) SetTotalCostUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.ResetTotalCostUsd()
+	_u.mutation.SetTotalCostUsd(v)
+	return _u
+}
+
+// SetNillableTotalCostUsd sets the "total_cost_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdateOne) SetNillableTotalCostUsd(v *float64) *TempAPIKeyUpdateOne {
+	if v != nil {
+		_u.SetTotalCostUsd(*v)
+	}
+	return _u
+}
+
+// AddTotalCostUsd adds value to the "total_cost_usd" field.
+func (_u *TempAPIKeyUpdateOne) AddTotalCostUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.AddTotalCostUsd(v)
 	return _u
 }
 
@@ -1109,11 +1157,17 @@ func (_u *TempAPIKeyUpdateOne) sqlSave(ctx context.Context) (_node *TempAPIKey, 
 	if value, ok := _u.mutation.KeyType(); ok {
 		_spec.SetField(tempapikey.FieldKeyType, field.TypeString, value)
 	}
-	if value, ok := _u.mutation.TotalQuota(); ok {
-		_spec.SetField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	if value, ok := _u.mutation.TotalQuotaUsd(); ok {
+		_spec.SetField(tempapikey.FieldTotalQuotaUsd, field.TypeFloat64, value)
 	}
-	if value, ok := _u.mutation.AddedTotalQuota(); ok {
-		_spec.AddField(tempapikey.FieldTotalQuota, field.TypeInt64, value)
+	if value, ok := _u.mutation.AddedTotalQuotaUsd(); ok {
+		_spec.AddField(tempapikey.FieldTotalQuotaUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.TotalCostUsd(); ok {
+		_spec.SetField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedTotalCostUsd(); ok {
+		_spec.AddField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)

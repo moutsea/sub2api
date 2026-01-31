@@ -297,13 +297,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			userAgent := c.GetHeader("User-Agent")
 			clientIP := ip.GetClientIP(c)
 			var tempAPIKeyID *int64
+			var tempAPIKey *service.TempAPIKey
 			if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
 				tempAPIKeyID = new(int64)
 				*tempAPIKeyID = tempKey.ID
+				tempAPIKey = tempKey
 			}
 
 			// 异步记录使用量（subscription已在函数开头获取）
-			go func(result *service.ForwardResult, usedAccount *service.Account, ua, clientIP string, tempKeyID *int64) {
+			go func(result *service.ForwardResult, usedAccount *service.Account, ua, clientIP string, tempKeyID *int64, tempKey *service.TempAPIKey) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
@@ -315,10 +317,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UserAgent:    ua,
 					IPAddress:    clientIP,
 					TempAPIKeyID: tempKeyID,
+					TempAPIKey:   tempKey,
 				}); err != nil {
 					log.Printf("Record usage failed: %v", err)
 				}
-			}(result, account, userAgent, clientIP, tempAPIKeyID)
+			}(result, account, userAgent, clientIP, tempAPIKeyID, tempAPIKey)
 			return
 		}
 	}
@@ -447,13 +450,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		var tempAPIKeyID *int64
+		var tempAPIKey *service.TempAPIKey
 		if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
 			tempAPIKeyID = new(int64)
 			*tempAPIKeyID = tempKey.ID
+			tempAPIKey = tempKey
 		}
 
 		// 异步记录使用量（subscription已在函数开头获取）
-		go func(result *service.ForwardResult, usedAccount *service.Account, ua, clientIP string, tempKeyID *int64) {
+		go func(result *service.ForwardResult, usedAccount *service.Account, ua, clientIP string, tempKeyID *int64, tempKey *service.TempAPIKey) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
@@ -465,10 +470,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				UserAgent:    ua,
 				IPAddress:    clientIP,
 				TempAPIKeyID: tempKeyID,
+				TempAPIKey:   tempKey,
 			}); err != nil {
 				log.Printf("Record usage failed: %v", err)
 			}
-		}(result, account, userAgent, clientIP, tempAPIKeyID)
+		}(result, account, userAgent, clientIP, tempAPIKeyID, tempAPIKey)
 
 		// 对 Antigravity 账号，请求完成后异步刷新配额并更新健康状态
 		if account.Platform == service.PlatformAntigravity {

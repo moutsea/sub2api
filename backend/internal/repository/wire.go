@@ -65,6 +65,7 @@ var ProviderSet = wire.NewSet(
 	NewUserAttributeDefinitionRepository,
 	NewUserAttributeValueRepository,
 	NewTempAPIKeyRepo,
+	wire.Bind(new(service.TempAPIKeyRepository), new(*TempAPIKeyRepo)),
 
 	// Cache implementations
 	NewGatewayCache,
