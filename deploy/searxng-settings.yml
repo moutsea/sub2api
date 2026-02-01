@@ -1,0 +1,36 @@
+# SearXNG Configuration for Sub2API WebSearch
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "Sub2API Search"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "sub2api-searxng-secret-key-change-in-production"
+  limiter: false
+  image_proxy: true
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+  query_in_title: false
+
+enabled_plugins: []
+
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: wikipedia
+    disabled: false
