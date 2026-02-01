@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -25,13 +26,24 @@ type TransformContext struct {
 }
 
 // NewTransformContext creates a new transformation context
-func NewTransformContext(model string) *TransformContext {
+// If ginCtx is provided, generates stable conversation IDs based on client characteristics
+// for better cache hit rates on AWS CodeWhisperer.
+func NewTransformContext(model string, ginCtx *gin.Context) *TransformContext {
 	modelID := GetModelID(model)
+
+	var convID, agentContID string
+	if ginCtx != nil {
+		convID = GenerateStableConversationID(ginCtx)
+		agentContID = GenerateStableAgentContinuationID(ginCtx)
+	} else {
+		convID = uuid.New().String()
+		agentContID = uuid.New().String()
+	}
 
 	return &TransformContext{
 		ModelID:      modelID,
-		ConvID:       uuid.New().String(),
-		AgentContID:  uuid.New().String(),
+		ConvID:       convID,
+		AgentContID:  agentContID,
 		ToolUseIDMap: make(map[string]string),
 		MsgCounter:   0,
 	}
@@ -64,7 +76,8 @@ type ClaudeRequest struct {
 }
 
 // TransformClaudeToCodeWhisperer transforms a Claude request to CodeWhisperer format
-func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string) (*CodeWhispererRequest, error) {
+// ginCtx is optional - if provided, enables stable conversation ID generation for better caching
+func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string, ginCtx *gin.Context) (*CodeWhispererRequest, error) {
 	if claudeReq == nil {
 		return nil, fmt.Errorf("claude request is nil")
 	}
@@ -73,8 +86,8 @@ func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string)
 		return nil, fmt.Errorf("messages cannot be empty")
 	}
 
-	// Create transformation context
-	ctx := NewTransformContext(claudeReq.Model)
+	// Create transformation context with stable IDs if ginCtx is provided
+	ctx := NewTransformContext(claudeReq.Model, ginCtx)
 	if ctx.ModelID == "" {
 		return nil, fmt.Errorf("unsupported model: %s", claudeReq.Model)
 	}

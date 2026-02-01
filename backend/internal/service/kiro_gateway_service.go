@@ -154,7 +154,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Transform Claude request to CodeWhisperer format
-	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn)
+	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
 	if err != nil {
 		return nil, fmt.Errorf("transform request: %w", err)
 	}
@@ -554,11 +554,14 @@ finishStream:
 	}
 	flusher.Flush()
 
-	// Calculate accurate input tokens from context percentage if available
+	// Calculate input tokens from context percentage if available
+	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size
+	// To ensure client can correctly judge context size and trigger proactive compression,
+	// use the larger value between estimated and calculated tokens
 	accurateInputTokens := inputTokens
 	if contextPct > 0 {
 		calculatedTokens := int(contextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
-		if calculatedTokens > 0 {
+		if calculatedTokens > accurateInputTokens {
 			accurateInputTokens = calculatedTokens
 		}
 	}
@@ -594,11 +597,14 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	messageID := "msg_" + uuid.New().String()[:24]
 	parsedResp := kiro.ParseCompleteResponseWithNameRestore(respBody, toolNameReverseMap)
 
-	// Calculate accurate input tokens from context percentage if available
+	// Calculate input tokens from context percentage if available
+	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size
+	// To ensure client can correctly judge context size and trigger proactive compression,
+	// use the larger value between estimated and calculated tokens
 	accurateInputTokens := inputTokens
 	if parsedResp.ContextPct > 0 {
 		calculatedTokens := int(parsedResp.ContextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
-		if calculatedTokens > 0 {
+		if calculatedTokens > accurateInputTokens {
 			accurateInputTokens = calculatedTokens
 		}
 	}
@@ -813,7 +819,7 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		Stream:    false,
 	}
 
-	cwReq, err := kiro.TransformClaudeToCodeWhisperer(testClaudeReq, profileArn)
+	cwReq, err := kiro.TransformClaudeToCodeWhisperer(testClaudeReq, profileArn, nil)
 	if err != nil {
 		return nil, fmt.Errorf("transform request: %w", err)
 	}
