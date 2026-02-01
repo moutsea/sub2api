@@ -911,6 +911,19 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 	// Use estimated input tokens directly (aligned with kiro4api)
 	inputTokens := c.inputTokens
 
+	// Subtract cache tokens from input_tokens to match Anthropic's definition:
+	// - input_tokens = non-cached input tokens (excludes cache_read and cache_creation)
+	// - Total = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+	if c.cacheReadTokens > 0 {
+		inputTokens -= c.cacheReadTokens
+	}
+	if c.cacheCreationTokens > 0 {
+		inputTokens -= c.cacheCreationTokens
+	}
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+
 	// Apply inflation to trigger client-side context compression earlier
 	inflatedTokens := InflateInputTokens(inputTokens)
 
@@ -1045,8 +1058,22 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 		stopReason = "tool_use"
 	}
 
+	// Subtract cache tokens from input_tokens to match Anthropic's definition:
+	// - input_tokens = non-cached input tokens (excludes cache_read and cache_creation)
+	// - Total = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+	adjustedInputTokens := inputTokens
+	if resp.CacheReadTokens > 0 {
+		adjustedInputTokens -= resp.CacheReadTokens
+	}
+	if resp.CacheCreationTokens > 0 {
+		adjustedInputTokens -= resp.CacheCreationTokens
+	}
+	if adjustedInputTokens < 0 {
+		adjustedInputTokens = 0
+	}
+
 	// Apply inflation to trigger client-side context compression earlier
-	inflatedTokens := InflateInputTokens(inputTokens)
+	inflatedTokens := InflateInputTokens(adjustedInputTokens)
 
 	usage := map[string]any{
 		"input_tokens":  inflatedTokens,

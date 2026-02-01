@@ -337,7 +337,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	if claudeReq.Stream {
 		// Streaming response
-		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens)
+		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold)
 		if err != nil {
 			log.Printf("%s status=stream_error error=%v", prefix, err)
 			return nil, err
@@ -346,7 +346,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		// Non-streaming response
-		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens)
+		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold)
 		if err != nil {
 			log.Printf("%s status=non_stream_error error=%v", prefix, err)
 			return nil, err
@@ -356,12 +356,22 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Apply cache token estimation to usage (for billing/logging)
+	// Note: According to Anthropic's definition:
+	// - input_tokens = non-cached input tokens (does NOT include cache_read_input_tokens)
+	// - cache_read_input_tokens = tokens read from cache
+	// - Total input = input_tokens + cache_read_input_tokens
 	if cacheEstimation.MeetsCacheThreshold {
 		if cacheHit {
 			// Cache hit: attribute cacheable tokens to cache_read
 			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
+			// Subtract cached tokens from input_tokens to match Anthropic's definition
+			usage.InputTokens -= cacheEstimation.CacheableTokens
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
+			}
 		} else {
 			// Cache miss: attribute cacheable tokens to cache_creation
+			// Note: cache_creation tokens are still processed as input, so don't subtract
 			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
 		}
 	}
@@ -383,7 +393,7 @@ type kiroStreamResult struct {
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool) (*kiroStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -558,8 +568,10 @@ finishStream:
 	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size
 	// To ensure client can correctly judge context size and trigger proactive compression,
 	// use the larger value between estimated and calculated tokens
+	// However, when caching is enabled, contextPct can be inflated, so we only use it
+	// when caching is NOT active to avoid triggering compression too early
 	accurateInputTokens := inputTokens
-	if contextPct > 0 {
+	if contextPct > 0 && !cachingEnabled {
 		calculatedTokens := int(contextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
 		if calculatedTokens > accurateInputTokens {
 			accurateInputTokens = calculatedTokens
@@ -582,7 +594,7 @@ finishStream:
 }
 
 // handleNonStreamingResponse handles non-streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool) (*kiroStreamResult, error) {
 	// Read entire response
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
@@ -601,8 +613,10 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size
 	// To ensure client can correctly judge context size and trigger proactive compression,
 	// use the larger value between estimated and calculated tokens
+	// However, when caching is enabled, contextPct can be inflated, so we only use it
+	// when caching is NOT active to avoid triggering compression too early
 	accurateInputTokens := inputTokens
-	if parsedResp.ContextPct > 0 {
+	if parsedResp.ContextPct > 0 && !cachingEnabled {
 		calculatedTokens := int(parsedResp.ContextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
 		if calculatedTokens > accurateInputTokens {
 			accurateInputTokens = calculatedTokens
