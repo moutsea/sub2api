@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
 
@@ -116,6 +117,9 @@ func runMainServer() {
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
 	}
+
+	// Initialize WebSearch service (reads SEARXNG_URL from environment)
+	service.InitWebSearchService()
 
 	buildInfo := handler.BuildInfo{
 		Version:   Version,

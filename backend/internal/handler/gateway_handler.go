@@ -413,7 +413,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		case service.PlatformAntigravity:
 			result, err = h.antigravityGatewayService.Forward(c.Request.Context(), c, account, body)
 		case service.PlatformKiro:
-			result, err = h.kiroGatewayService.Forward(c.Request.Context(), c, account, body)
+			// Parse Claude request for web_search detection
+			claudeReq, parseErr := service.ParseClaudeRequestFromJSON(body)
+			if parseErr != nil {
+				result, err = h.kiroGatewayService.Forward(c.Request.Context(), c, account, body)
+			} else {
+				// Use ForwardWithWebSearch for web_search agentic loop support
+				result, err = h.kiroGatewayService.ForwardWithWebSearch(c.Request.Context(), c, account, body, claudeReq)
+			}
 		default:
 			result, err = h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
 		}
