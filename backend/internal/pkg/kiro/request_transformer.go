@@ -16,6 +16,76 @@ const (
 	ToolDocThresholdLength        = 500 // Threshold for moving description to system prompt
 )
 
+// generateParameterHints extracts parameter requirements from input_schema and generates hints
+// This helps the model understand what parameters are required/optional for each tool
+func generateParameterHints(inputSchema map[string]any) string {
+	if inputSchema == nil {
+		return ""
+	}
+
+	properties, ok := inputSchema["properties"].(map[string]any)
+	if !ok || len(properties) == 0 {
+		return ""
+	}
+
+	// Get required parameters
+	var requiredParams []string
+	if required, ok := inputSchema["required"].([]any); ok {
+		for _, r := range required {
+			if s, ok := r.(string); ok {
+				requiredParams = append(requiredParams, s)
+			}
+		}
+	}
+	// Also handle []string type
+	if required, ok := inputSchema["required"].([]string); ok {
+		requiredParams = required
+	}
+
+	requiredSet := make(map[string]bool)
+	for _, p := range requiredParams {
+		requiredSet[p] = true
+	}
+
+	var requiredHints []string
+	var optionalHints []string
+
+	for name, prop := range properties {
+		propMap, ok := prop.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Get type
+		propType := "any"
+		if t, ok := propMap["type"].(string); ok {
+			propType = t
+		}
+
+		hint := name + " (" + propType + ")"
+
+		if requiredSet[name] {
+			requiredHints = append(requiredHints, hint)
+		} else {
+			optionalHints = append(optionalHints, hint)
+		}
+	}
+
+	var parts []string
+	if len(requiredHints) > 0 {
+		parts = append(parts, "[Required: "+strings.Join(requiredHints, ", ")+"]")
+	}
+	if len(optionalHints) > 0 {
+		parts = append(parts, "[Optional: "+strings.Join(optionalHints, ", ")+"]")
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return "\n" + strings.Join(parts, " ")
+}
+
 // TransformContext holds context for the transformation process
 type TransformContext struct {
 	ModelID      string            // CodeWhisperer model ID
@@ -862,19 +932,28 @@ func processTools(tools []ClaudeTool) []ToolItem {
 		functionCount++
 
 		description := tool.Description
-		// Truncate individual tool descriptions that exceed Kiro API limit
-		if len(description) > KiroMaxToolDescLen {
-			runes := []rune(description)
-			if len(runes) > KiroMaxToolDescLen-3 {
-				description = string(runes[:KiroMaxToolDescLen-3]) + "..."
-			}
-		}
 
 		inputSchema := tool.InputSchema
 		if inputSchema == nil || inputSchema["type"] == nil {
 			inputSchema = map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
+			}
+		}
+
+		// Generate parameter hints from schema and append to description
+		// This helps the model understand required/optional parameters
+		paramHints := generateParameterHints(inputSchema)
+		if paramHints != "" {
+			description = description + paramHints
+		}
+
+		// Truncate individual tool descriptions that exceed Kiro API limit
+		// (after adding parameter hints)
+		if len(description) > KiroMaxToolDescLen {
+			runes := []rune(description)
+			if len(runes) > KiroMaxToolDescLen-3 {
+				description = string(runes[:KiroMaxToolDescLen-3]) + "..."
 			}
 		}
 
