@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/gin-gonic/gin"
@@ -19,31 +20,62 @@ const (
 	MaxWebSearchIterations = 3
 )
 
+// filterWebSearchTools removes Claude's built-in web_search tools from a ClaudeRequest
+// Only filters tools with Type field like "web_search_20250305"
+// MCP tools named "web_search" are NOT filtered (they have Type="")
+func filterWebSearchTools(req *kiro.ClaudeRequest) []byte {
+	filteredTools := make([]kiro.ClaudeTool, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		// Only filter Claude's built-in web_search (identified by Type field)
+		if isClaudeBuiltinWebSearch(tool) {
+			continue
+		}
+		filteredTools = append(filteredTools, tool)
+	}
+	filteredReq := *req
+	filteredReq.Tools = filteredTools
+	body, _ := json.Marshal(filteredReq)
+	return body
+}
+
+// isClaudeBuiltinWebSearch checks if the tool is Claude's built-in web_search
+// Claude's built-in web_search has Type field like "web_search_20250305"
+// MCP tools have Type="" even if named "web_search"
+func isClaudeBuiltinWebSearch(tool kiro.ClaudeTool) bool {
+	if tool.Type == "" {
+		return false
+	}
+	return tool.Type == "web_search" ||
+		tool.Type == "web_search_20250305" ||
+		strings.HasPrefix(tool.Type, "web_search_")
+}
+
 // ForwardWithWebSearch handles Claude API requests with web_search agentic loop support
 func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, claudeReq *kiro.ClaudeRequest) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-WebSearch] account=%s", account.Name)
 
 	// Check if WebSearch is enabled
 	if !IsWebSearchEnabled() {
-		// WebSearch not enabled, use normal forward
-		return s.Forward(ctx, c, account, body)
+		// WebSearch not enabled, filter out Claude's built-in web_search tools and use normal forward
+		return s.Forward(ctx, c, account, filterWebSearchTools(claudeReq))
 	}
 
-	// Check if request has web_search tool
-	hasWebSearchTool := false
+	// Check if request has Claude's built-in web_search tool (Type field like "web_search_20250305")
+	// MCP tools named "web_search" are NOT detected here - they are regular tools
+	hasBuiltinWebSearch := false
 	for _, tool := range claudeReq.Tools {
-		if IsWebSearchTool(tool.Name) || IsWebSearchTool(tool.Type) {
-			hasWebSearchTool = true
+		if isClaudeBuiltinWebSearch(tool) {
+			hasBuiltinWebSearch = true
 			break
 		}
 	}
 
-	if !hasWebSearchTool {
-		// No web_search tool, use normal forward
+	if !hasBuiltinWebSearch {
+		// No Claude built-in web_search tool, use normal forward (no filtering needed)
 		return s.Forward(ctx, c, account, body)
 	}
 
-	log.Printf("%s web_search tool detected, starting agentic loop", prefix)
+	log.Printf("%s Claude built-in web_search tool detected, starting agentic loop", prefix)
 
 	// For streaming requests, we need to handle differently
 	if claudeReq.Stream {
@@ -105,16 +137,14 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 
 		// If no web_search calls, or has other tools, return final response
 		if len(webSearchCalls) == 0 || !HasOnlyWebSearchTools(parseResult.ToolCalls) {
-			log.Printf("%s completed after %d iterations", prefix, iteration)
-			// Return final response by re-executing with original stream setting
-			return s.Forward(ctx, c, account, reqBody)
+			// Return final response by re-executing with original stream setting, filtering out web_search tools
+			return s.Forward(ctx, c, account, filterWebSearchTools(&nonStreamReq))
 		}
 
 		// Execute web_search
 		toolResults := ExecuteWebSearch(ctx, webSearchCalls)
 		if len(toolResults) == 0 {
-			log.Printf("%s web_search failed, returning current response", prefix)
-			return s.Forward(ctx, c, account, reqBody)
+			return s.Forward(ctx, c, account, filterWebSearchTools(&nonStreamReq))
 		}
 
 		// Build assistant content
@@ -145,9 +175,7 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 	}
 
 	// Max iterations reached
-	log.Printf("%s max iterations reached (%d), returning final response", prefix, MaxWebSearchIterations)
-	reqBody, _ := json.Marshal(currentReq)
-	return s.Forward(ctx, c, account, reqBody)
+	return s.Forward(ctx, c, account, filterWebSearchTools(currentReq))
 }
 
 // forwardStreamWithWebSearch handles streaming requests with web_search agentic loop
@@ -202,22 +230,18 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 
 		// If no web_search calls, or has other tools, switch to streaming
 		if len(webSearchCalls) == 0 || !HasOnlyWebSearchTools(parseResult.ToolCalls) {
-			log.Printf("%s switching to streaming after %d iterations", prefix, iteration)
-			// Re-execute with streaming enabled
+			// Re-execute with streaming enabled, filtering out web_search tools
 			streamReq := *currentReq
 			streamReq.Stream = true
-			streamBody, _ := json.Marshal(streamReq)
-			return s.Forward(ctx, c, account, streamBody)
+			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 		}
 
 		// Execute web_search
 		toolResults := ExecuteWebSearch(ctx, webSearchCalls)
 		if len(toolResults) == 0 {
-			log.Printf("%s web_search failed, switching to streaming", prefix)
 			streamReq := *currentReq
 			streamReq.Stream = true
-			streamBody, _ := json.Marshal(streamReq)
-			return s.Forward(ctx, c, account, streamBody)
+			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 		}
 
 		// Build assistant content
@@ -247,11 +271,9 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 	}
 
 	// Max iterations reached, return streaming response
-	log.Printf("%s max iterations reached, returning streaming response", prefix)
 	streamReq := *currentReq
 	streamReq.Stream = true
-	streamBody, _ := json.Marshal(streamReq)
-	return s.Forward(ctx, c, account, streamBody)
+	return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 }
 
 // executeCodeWhispererRequest executes a CodeWhisperer request
@@ -266,6 +288,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	profileArn := account.GetKiroProfileArn()
 
 	// Transform to CodeWhisperer format
+	// Note: web_search tools are converted to standard toolSpecification format in TransformClaudeToCodeWhisperer
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
 	if err != nil {
 		return nil, fmt.Errorf("transform request: %w", err)
@@ -314,6 +337,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		log.Printf("[kiro-WebSearch] upstream error status=%d response=%s", resp.StatusCode, string(respBody))
 		return nil, fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

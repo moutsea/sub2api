@@ -822,17 +822,36 @@ func processTools(tools []ClaudeTool) []ToolItem {
 	functionCount := 0
 
 	for _, tool := range tools {
-		if tool.Name == "" {
+		// Convert Claude's built-in web_search to standard toolSpecification format
+		// Claude's built-in web_search has Type field like "web_search_20250305"
+		// This allows the model to call WebSearch, which will be intercepted by the agentic loop
+		if isWebSearchToolByType(tool) {
+			cwTools = append(cwTools, ToolItem{
+				Standard: &CodeWhispererTool{
+					ToolSpecification: ToolSpecification{
+						Name:        "WebSearch",
+						Description: "Search the web for information. Use this tool when you need to find current information, facts, or data from the internet.",
+						InputSchema: InputSchema{
+							JSON: map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"query": map[string]any{
+										"type":        "string",
+										"description": "The search query to look up on the web",
+									},
+								},
+								"required": []string{"query"},
+							},
+						},
+					},
+				},
+			})
+			functionCount++
 			continue
 		}
 
-		// Check for web_search tool (also check type field for better compatibility)
-		if isWebSearchTool(tool.Name) || isWebSearchToolByType(tool) {
-			cwTools = append(cwTools, ToolItem{
-				WebSearch: &WebSearchTool{
-					Type: "web_search",
-				},
-			})
+		// Skip tools without a name
+		if tool.Name == "" {
 			continue
 		}
 
