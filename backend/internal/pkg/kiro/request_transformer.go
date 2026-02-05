@@ -323,10 +323,11 @@ func parseContentBlock(um *UnifiedMessage, block any, msgIdx, blockIdx int) erro
 	case "tool_result":
 		toolUseID, _ := blockMap["tool_use_id"].(string)
 		isError, _ := blockMap["is_error"].(bool)
-		content := extractToolResultContent(blockMap["content"])
+		content, images := extractToolResultContent(blockMap["content"])
 		um.ToolResults = append(um.ToolResults, ToolResultData{
 			ToolUseID: toolUseID,
 			Content:   content,
+			Images:    images,
 			IsError:   isError,
 		})
 
@@ -384,13 +385,15 @@ func parseTypedContentBlock(um *UnifiedMessage, block *ContentBlock, msgIdx, blo
 		if block.IsError != nil {
 			isError = *block.IsError
 		}
-		content := ""
+		var content string
+		var images []CodeWhispererImage
 		if block.Content != nil {
-			content = extractToolResultContent(block.Content)
+			content, images = extractToolResultContent(block.Content)
 		}
 		um.ToolResults = append(um.ToolResults, ToolResultData{
 			ToolUseID: toolUseID,
 			Content:   content,
+			Images:    images,
 			IsError:   isError,
 		})
 
@@ -410,33 +413,53 @@ func parseTypedContentBlock(um *UnifiedMessage, block *ContentBlock, msgIdx, blo
 	return nil
 }
 
-// extractToolResultContent extracts text content from tool_result
-func extractToolResultContent(content any) string {
+// extractToolResultContent extracts text content and images from tool_result
+func extractToolResultContent(content any) (string, []CodeWhispererImage) {
+	var images []CodeWhispererImage
+
 	switch c := content.(type) {
 	case string:
-		return c
+		return c, nil
 
 	case []any:
 		var parts []string
 		for _, item := range c {
-			if itemMap, ok := item.(map[string]any); ok {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			blockType, _ := itemMap["type"].(string)
+			switch blockType {
+			case "text":
 				if text, ok := itemMap["text"].(string); ok {
 					parts = append(parts, text)
 				}
+			case "image":
+				if source, ok := itemMap["source"].(map[string]any); ok {
+					mediaType, _ := source["media_type"].(string)
+					data, _ := source["data"].(string)
+					if data != "" {
+						images = append(images, CodeWhispererImage{
+							Format: MediaTypeToFormat(mediaType),
+							Source: ImageSource{Bytes: data},
+						})
+					}
+				}
 			}
 		}
-		return strings.Join(parts, "\n")
+		return strings.Join(parts, "\n"), images
 
 	case map[string]any:
 		if text, ok := c["text"].(string); ok {
-			return text
+			return text, nil
 		}
 	}
 
 	if content != nil {
-		return fmt.Sprintf("%v", content)
+		return fmt.Sprintf("%v", content), nil
 	}
-	return ""
+	return "", nil
 }
 
 // preprocessMessages merges adjacent same-role messages
@@ -665,9 +688,30 @@ func buildToolResults(results []ToolResultData) []ToolResult {
 		if tr.IsError {
 			status = "error"
 		}
+
+		// Build content array with text and images
+		var content []map[string]any
+		if tr.Content != "" {
+			content = append(content, map[string]any{"text": tr.Content})
+		}
+		for _, img := range tr.Images {
+			content = append(content, map[string]any{
+				"image": map[string]any{
+					"format": img.Format,
+					"source": map[string]any{
+						"bytes": img.Source.Bytes,
+					},
+				},
+			})
+		}
+		// Ensure at least one content item
+		if len(content) == 0 {
+			content = append(content, map[string]any{"text": ""})
+		}
+
 		toolResults = append(toolResults, ToolResult{
 			ToolUseID: tr.ToolUseID,
-			Content:   []map[string]any{{"text": tr.Content}},
+			Content:   content,
 			Status:    status,
 		})
 	}

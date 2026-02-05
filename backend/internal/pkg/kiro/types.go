@@ -422,6 +422,7 @@ type ToolUseData struct {
 type ToolResultData struct {
 	ToolUseID string
 	Content   string
+	Images    []CodeWhispererImage // Images from tool result
 	IsError   bool
 }
 
