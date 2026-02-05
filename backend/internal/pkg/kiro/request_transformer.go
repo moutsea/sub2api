@@ -349,10 +349,10 @@ func parseTypedContentBlock(um *UnifiedMessage, block *ContentBlock, msgIdx, blo
 		}
 
 	case "image":
-		if block.Source != nil && block.Source.Bytes != "" {
+		if block.Source != nil && block.Source.Data != "" {
 			um.Images = append(um.Images, CodeWhispererImage{
-				Format: MediaTypeToFormat(FormatToMediaType(block.Source.Bytes)),
-				Source: *block.Source,
+				Format: MediaTypeToFormat(block.Source.MediaType),
+				Source: ImageSource{Bytes: block.Source.Data},
 			})
 		}
 
@@ -933,6 +933,11 @@ func processTools(tools []ClaudeTool) []ToolItem {
 
 		description := tool.Description
 
+		if isWriteOrEditTool(tool.Name) {
+			description += "\n\n<constraint>Content per operation MUST NOT exceed 400 lines or 12000 characters. For larger content, split into multiple operations.</constraint>"
+			description += "\n<instruction>ALWAYS use Write/Edit tools for file modifications. Ensure all required parameters are provided correctly.</instruction>"
+		}
+
 		inputSchema := tool.InputSchema
 		if inputSchema == nil || inputSchema["type"] == nil {
 			inputSchema = map[string]any{
@@ -993,6 +998,11 @@ func isWebSearchToolByType(tool ClaudeTool) bool {
 	return tool.Type == "web_search" ||
 		tool.Type == "web_search_20250305" ||
 		strings.HasPrefix(tool.Type, "web_search_")
+}
+
+// isWriteOrEditTool checks if the tool is Write or Edit tool
+func isWriteOrEditTool(name string) bool {
+	return name == "Write" || name == "Edit"
 }
 
 // isWebSearchTool checks if the tool is a web_search tool

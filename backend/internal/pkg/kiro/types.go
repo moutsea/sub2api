@@ -338,17 +338,24 @@ type ClaudeMessage struct {
 
 // ContentBlock represents a content block in Claude format
 type ContentBlock struct {
-	Type      string         `json:"type"`
-	Text      *string        `json:"text,omitempty"`
-	Source    *ImageSource   `json:"source,omitempty"`
-	ID        *string        `json:"id,omitempty"`
-	Name      *string        `json:"name,omitempty"`
-	Input     any            `json:"input,omitempty"`
-	ToolUseID *string        `json:"tool_use_id,omitempty"`
-	Content   any            `json:"content,omitempty"`
-	IsError   *bool          `json:"is_error,omitempty"`
-	Thinking  *string        `json:"thinking,omitempty"`
-	Signature *string        `json:"signature,omitempty"`
+	Type      string             `json:"type"`
+	Text      *string            `json:"text,omitempty"`
+	Source    *ClaudeImageSource `json:"source,omitempty"` // Claude image source with media_type
+	ID        *string            `json:"id,omitempty"`
+	Name      *string            `json:"name,omitempty"`
+	Input     any                `json:"input,omitempty"`
+	ToolUseID *string            `json:"tool_use_id,omitempty"`
+	Content   any                `json:"content,omitempty"`
+	IsError   *bool              `json:"is_error,omitempty"`
+	Thinking  *string            `json:"thinking,omitempty"`
+	Signature *string            `json:"signature,omitempty"`
+}
+
+// ClaudeImageSource represents the image source in Claude format
+type ClaudeImageSource struct {
+	Type      string `json:"type,omitempty"`       // "base64"
+	MediaType string `json:"media_type,omitempty"` // "image/png", "image/jpeg", etc.
+	Data      string `json:"data,omitempty"`       // base64 encoded image data
 }
 
 // ClaudeTool represents a tool definition in Claude format
