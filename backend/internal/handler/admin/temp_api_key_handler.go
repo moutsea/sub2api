@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
@@ -338,8 +339,8 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 		TotalRequests:      key.TotalRequests,
 		Status:             key.Status,
 		CreatedBy:          key.CreatedBy,
-		CreatedAt:          key.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:          key.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:          key.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:          key.UpdatedAt.UTC().Format(time.RFC3339),
 		RemainingRequests:  key.RemainingRequests(),
 		IsExpired:          key.IsExpired(),
 		IsActivated:        key.IsActivated(),
@@ -347,11 +348,11 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 	}
 
 	if key.ActivatedAt != nil {
-		t := key.ActivatedAt.Format("2006-01-02T15:04:05Z")
+		t := key.ActivatedAt.UTC().Format(time.RFC3339)
 		resp.ActivatedAt = &t
 	}
 	if key.ExpiresAt != nil {
-		t := key.ExpiresAt.Format("2006-01-02T15:04:05Z")
+		t := key.ExpiresAt.UTC().Format(time.RFC3339)
 		resp.ExpiresAt = &t
 	}
 	if key.Group != nil {

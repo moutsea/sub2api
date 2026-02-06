@@ -104,11 +104,11 @@ func (h *TempAPIKeyQueryHandler) Query(c *gin.Context) {
 	}
 
 	if key.ActivatedAt != nil {
-		t := key.ActivatedAt.Format("2006-01-02T15:04:05Z")
+		t := key.ActivatedAt.UTC().Format(time.RFC3339)
 		resp.ActivatedAt = &t
 	}
 	if key.ExpiresAt != nil {
-		t := key.ExpiresAt.Format("2006-01-02T15:04:05Z")
+		t := key.ExpiresAt.UTC().Format(time.RFC3339)
 		resp.ExpiresAt = &t
 	}
 	if key.Group != nil {
