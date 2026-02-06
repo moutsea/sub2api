@@ -20,20 +20,79 @@ const (
 	MaxWebSearchIterations = 3
 )
 
-// filterWebSearchTools removes Claude's built-in web_search tools from a ClaudeRequest
-// Only filters tools with Type field like "web_search_20250305"
-// MCP tools named "web_search" are NOT filtered (they have Type="")
+// filterWebSearchTools removes Claude's built-in web_search tools from a ClaudeRequest.
+// It filters both the Tools list AND any WebSearch tool_use/tool_result content blocks
+// from Messages, which are left behind by the agentic loop. Without this cleanup,
+// CodeWhisperer returns 400 because tool_use references a tool not in the tools list.
 func filterWebSearchTools(req *kiro.ClaudeRequest) []byte {
+	// 1. Filter tools list (existing logic)
 	filteredTools := make([]kiro.ClaudeTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
-		// Only filter Claude's built-in web_search (identified by Type field)
 		if isClaudeBuiltinWebSearch(tool) {
 			continue
 		}
 		filteredTools = append(filteredTools, tool)
 	}
+
+	// 2. Clean WebSearch tool_use/tool_result from messages
+	removedToolUseIDs := make(map[string]bool)
+	filteredMessages := make([]kiro.ClaudeMessage, 0, len(req.Messages))
+
+	for _, msg := range req.Messages {
+		contentSlice, ok := msg.Content.([]any)
+		if !ok {
+			// Content is string or other non-array type, keep as-is
+			filteredMessages = append(filteredMessages, msg)
+			continue
+		}
+
+		var filteredContent []any
+		for _, block := range contentSlice {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				filteredContent = append(filteredContent, block)
+				continue
+			}
+
+			blockType, _ := blockMap["type"].(string)
+
+			// Remove WebSearch tool_use blocks
+			if blockType == "tool_use" {
+				name, _ := blockMap["name"].(string)
+				if IsWebSearchTool(name) {
+					id, _ := blockMap["id"].(string)
+					if id != "" {
+						removedToolUseIDs[id] = true
+					}
+					continue
+				}
+			}
+
+			// Remove tool_result blocks whose tool_use was removed
+			if blockType == "tool_result" {
+				toolUseID, _ := blockMap["tool_use_id"].(string)
+				if removedToolUseIDs[toolUseID] {
+					continue
+				}
+			}
+
+			filteredContent = append(filteredContent, block)
+		}
+
+		// Skip messages that became empty after filtering
+		if len(filteredContent) == 0 {
+			continue
+		}
+
+		filteredMessages = append(filteredMessages, kiro.ClaudeMessage{
+			Role:    msg.Role,
+			Content: filteredContent,
+		})
+	}
+
 	filteredReq := *req
 	filteredReq.Tools = filteredTools
+	filteredReq.Messages = filteredMessages
 	body, _ := json.Marshal(filteredReq)
 	return body
 }
@@ -157,15 +216,11 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 			})
 		}
 		for _, tc := range parseResult.ToolCalls {
-			// Map Kiro tool name back to Claude tool name
-			toolName := tc.Name
-			if IsWebSearchTool(tc.Name) {
-				toolName = "web_search" // Use original Claude tool name
-			}
+			// Keep tool name as-is (e.g., "WebSearch") to match tools list
 			assistantContent = append(assistantContent, map[string]any{
 				"type":  "tool_use",
 				"id":    tc.ID,
-				"name":  toolName,
+				"name":  tc.Name,
 				"input": tc.Arguments,
 			})
 		}
@@ -253,15 +308,11 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 			})
 		}
 		for _, tc := range parseResult.ToolCalls {
-			// Map Kiro tool name back to Claude tool name
-			toolName := tc.Name
-			if IsWebSearchTool(tc.Name) {
-				toolName = "web_search" // Use original Claude tool name
-			}
+			// Keep tool name as-is (e.g., "WebSearch") to match tools list
 			assistantContent = append(assistantContent, map[string]any{
 				"type":  "tool_use",
 				"id":    tc.ID,
-				"name":  toolName,
+				"name":  tc.Name,
 				"input": tc.Arguments,
 			})
 		}
