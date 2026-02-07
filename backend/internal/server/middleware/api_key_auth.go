@@ -64,7 +64,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			return
 		}
 
-		// 检查是否为临时 API Key (sk-temp- 前缀)
+		// 检查是否为临时 API Key (sk-cc- 或 sk-temp- 前缀)
 		if service.IsTempAPIKey(apiKeyString) {
 			handleTempAPIKey(c, apiKeyString, tempAPIKeyService, cfg)
 			return

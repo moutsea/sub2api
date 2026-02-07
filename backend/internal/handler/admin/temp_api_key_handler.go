@@ -50,6 +50,7 @@ type BatchUpdateRequest struct {
 	Status     *string `json:"status" binding:"omitempty,oneof=active inactive"`
 	ValidDays  *int    `json:"valid_days"`
 	DailyLimit *int    `json:"daily_limit"`
+	NamePrefix *string `json:"name_prefix"`
 }
 
 // TempAPIKeyResponse represents the response for a temp API key
@@ -315,6 +316,15 @@ func (h *TempAPIKeyHandler) BatchUpdate(c *gin.Context) {
 		}
 	}
 
+	if req.NamePrefix != nil && *req.NamePrefix != "" {
+		n, err := h.repo.BatchUpdateNamePrefix(c.Request.Context(), req.IDs, *req.NamePrefix)
+		if err != nil {
+			lastErr = err
+		} else {
+			updated = n
+		}
+	}
+
 	if lastErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": lastErr.Error(), "updated": updated})
 		return
@@ -369,5 +379,5 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 func generateTempAPIKey() string {
 	bytes := make([]byte, 24)
 	rand.Read(bytes)
-	return "sk-temp-" + hex.EncodeToString(bytes)
+	return "sk-cc-" + hex.EncodeToString(bytes)
 }

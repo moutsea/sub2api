@@ -75,7 +75,9 @@ func (s *TempAPIKeyService) ValidateAndIncrement(ctx context.Context, key *TempA
 	return updated, nil
 }
 
-// IsTempAPIKey checks if a key string is a temp API key (starts with sk-temp-)
+// IsTempAPIKey checks if a key string is a temp API key
+// Supports both new prefix (sk-cc-) and legacy prefix (sk-temp-)
 func IsTempAPIKey(key string) bool {
-	return len(key) > 8 && key[:8] == "sk-temp-"
+	return (len(key) > 6 && key[:6] == "sk-cc-") ||
+		(len(key) > 8 && key[:8] == "sk-temp-")
 }
