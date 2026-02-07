@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -350,6 +352,34 @@ func (r *TempAPIKeyRepo) BatchUpdateDailyLimit(ctx context.Context, ids []int64,
 		Where(tempapikey.IDIn(ids...), tempapikey.DeletedAtIsNil()).
 		SetDailyLimit(dailyLimit).
 		Save(ctx)
+}
+
+// BatchUpdateNamePrefix updates name prefix for multiple keys.
+// Preserves the suffix after the last "-" in each key's name (e.g. "old-prefix-3" → "new-prefix-3").
+// If a name has no "-", it is replaced entirely with "newPrefix-index".
+func (r *TempAPIKeyRepo) BatchUpdateNamePrefix(ctx context.Context, ids []int64, newPrefix string) (int, error) {
+	rows, err := r.client.TempAPIKey.Query().
+		Where(tempapikey.IDIn(ids...), tempapikey.DeletedAtIsNil()).
+		Select(tempapikey.FieldID, tempapikey.FieldName).
+		All(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for i, row := range rows {
+		suffix := fmt.Sprintf("%d", i+1)
+		if idx := strings.LastIndex(row.Name, "-"); idx >= 0 {
+			suffix = row.Name[idx+1:]
+		}
+		newName := newPrefix + "-" + suffix
+		_, err := r.client.TempAPIKey.UpdateOneID(row.ID).SetName(newName).Save(ctx)
+		if err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
 }
 
 // ExistsByKey checks if a key exists

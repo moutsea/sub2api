@@ -369,6 +369,7 @@ export interface BatchUpdateTempApiKeyRequest {
   status?: 'active' | 'inactive'
   valid_days?: number
   daily_limit?: number
+  name_prefix?: string
 }
 
 export interface CreateGroupRequest {
