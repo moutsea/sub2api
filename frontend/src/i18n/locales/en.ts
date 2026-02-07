@@ -2040,7 +2040,7 @@ export default {
       keyType: 'Key Type',
       quotaOnly: 'Quota Only',
       totalQuota: 'Total Quota',
-      totalQuotaPlaceholder: 'Total request limit',
+      totalQuotaPlaceholder: 'Total quota in USD',
       quota: 'Quota',
       batchUpdate: 'Batch Update',
       batchUpdateTitle: 'Batch Update ({count} items)',

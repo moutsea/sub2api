@@ -99,7 +99,7 @@
               <template v-if="row.key_type === 'quota_only'">
                 <span class="badge badge-info">{{ t('admin.tempApiKeys.quotaOnly') }}</span>
                 <div class="text-xs text-gray-500 dark:text-gray-400">
-                  {{ t('admin.tempApiKeys.quota') }}: {{ row.total_requests }} / {{ row.total_quota }}
+                  {{ t('admin.tempApiKeys.quota') }}: ${{ (row.total_cost || 0).toFixed(2) }} / ${{ (row.total_quota || 0).toFixed(2) }}
                 </div>
               </template>
               <template v-else-if="row.is_activated">
@@ -118,8 +118,8 @@
 
           <template #cell-usage="{ row }">
             <template v-if="row.key_type === 'quota_only'">
-              <span :class="row.remaining_requests === 0 ? 'text-red-500' : ''">
-                {{ row.remaining_requests === -1 ? '∞' : row.remaining_requests }}
+              <span :class="row.is_exhausted ? 'text-red-500' : ''">
+                ${{ ((row.total_quota || 0) - (row.total_cost || 0) > 0 ? (row.total_quota - row.total_cost).toFixed(2) : '0.00') }}
               </span>
             </template>
             <template v-else>
@@ -308,6 +308,15 @@
           {{ t('admin.tempApiKeys.batchUpdateHint') }}
         </p>
         <div>
+          <label class="label">{{ t('admin.tempApiKeys.namePrefix') }}</label>
+          <input
+            v-model="batchForm.name_prefix"
+            type="text"
+            class="input"
+            :placeholder="t('admin.tempApiKeys.noChange')"
+          />
+        </div>
+        <div>
           <label class="label">{{ t('admin.tempApiKeys.status') }}</label>
           <Select
             v-model="batchForm.status"
@@ -403,6 +412,7 @@ const batchForm = ref({
   status: '' as '' | 'active' | 'inactive',
   valid_days: null as number | null,
   daily_limit: null as number | null,
+  name_prefix: '' as string,
 })
 
 // Selection
@@ -557,7 +567,7 @@ const handleBatchDelete = async () => {
 
 const handleBatchUpdate = async () => {
   if (selectedIds.value.length === 0) return
-  const data: { ids: number[]; status?: 'active' | 'inactive'; valid_days?: number; daily_limit?: number } = {
+  const data: { ids: number[]; status?: 'active' | 'inactive'; valid_days?: number; daily_limit?: number; name_prefix?: string } = {
     ids: selectedIds.value,
   }
   if (batchForm.value.status === 'active' || batchForm.value.status === 'inactive') {
@@ -565,13 +575,14 @@ const handleBatchUpdate = async () => {
   }
   if (batchForm.value.valid_days !== null) data.valid_days = batchForm.value.valid_days
   if (batchForm.value.daily_limit !== null) data.daily_limit = batchForm.value.daily_limit
+  if (batchForm.value.name_prefix.trim()) data.name_prefix = batchForm.value.name_prefix.trim()
 
   updating.value = true
   try {
     const res = await tempApiKeysAPI.batchUpdate(data)
     appStore.showSuccess(t('admin.tempApiKeys.batchUpdateSuccess', { count: res.updated }))
     showBatchDialog.value = false
-    batchForm.value = { status: '', valid_days: null, daily_limit: null }
+    batchForm.value = { status: '', valid_days: null, daily_limit: null, name_prefix: '' }
     selectedIds.value = []
     loadKeys()
   } catch (e: unknown) {

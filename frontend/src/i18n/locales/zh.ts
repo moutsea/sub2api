@@ -2187,7 +2187,7 @@ export default {
       keyType: '密钥类型',
       quotaOnly: '仅限额',
       totalQuota: '总额度',
-      totalQuotaPlaceholder: '总请求次数限制',
+      totalQuotaPlaceholder: '总额度（美元）',
       quota: '额度',
       batchUpdate: '批量修改',
       batchUpdateTitle: '批量修改 ({count} 项)',
