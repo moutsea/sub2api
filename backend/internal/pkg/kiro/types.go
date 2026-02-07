@@ -1,7 +1,10 @@
 // Package kiro provides types and utilities for Kiro/CodeWhisperer API integration.
 package kiro
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"log"
+)
 
 // CodeWhisperer API endpoint
 const (
@@ -12,9 +15,12 @@ const (
 // Model ID mapping from Claude to CodeWhisperer
 // Format aligned with kiro4api: use simplified model IDs
 var ModelMap = map[string]string{
+	// Opus 4.6 series
+	"claude-opus-4-6": "claude-opus-4.6",
 	// Opus 4.5 series
 	"claude-opus-4-5":          "claude-opus-4.5",
 	"claude-opus-4-5-20251101": "claude-opus-4.5",
+	"claude-opus-4.5":          "claude-opus-4.5",
 	// Haiku 4.5 series
 	"claude-haiku-4-5":          "claude-haiku-4.5",
 	"claude-haiku-4-5-20251001": "claude-haiku-4.5",
@@ -42,6 +48,7 @@ func GetModelID(claudeModel string) string {
 	if modelID, ok := ModelMap[claudeModel]; ok {
 		return modelID
 	}
+	log.Printf("[kiro-ModelMap] WARN model_fallback: %q not in ModelMap, using default %s", claudeModel, DefaultModelID)
 	return DefaultModelID
 }
 
