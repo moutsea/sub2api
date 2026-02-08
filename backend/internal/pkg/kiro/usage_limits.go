@@ -177,7 +177,7 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	}
 
 	// Build request URL
-	baseURL := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/getUsageLimits", region)
+	baseURL := fmt.Sprintf("https://q.%s.amazonaws.com/getUsageLimits", region)
 	params := url.Values{}
 	params.Add("isEmailRequired", "true")
 	params.Add("origin", "AI_EDITOR")
@@ -191,10 +191,11 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
 
-	// Set headers (aligned with kiro4api)
-	req.Header.Set("x-amz-user-agent", "aws-sdk-js/3.738.0 KiroGateway")
-	req.Header.Set("User-Agent", "aws-sdk-js/3.738.0 ua/2.1 os/deno lang/ts KiroGateway")
-	req.Header.Set("Host", fmt.Sprintf("codewhisperer.%s.amazonaws.com", region))
+	// Set headers (aligned with kiro.rs AWSQ)
+	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.27 KiroGateway")
+	req.Header.Set("User-Agent", "aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroGateway")
+	req.Header.Set("Host", fmt.Sprintf("q.%s.amazonaws.com", region))
+	req.Header.Set("Connection", "close")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 	req.Header.Set("Authorization", "Bearer "+accessToken)

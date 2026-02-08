@@ -76,6 +76,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	originalModel := claudeReq.Model
+	mappedModel := kiro.GetModelID(originalModel)
 
 	// Cache estimation for billing
 	cacheEstimation := kiro.EstimateCache(claudeReq)
@@ -165,12 +166,17 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	log.Printf("%s request_size=%d model=%s", prefix, len(reqBody), originalModel)
+	log.Printf("%s request_size=%d model=%s mapped_model=%s", prefix, len(reqBody), originalModel, mappedModel)
 
 	// Build HTTP request
 	region := account.GetKiroRegion()
-	// CodeWhisperer API endpoint - use generateAssistantResponse path
-	endpoint := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region)
+	// AWSQ API endpoint
+	endpoint := fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region)
+
+	// Generate machine ID for User-Agent headers
+	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
+	kiroVersion := "1.6.0"
+	awsHost := fmt.Sprintf("q.%s.amazonaws.com", region)
 
 	// Retry loop
 	var resp *http.Response
@@ -191,13 +197,15 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		// Set headers
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
-		// CodeWhisperer API always returns SSE stream response, must set Accept header
+		// AWSQ API always returns SSE stream response, must set Accept header
 		upstreamReq.Header.Set("Accept", "text/event-stream")
-		// AWS SDK headers (aligned with kiro4api)
-		upstreamReq.Header.Set("User-Agent", "aws-sdk-js/3.738.0 ua/2.1 os/deno lang/ts KiroGateway")
-		upstreamReq.Header.Set("x-amz-user-agent", "aws-sdk-js/3.738.0 KiroGateway")
-		upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "spec")
+		// AWSQ headers (aligned with kiro.rs)
+		upstreamReq.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
+		upstreamReq.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
+		upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 		upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
+		upstreamReq.Header.Set("Host", awsHost)
+		upstreamReq.Header.Set("Connection", "close")
 		upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 		upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
 
@@ -851,8 +859,13 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 
 	// Build HTTP request
 	region := account.GetKiroRegion()
-	// CodeWhisperer API endpoint - use generateAssistantResponse path
-	endpoint := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region)
+	// AWSQ API endpoint
+	endpoint := fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region)
+
+	// Generate machine ID for User-Agent headers
+	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
+	kiroVersion := "1.6.0"
+	awsHost := fmt.Sprintf("q.%s.amazonaws.com", region)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
@@ -861,13 +874,15 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	// CodeWhisperer API always returns SSE stream response, must set Accept header
+	// AWSQ API always returns SSE stream response, must set Accept header
 	req.Header.Set("Accept", "text/event-stream")
-	// AWS SDK headers (aligned with kiro4api)
-	req.Header.Set("User-Agent", "aws-sdk-js/3.738.0 ua/2.1 os/deno lang/ts KiroGateway")
-	req.Header.Set("x-amz-user-agent", "aws-sdk-js/3.738.0 KiroGateway")
+	// AWSQ headers (aligned with kiro.rs)
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	req.Header.Set("Host", awsHost)
+	req.Header.Set("Connection", "close")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 

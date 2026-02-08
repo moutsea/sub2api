@@ -6,10 +6,10 @@ import (
 	"log"
 )
 
-// CodeWhisperer API endpoint
+// AWSQ API endpoint
 const (
-	CodeWhispererEndpoint = "https://codewhisperer.us-east-1.amazonaws.com"
-	CodeWhispererPath     = "/generateAssistantResponse"
+	AWsqEndpoint = "https://q.us-east-1.amazonaws.com"
+	AWsqPath     = "/generateAssistantResponse"
 )
 
 // Model ID mapping from Claude to CodeWhisperer
@@ -63,6 +63,7 @@ type CodeWhispererRequest struct {
 // ConversationState represents the conversation state
 type ConversationState struct {
 	AgentContinuationID string         `json:"agentContinuationId,omitempty"`
+	AgentTaskType       string         `json:"agentTaskType,omitempty"`
 	ChatTriggerType     string         `json:"chatTriggerType"`
 	CurrentMessage      CurrentMessage `json:"currentMessage"`
 	ConversationID      string         `json:"conversationId"`

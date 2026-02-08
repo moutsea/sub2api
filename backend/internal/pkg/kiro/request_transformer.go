@@ -201,6 +201,7 @@ func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string,
 	// Assemble final request
 	cwReq := &CodeWhispererRequest{
 		ConversationState: ConversationState{
+			AgentTaskType:   "vibe",
 			ChatTriggerType: determineChatTriggerType(claudeReq),
 			ConversationID:  ctx.ConvID,
 			CurrentMessage:  currentMessage,
@@ -515,14 +516,79 @@ func mergeMessages(target, source *UnifiedMessage) {
 	}
 }
 
-// buildHistory builds the history entries
-func buildHistory(ctx *TransformContext, messages []*UnifiedMessage, systemRaw any, currentMsg *UnifiedMessage, claudeReq *ClaudeRequest) []HistoryEntry {
-	if len(messages) == 0 {
-		return nil
+// MaxThinkingBudgetTokens is the maximum allowed budget_tokens for thinking mode.
+// Reference: kiro.rs types.rs MAX_BUDGET_TOKENS = 24576
+const MaxThinkingBudgetTokens = 24576
+
+// DefaultThinkingBudgetTokens is the default budget_tokens when not specified.
+const DefaultThinkingBudgetTokens = 20000
+
+// generateThinkingPrefix generates the thinking mode XML prefix for AWSQ.
+// Reference: kiro.rs converter.rs generate_thinking_prefix
+func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
+	if claudeReq == nil || claudeReq.Thinking == nil {
+		return ""
 	}
 
+	thinkingType, _ := claudeReq.Thinking["type"].(string)
+	if thinkingType == "" {
+		return ""
+	}
+
+	switch thinkingType {
+	case "enabled":
+		budgetTokens := DefaultThinkingBudgetTokens
+		if bt, ok := claudeReq.Thinking["budget_tokens"].(float64); ok && bt > 0 {
+			budgetTokens = int(bt)
+		}
+		if budgetTokens > MaxThinkingBudgetTokens {
+			budgetTokens = MaxThinkingBudgetTokens
+		}
+		return fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", budgetTokens)
+
+	case "adaptive":
+		effort := "high"
+		// Check for thinking_effort in the thinking config itself
+		if e, ok := claudeReq.Thinking["thinking_effort"].(string); ok && e != "" {
+			effort = e
+		}
+		return fmt.Sprintf("<thinking_mode>adaptive</thinking_mode><thinking_effort>%s</thinking_effort>", effort)
+	}
+
+	return ""
+}
+
+// hasThinkingTags checks if content already contains thinking mode tags.
+func hasThinkingTags(content string) bool {
+	return strings.Contains(content, "<thinking_mode>") || strings.Contains(content, "<max_thinking_length>")
+}
+
+// buildHistory builds the history entries
+func buildHistory(ctx *TransformContext, messages []*UnifiedMessage, systemRaw any, currentMsg *UnifiedMessage, claudeReq *ClaudeRequest) []HistoryEntry {
 	// Build system prompt
 	systemPrompt := buildSystemPrompt(systemRaw, claudeReq)
+
+	// Generate thinking prefix
+	thinkingPrefix := generateThinkingPrefix(claudeReq)
+
+	// Inject thinking prefix into system prompt
+	if thinkingPrefix != "" && !hasThinkingTags(systemPrompt) {
+		if systemPrompt != "" {
+			systemPrompt = thinkingPrefix + "\n" + systemPrompt
+		} else {
+			systemPrompt = thinkingPrefix
+		}
+	}
+
+	if len(messages) == 0 {
+		// No history messages, but we may need to inject thinking prefix
+		// as a standalone user+assistant pair if there's a thinking config
+		if systemPrompt != "" && thinkingPrefix != "" {
+			// This case is handled by buildCurrentMessage's injectSystemPrompt path
+			// when there's no history. The thinking prefix is already in systemPrompt.
+		}
+		return nil
+	}
 
 	// Inject system prompt into first user message
 	if systemPrompt != "" && len(messages) > 0 {
@@ -840,6 +906,17 @@ func buildCurrentMessage(ctx *TransformContext, msg *UnifiedMessage, tools []Too
 	// Inject system prompt if no history
 	if injectSystemPrompt && claudeReq != nil {
 		systemPrompt := buildSystemPrompt(claudeReq.System, claudeReq)
+
+		// Inject thinking prefix into system prompt
+		thinkingPrefix := generateThinkingPrefix(claudeReq)
+		if thinkingPrefix != "" && !hasThinkingTags(systemPrompt) {
+			if systemPrompt != "" {
+				systemPrompt = thinkingPrefix + "\n" + systemPrompt
+			} else {
+				systemPrompt = thinkingPrefix
+			}
+		}
+
 		if systemPrompt != "" {
 			wrappedSystemPrompt := fmt.Sprintf("--- SYSTEM PROMPT BEGIN ---\n%s\n--- SYSTEM PROMPT END ---", systemPrompt)
 			if content != "" {
