@@ -314,6 +314,243 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 }
 
+// ChatCompletions handles OpenAI Chat Completions API endpoint
+// POST /v1/chat/completions
+// Supports both API Key accounts (direct passthrough) and OAuth accounts (CC ↔ Responses API conversion).
+func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok {
+		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		return
+	}
+
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		return
+	}
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			return
+		}
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+
+	if len(body) == 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
+
+	setOpsRequestContext(c, "", false, body)
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+
+	reqModel, _ := reqBody["model"].(string)
+	reqStream, _ := reqBody["stream"].(bool)
+
+	if reqModel == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	setOpsRequestContext(c, reqModel, reqStream, body)
+
+	streamStarted := false
+	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+
+	// Check wait queue
+	maxWait := service.CalculateMaxWait(subject.Concurrency)
+	canWait, err := h.concurrencyHelper.IncrementWaitCount(c.Request.Context(), subject.UserID, maxWait)
+	waitCounted := false
+	if err != nil {
+		log.Printf("Increment wait count failed: %v", err)
+	} else if !canWait {
+		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
+		return
+	}
+	if err == nil && canWait {
+		waitCounted = true
+	}
+	defer func() {
+		if waitCounted {
+			h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
+		}
+	}()
+
+	// Acquire user concurrency slot
+	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	if err != nil {
+		log.Printf("User concurrency acquire failed: %v", err)
+		h.handleConcurrencyError(c, err, "user", streamStarted)
+		return
+	}
+	if waitCounted {
+		h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
+		waitCounted = false
+	}
+	userReleaseFunc = wrapReleaseOnDone(c.Request.Context(), userReleaseFunc)
+	if userReleaseFunc != nil {
+		defer userReleaseFunc()
+	}
+
+	// Re-check billing eligibility
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+		log.Printf("Billing eligibility check failed after wait: %v", err)
+		status, code, message := billingErrorDetails(err)
+		h.handleStreamingAwareError(c, status, code, message, streamStarted)
+		return
+	}
+
+	sessionHash := h.gatewayService.GenerateSessionHash(c, reqBody)
+
+	const maxAccountSwitches = 3
+	switchCount := 0
+	failedAccountIDs := make(map[int64]struct{})
+	lastFailoverStatus := 0
+
+	for {
+		log.Printf("[OpenAI CC Handler] Selecting account: groupID=%v model=%s", apiKey.GroupID, reqModel)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
+		if err != nil {
+			log.Printf("[OpenAI CC Handler] SelectAccount failed: %v", err)
+			if len(failedAccountIDs) == 0 {
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+				return
+			}
+			if lastFailoverStatus == 0 {
+				h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error",
+					"No available accounts for Chat Completions endpoint", streamStarted)
+				return
+			}
+			h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+			return
+		}
+		account := selection.Account
+		log.Printf("[OpenAI CC Handler] Selected account: id=%d name=%s type=%s", account.ID, account.Name, account.Type)
+		setOpsSelectedAccount(c, account.ID)
+
+		// Dispatch based on account type
+		if account.Type != service.AccountTypeAPIKey && account.Type != service.AccountTypeOAuth {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			log.Printf("[OpenAI CC Handler] Account %d is %s type, skipping (unsupported)", account.ID, account.Type)
+			continue
+		}
+
+		// Acquire account concurrency slot
+		accountReleaseFunc := selection.ReleaseFunc
+		if !selection.Acquired {
+			if selection.WaitPlan == nil {
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+				return
+			}
+			accountWaitCounted := false
+			canWait, err := h.concurrencyHelper.IncrementAccountWaitCount(c.Request.Context(), account.ID, selection.WaitPlan.MaxWaiting)
+			if err != nil {
+				log.Printf("Increment account wait count failed: %v", err)
+			} else if !canWait {
+				log.Printf("Account wait queue full: account=%d", account.ID)
+				h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
+				return
+			}
+			if err == nil && canWait {
+				accountWaitCounted = true
+			}
+			defer func() {
+				if accountWaitCounted {
+					h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
+				}
+			}()
+
+			accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+				c,
+				account.ID,
+				selection.WaitPlan.MaxConcurrency,
+				selection.WaitPlan.Timeout,
+				reqStream,
+				&streamStarted,
+			)
+			if err != nil {
+				log.Printf("Account concurrency acquire failed: %v", err)
+				h.handleConcurrencyError(c, err, "account", streamStarted)
+				return
+			}
+			if accountWaitCounted {
+				h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
+				accountWaitCounted = false
+			}
+			if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+				log.Printf("Bind sticky session failed: %v", err)
+			}
+		}
+		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+
+		// Forward request: dispatch based on account type
+		var result *service.OpenAIForwardResult
+		if account.Type == service.AccountTypeOAuth {
+			result, err = h.gatewayService.ForwardChatCompletionsViaResponses(c.Request.Context(), c, account, body, reqStream)
+		} else {
+			result, err = h.gatewayService.ForwardChatCompletions(c.Request.Context(), c, account, body)
+		}
+		if accountReleaseFunc != nil {
+			accountReleaseFunc()
+		}
+		if err != nil {
+			var failoverErr *service.UpstreamFailoverError
+			if errors.As(err, &failoverErr) {
+				failedAccountIDs[account.ID] = struct{}{}
+				if switchCount >= maxAccountSwitches {
+					lastFailoverStatus = failoverErr.StatusCode
+					h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+					return
+				}
+				lastFailoverStatus = failoverErr.StatusCode
+				switchCount++
+				log.Printf("Account %d: upstream error %d, switching account %d/%d", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+				continue
+			}
+			log.Printf("Account %d: ForwardChatCompletions failed: %v", account.ID, err)
+			return
+		}
+
+		userAgent := c.GetHeader("User-Agent")
+		clientIP := ip.GetClientIP(c)
+		var tempAPIKeyID *int64
+		if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
+			tempAPIKeyID = new(int64)
+			*tempAPIKeyID = tempKey.ID
+		}
+
+		go func(result *service.OpenAIForwardResult, usedAccount *service.Account, ua, cip string, tempKeyID *int64) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+				Result:       result,
+				APIKey:       apiKey,
+				User:         apiKey.User,
+				Account:      usedAccount,
+				Subscription: subscription,
+				UserAgent:    ua,
+				IPAddress:    cip,
+				TempAPIKeyID: tempKeyID,
+			}); err != nil {
+				log.Printf("Record usage failed: %v", err)
+			}
+		}(result, account, userAgent, clientIP, tempAPIKeyID)
+		return
+	}
+}
+
 // handleConcurrencyError handles concurrency-related errors with proper 429 response
 func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
 	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error",

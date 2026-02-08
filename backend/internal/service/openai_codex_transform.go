@@ -41,6 +41,17 @@ var codexModelMap = map[string]string{
 	"gpt-5.2-codex-medium":      "gpt-5.2-codex",
 	"gpt-5.2-codex-high":        "gpt-5.2-codex",
 	"gpt-5.2-codex-xhigh":       "gpt-5.2-codex",
+	"gpt-5.3":                   "gpt-5.3",
+	"gpt-5.3-none":              "gpt-5.3",
+	"gpt-5.3-low":               "gpt-5.3",
+	"gpt-5.3-medium":            "gpt-5.3",
+	"gpt-5.3-high":              "gpt-5.3",
+	"gpt-5.3-xhigh":             "gpt-5.3",
+	"gpt-5.3-codex":             "gpt-5.3-codex",
+	"gpt-5.3-codex-low":         "gpt-5.3-codex",
+	"gpt-5.3-codex-medium":      "gpt-5.3-codex",
+	"gpt-5.3-codex-high":        "gpt-5.3-codex",
+	"gpt-5.3-codex-xhigh":       "gpt-5.3-codex",
 	"gpt-5.1-codex-mini":        "gpt-5.1-codex-mini",
 	"gpt-5.1-codex-mini-medium": "gpt-5.1-codex-mini",
 	"gpt-5.1-codex-mini-high":   "gpt-5.1-codex-mini",
@@ -83,6 +94,15 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 	}
 	normalizedModel := normalizeCodexModel(model)
 	if normalizedModel != "" {
+		// 从模型名后缀提取 reasoning effort（如 -xhigh, -high, -medium, -low, -none）
+		// 并设置到 reasoning.effort 参数中（仅在请求体未显式指定时）。
+		if effort := extractCodexModelEffort(model, normalizedModel); effort != "" {
+			if _, hasReasoning := reqBody["reasoning"]; !hasReasoning {
+				reqBody["reasoning"] = map[string]any{"effort": effort}
+				result.Modified = true
+			}
+		}
+
 		if model != normalizedModel {
 			reqBody["model"] = normalizedModel
 			result.Modified = true
@@ -141,6 +161,21 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 		input = filterCodexInput(input, needsToolContinuation)
 		reqBody["input"] = input
 		result.Modified = true
+	} else if inputStr, ok := reqBody["input"].(string); ok {
+		// Codex 模型要求 input 必须是 list，将字符串包装为消息数组。
+		reqBody["input"] = []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "input_text",
+						"text": inputStr,
+					},
+				},
+			},
+		}
+		result.Modified = true
 	}
 
 	return result
@@ -163,6 +198,12 @@ func normalizeCodexModel(model string) string {
 
 	normalized := strings.ToLower(modelID)
 
+	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
+		return "gpt-5.3-codex"
+	}
+	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
+		return "gpt-5.3"
+	}
 	if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
 		return "gpt-5.2-codex"
 	}
@@ -194,6 +235,40 @@ func normalizeCodexModel(model string) string {
 	}
 
 	return "gpt-5.1"
+}
+
+// extractCodexModelEffort extracts the reasoning effort suffix from the original model name
+// by comparing it with the normalized model name.
+// e.g. ("gpt-5.3-codex-xhigh", "gpt-5.3-codex") → "xhigh"
+//      ("gpt-5.2-high", "gpt-5.2") → "high"
+//      ("gpt-5.1-codex", "gpt-5.1-codex") → "" (no effort suffix)
+func extractCodexModelEffort(originalModel, normalizedModel string) string {
+	if originalModel == "" || normalizedModel == "" || originalModel == normalizedModel {
+		return ""
+	}
+	original := strings.ToLower(originalModel)
+	normalized := strings.ToLower(normalizedModel)
+
+	// The effort suffix is the part after the normalized model name + "-"
+	if !strings.HasPrefix(original, normalized+"-") {
+		// Try stripping path prefix (e.g. "provider/gpt-5.3-codex-xhigh")
+		if idx := strings.LastIndex(original, "/"); idx >= 0 {
+			original = original[idx+1:]
+		}
+		if !strings.HasPrefix(original, normalized+"-") {
+			return ""
+		}
+	}
+
+	suffix := original[len(normalized)+1:]
+
+	validEfforts := map[string]bool{
+		"none": true, "low": true, "medium": true, "high": true, "xhigh": true,
+	}
+	if validEfforts[suffix] {
+		return suffix
+	}
+	return ""
 }
 
 func getNormalizedCodexModel(modelID string) string {
