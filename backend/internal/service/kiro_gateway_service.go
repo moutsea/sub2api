@@ -99,8 +99,10 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Pre-check: Estimate input tokens and truncate messages if exceeding context limit
 	// This prevents 400 errors from Kiro upstream due to context length exceeding threshold
+	// Skip for opus-4-6 which may support up to 1M context window
+	isOpus46 := strings.Contains(originalModel, "opus-4-6") || strings.Contains(originalModel, "opus-4.6")
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if estimatedTokens > kiro.KiroContextPreCheckLimit {
+	if !isOpus46 && estimatedTokens > kiro.KiroContextPreCheckLimit {
 		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
 			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
 
