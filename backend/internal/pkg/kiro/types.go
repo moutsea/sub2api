@@ -12,8 +12,8 @@ const (
 	AWsqPath     = "/generateAssistantResponse"
 )
 
-// Model ID mapping from Claude to CodeWhisperer
-// Format aligned with kiro4api: use simplified model IDs
+// Model ID mapping from Claude to AWSQ
+// Format aligned with kiro.rs: use simplified model IDs
 var ModelMap = map[string]string{
 	// Opus 4.6 series
 	"claude-opus-4-6": "claude-opus-4.6",
@@ -25,23 +25,23 @@ var ModelMap = map[string]string{
 	"claude-haiku-4-5":          "claude-haiku-4.5",
 	"claude-haiku-4-5-20251001": "claude-haiku-4.5",
 	// Sonnet 4.5 series
-	"claude-sonnet-4-5":          "CLAUDE_SONNET_4_5_20250929_V1_0",
-	"claude-sonnet-4-5-20250929": "CLAUDE_SONNET_4_5_20250929_V1_0",
-	// Sonnet 4 series
-	"claude-sonnet-4-20250514": "CLAUDE_SONNET_4_20250514_V1_0",
-	// Sonnet 3.7 series
-	"claude-3-7-sonnet-20250219": "CLAUDE_3_7_SONNET_20250219_V1_0",
-	// Sonnet 3.5 series (legacy, map to Sonnet 4)
-	"claude-3-5-sonnet-20241022": "CLAUDE_SONNET_4_20250514_V1_0",
-	"claude-3-5-sonnet-latest":   "CLAUDE_SONNET_4_20250514_V1_0",
-	"claude-3-5-sonnet-v2":       "CLAUDE_SONNET_4_20250514_V1_0",
+	"claude-sonnet-4-5":          "claude-sonnet-4.5",
+	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+	// Sonnet 4 series (map to sonnet-4.5)
+	"claude-sonnet-4-20250514": "claude-sonnet-4.5",
+	// Sonnet 3.7 series (map to sonnet-4.5)
+	"claude-3-7-sonnet-20250219": "claude-sonnet-4.5",
+	// Sonnet 3.5 series (legacy, map to sonnet-4.5)
+	"claude-3-5-sonnet-20241022": "claude-sonnet-4.5",
+	"claude-3-5-sonnet-latest":   "claude-sonnet-4.5",
+	"claude-3-5-sonnet-v2":       "claude-sonnet-4.5",
 	// Haiku 3.5 series (legacy, map to Haiku 4.5)
 	"claude-3-5-haiku-20241022": "claude-haiku-4.5",
 	"claude-3-5-haiku-latest":   "claude-haiku-4.5",
 }
 
-// Default model ID for CodeWhisperer
-const DefaultModelID = "CLAUDE_SONNET_4_20250514_V1_0"
+// Default model ID for AWSQ
+const DefaultModelID = "claude-sonnet-4.5"
 
 // GetModelID returns the CodeWhisperer model ID for a given Claude model
 func GetModelID(claudeModel string) string {
