@@ -142,8 +142,8 @@ func BuildFollowUpRequest(originalReq *kiro.ClaudeRequest, assistantContent []ma
 		newReq.Messages = make([]kiro.ClaudeMessage, len(originalReq.Messages))
 		copy(newReq.Messages, originalReq.Messages)
 		newReq.Messages = append(newReq.Messages,
-			kiro.ClaudeMessage{Role: "assistant", Content: assistantContent},
-			kiro.ClaudeMessage{Role: "user", Content: toolResults},
+			kiro.ClaudeMessage{Role: "assistant", Content: toAnySlice(assistantContent)},
+			kiro.ClaudeMessage{Role: "user", Content: toAnySlice(toolResults)},
 		)
 		return &newReq
 	}
@@ -157,18 +157,31 @@ func BuildFollowUpRequest(originalReq *kiro.ClaudeRequest, assistantContent []ma
 	}
 
 	// Add assistant message (with tool_use)
+	// Convert []map[string]any to []any for proper parsing by parseClaudeMessage
 	assistantMsg := kiro.ClaudeMessage{
 		Role:    "assistant",
-		Content: assistantContent,
+		Content: toAnySlice(assistantContent),
 	}
 	newReq.Messages = append(newReq.Messages, assistantMsg)
 
 	// Add user message (with tool_result)
+	// Convert []map[string]any to []any for proper parsing by parseClaudeMessage
 	userMsg := kiro.ClaudeMessage{
 		Role:    "user",
-		Content: toolResults,
+		Content: toAnySlice(toolResults),
 	}
 	newReq.Messages = append(newReq.Messages, userMsg)
 
 	return &newReq
+}
+
+// toAnySlice converts []map[string]any to []any
+// This is needed because Go's type system doesn't allow direct assignment
+// of []map[string]any to []any, but parseClaudeMessage expects []any
+func toAnySlice(slice []map[string]any) []any {
+	result := make([]any, len(slice))
+	for i, v := range slice {
+		result[i] = v
+	}
+	return result
 }
