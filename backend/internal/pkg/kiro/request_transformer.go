@@ -93,6 +93,7 @@ type TransformContext struct {
 	AgentContID  string            // Agent continuation ID
 	ToolUseIDMap map[string]string // tool_use_id -> tool_name mapping
 	MsgCounter   int               // Message counter
+	IsOpus46     bool              // Whether the model is opus-4-6 (skip truncation/compression)
 }
 
 // NewTransformContext creates a new transformation context
@@ -110,12 +111,15 @@ func NewTransformContext(model string, ginCtx *gin.Context) *TransformContext {
 		agentContID = uuid.New().String()
 	}
 
+	isOpus46 := strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus-4.6")
+
 	return &TransformContext{
 		ModelID:      modelID,
 		ConvID:       convID,
 		AgentContID:  agentContID,
 		ToolUseIDMap: make(map[string]string),
 		MsgCounter:   0,
+		IsOpus46:     isOpus46,
 	}
 }
 
@@ -178,25 +182,36 @@ func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string,
 	currentMsg := messages[len(messages)-1]
 	historyMsgs := messages[:len(messages)-1]
 
-	// Process tools (truncate long descriptions)
-	processedTools := processTools(claudeReq.Tools)
+	// Process tools (truncate long descriptions, skip limits for opus-4-6)
+	processedTools := processTools(claudeReq.Tools, ctx.IsOpus46)
+
+	// If last message is assistant, it becomes part of history
+	if currentMsg.Role == "assistant" {
+		historyMsgs = append(historyMsgs, currentMsg)
+	}
+
+	// Build history first (needed to check for placeholder tools)
+	history := buildHistory(ctx, historyMsgs, claudeReq.System, currentMsg, claudeReq)
+
+	// Ensure all tools referenced in history are defined in the tools list.
+	// AWSQ API requires every tool_use name in history to have a matching tool definition,
+	// otherwise returns 400 "Improperly formed request".
+	// Aligned with kiro.rs create_placeholder_tool logic.
+	// Must be done BEFORE building currentMessage, since tools are embedded in it.
+	processedTools = ensureHistoryToolsDefined(history, processedTools)
 
 	// Build currentMessage
 	var currentMessage CurrentMessage
 	var hasHistory bool
 
 	if currentMsg.Role == "assistant" {
-		// If last message is assistant, add to history and create "Continue" message
-		historyMsgs = append(historyMsgs, currentMsg)
+		// Last message was assistant (already added to history above), create "Continue" message
 		currentMessage = buildContinueMessage(ctx, processedTools)
 		hasHistory = true
 	} else {
 		hasHistory = len(historyMsgs) > 0
 		currentMessage = buildCurrentMessage(ctx, currentMsg, processedTools, claudeReq, !hasHistory)
 	}
-
-	// Build history
-	history := buildHistory(ctx, historyMsgs, claudeReq.System, currentMsg, claudeReq)
 
 	// Assemble final request
 	cwReq := &CodeWhispererRequest{
@@ -788,9 +803,13 @@ func buildToolResults(results []ToolResultData) []ToolResult {
 func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *HistoryEntry {
 	text := msg.GetText()
 
-	// Empty content uses "I understand."
-	if text == "" && !msg.HasToolUses() {
-		text = "I understand."
+	// AWSQ requires non-empty content for all messages
+	if text == "" {
+		if msg.HasToolUses() {
+			text = "."
+		} else {
+			text = "I understand."
+		}
 	}
 
 	assistantMsg := &HistoryAssistantMessage{
@@ -818,38 +837,159 @@ func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *His
 	}
 }
 
-// cleanOrphanToolUses removes tool_uses without corresponding tool_results
+// cleanOrphanToolUses validates tool_use/tool_result pairing across all history entries
+// and removes orphaned tool_uses that have no corresponding tool_result.
+// AWSQ API requires every tool_use to have a matching tool_result, otherwise returns 400.
+// Aligned with kiro.rs validate_tool_pairing + remove_orphaned_tool_uses.
 func cleanOrphanToolUses(history []HistoryEntry, currentMsg *UnifiedMessage) []HistoryEntry {
-	if len(history) == 0 || currentMsg == nil {
+	if len(history) == 0 {
 		return history
 	}
 
-	lastMsg := &history[len(history)-1]
-	if lastMsg.Type != "assistant" || lastMsg.Assistant == nil {
+	// 1. Collect all tool_use_ids from assistant messages in history
+	allToolUseIDs := make(map[string]bool)
+	for _, entry := range history {
+		if entry.Type == "assistant" && entry.Assistant != nil {
+			for _, tu := range entry.Assistant.ToolUses {
+				allToolUseIDs[tu.ToolUseID] = true
+			}
+		}
+	}
+
+	if len(allToolUseIDs) == 0 {
 		return history
 	}
 
-	if len(lastMsg.Assistant.ToolUses) == 0 {
+	// 2. Collect all tool_result tool_use_ids from user messages in history
+	pairedIDs := make(map[string]bool)
+	for _, entry := range history {
+		if entry.Type == "user" && entry.User != nil && entry.User.UserInputMessageContext != nil {
+			for _, tr := range entry.User.UserInputMessageContext.ToolResults {
+				pairedIDs[tr.ToolUseID] = true
+			}
+		}
+	}
+
+	// 3. Also count tool_results from currentMsg
+	if currentMsg != nil {
+		for _, tr := range currentMsg.ToolResults {
+			pairedIDs[tr.ToolUseID] = true
+		}
+	}
+
+	// 4. Find orphaned tool_use_ids (have tool_use but no tool_result anywhere)
+	orphanedIDs := make(map[string]bool)
+	for id := range allToolUseIDs {
+		if !pairedIDs[id] {
+			orphanedIDs[id] = true
+		}
+	}
+
+	if len(orphanedIDs) == 0 {
 		return history
 	}
 
-	if currentMsg.HasToolResults() {
-		return history
+	// 5. Remove orphaned tool_uses from all assistant messages
+	for i := range history {
+		entry := &history[i]
+		if entry.Type != "assistant" || entry.Assistant == nil || len(entry.Assistant.ToolUses) == 0 {
+			continue
+		}
+
+		filtered := make([]ToolUseEntry, 0, len(entry.Assistant.ToolUses))
+		for _, tu := range entry.Assistant.ToolUses {
+			if !orphanedIDs[tu.ToolUseID] {
+				filtered = append(filtered, tu)
+			}
+		}
+
+		if len(filtered) == 0 {
+			entry.Assistant.ToolUses = nil
+			// Backfill empty content to avoid sending {"content":""} without tool_uses
+			if entry.Assistant.Content == "" {
+				entry.Assistant.Content = "I understand."
+			}
+		} else {
+			entry.Assistant.ToolUses = filtered
+		}
 	}
 
-	// No tool_result, clear toolUses
-	lastMsg.Assistant.ToolUses = nil
 	return history
 }
 
+// ensureHistoryToolsDefined checks that all tool names referenced in history tool_uses
+// have a corresponding definition in the tools list. If not, creates a placeholder tool.
+// AWSQ API requires this, otherwise returns 400 "Improperly formed request".
+// Aligned with kiro.rs create_placeholder_tool.
+func ensureHistoryToolsDefined(history []HistoryEntry, tools []ToolItem) []ToolItem {
+	if len(history) == 0 {
+		return tools
+	}
+
+	// Collect existing tool names (case-insensitive)
+	existingNames := make(map[string]bool)
+	for _, t := range tools {
+		if t.Standard != nil {
+			existingNames[strings.ToLower(t.Standard.ToolSpecification.Name)] = true
+		}
+	}
+
+	// Collect tool names from history tool_uses
+	seen := make(map[string]bool)
+	for _, entry := range history {
+		if entry.Type == "assistant" && entry.Assistant != nil {
+			for _, tu := range entry.Assistant.ToolUses {
+				nameLower := strings.ToLower(tu.Name)
+				if !existingNames[nameLower] && !seen[nameLower] {
+					seen[nameLower] = true
+					tools = append(tools, ToolItem{
+						Standard: &CodeWhispererTool{
+							ToolSpecification: ToolSpecification{
+								Name:        tu.Name,
+								Description: "Tool used in conversation history",
+								InputSchema: InputSchema{
+									JSON: map[string]any{
+										"type":       "object",
+										"properties": map[string]any{},
+									},
+								},
+							},
+						},
+					})
+				}
+			}
+		}
+	}
+
+	return tools
+}
+
 // fixHistoryAlternation ensures proper user/assistant alternation
+// AWSQ requires: history starts with user, ends with assistant, strict alternation
 func fixHistoryAlternation(ctx *TransformContext, history []HistoryEntry) []HistoryEntry {
 	if len(history) == 0 {
 		return history
 	}
 
 	fixed := make([]HistoryEntry, 0, len(history)*2)
+
+	// Ensure history starts with user message
+	if history[0].Type == "assistant" {
+		fixed = append(fixed, HistoryEntry{
+			MessageID: fmt.Sprintf("msg-%03d", ctx.NextMsgID()),
+			Type:      "user",
+			User: &HistoryUserMessage{
+				Content: "Continue",
+				ModelID: ctx.ModelID,
+				Origin:  "AI_EDITOR",
+			},
+		})
+	}
+
 	var lastRole string
+	if len(fixed) > 0 {
+		lastRole = fixed[len(fixed)-1].Type
+	}
 
 	for _, entry := range history {
 		currentRole := entry.Type
@@ -994,8 +1134,10 @@ func buildContinueMessage(ctx *TransformContext, tools []ToolItem) CurrentMessag
 	}
 }
 
-// processTools processes tools, truncating long descriptions and applying compression if needed
-func processTools(tools []ClaudeTool) []ToolItem {
+// processTools processes tools, truncating long descriptions and applying compression if needed.
+// When skipLimits is true (opus-4-6), dynamic compression is bypassed.
+// Tool count limit (50) and name length limit (64 chars) are always enforced as AWSQ hard constraints.
+func processTools(tools []ClaudeTool, skipLimits bool) []ToolItem {
 	if len(tools) == 0 {
 		return nil
 	}
@@ -1046,7 +1188,7 @@ func processTools(tools []ClaudeTool) []ToolItem {
 			continue
 		}
 
-		// Limit to max function tools
+		// Limit to max function tools (AWSQ hard limit, always enforced)
 		if functionCount >= MaxFunctionTools {
 			continue
 		}
@@ -1075,7 +1217,7 @@ func processTools(tools []ClaudeTool) []ToolItem {
 		}
 
 		// Truncate individual tool descriptions that exceed Kiro API limit
-		// (after adding parameter hints)
+		// (after adding parameter hints) — enforced by upstream kiro.rs (10000 chars)
 		if len(description) > KiroMaxToolDescLen {
 			runes := []rune(description)
 			if len(runes) > KiroMaxToolDescLen-3 {
@@ -1083,7 +1225,7 @@ func processTools(tools []ClaudeTool) []ToolItem {
 			}
 		}
 
-		// Apply shortened name
+		// Apply shortened name (AWSQ has 64-char tool name limit, always enforced)
 		toolName := tool.Name
 		if short, ok := shortNameMap[tool.Name]; ok {
 			toolName = short
@@ -1104,7 +1246,10 @@ func processTools(tools []ClaudeTool) []ToolItem {
 
 	// Apply dynamic compression if total tools size exceeds threshold
 	// This prevents 500 errors when Claude Code sends too many tools
-	cwTools = compressToolsIfNeeded(cwTools, true)
+	// Skip for opus-4-6 which supports larger context
+	if !skipLimits {
+		cwTools = compressToolsIfNeeded(cwTools, true)
+	}
 
 	return cwTools
 }

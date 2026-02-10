@@ -196,18 +196,29 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 
 		// If no web_search calls, or has other tools, return final response
 		if len(webSearchCalls) == 0 || !HasOnlyWebSearchTools(parseResult.ToolCalls) {
-			// Return final response by re-executing with original stream setting, filtering out web_search tools
-			return s.Forward(ctx, c, account, filterWebSearchTools(&nonStreamReq))
+			if iteration == 1 {
+				// First iteration: no web_search detected, use original body directly
+				// Avoids re-executing request and potential message structure corruption from filterWebSearchTools
+				return s.Forward(ctx, c, account, filterWebSearchTools(claudeReq))
+			}
+			// After web_search loop: need to filter and re-execute with stream setting restored
+			finalReq := *currentReq
+			finalReq.Stream = claudeReq.Stream
+			return s.Forward(ctx, c, account, filterWebSearchTools(&finalReq))
 		}
 
 		// Execute web_search
 		toolResults := ExecuteWebSearch(ctx, webSearchCalls)
 		if len(toolResults) == 0 {
-			return s.Forward(ctx, c, account, filterWebSearchTools(&nonStreamReq))
+			if iteration == 1 {
+				return s.Forward(ctx, c, account, filterWebSearchTools(claudeReq))
+			}
+			finalReq := *currentReq
+			finalReq.Stream = claudeReq.Stream
+			return s.Forward(ctx, c, account, filterWebSearchTools(&finalReq))
 		}
 
 		// Build assistant content
-		// Note: Kiro returns tool name as "WebSearch" but we need to use the original Claude tool name
 		var assistantContent []map[string]any
 		if parseResult.TextContent != "" {
 			assistantContent = append(assistantContent, map[string]any{
@@ -216,7 +227,6 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 			})
 		}
 		for _, tc := range parseResult.ToolCalls {
-			// Keep tool name as-is (e.g., "WebSearch") to match tools list
 			assistantContent = append(assistantContent, map[string]any{
 				"type":  "tool_use",
 				"id":    tc.ID,
@@ -230,7 +240,9 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 	}
 
 	// Max iterations reached
-	return s.Forward(ctx, c, account, filterWebSearchTools(currentReq))
+	finalReq := *currentReq
+	finalReq.Stream = claudeReq.Stream
+	return s.Forward(ctx, c, account, filterWebSearchTools(&finalReq))
 }
 
 // forwardStreamWithWebSearch handles streaming requests with web_search agentic loop
@@ -285,7 +297,12 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 
 		// If no web_search calls, or has other tools, switch to streaming
 		if len(webSearchCalls) == 0 || !HasOnlyWebSearchTools(parseResult.ToolCalls) {
-			// Re-execute with streaming enabled, filtering out web_search tools
+			if iteration == 1 {
+				// First iteration: no web_search, use original request with streaming
+				streamReq := *claudeReq
+				streamReq.Stream = true
+				return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
+			}
 			streamReq := *currentReq
 			streamReq.Stream = true
 			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
@@ -294,6 +311,11 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 		// Execute web_search
 		toolResults := ExecuteWebSearch(ctx, webSearchCalls)
 		if len(toolResults) == 0 {
+			if iteration == 1 {
+				streamReq := *claudeReq
+				streamReq.Stream = true
+				return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
+			}
 			streamReq := *currentReq
 			streamReq.Stream = true
 			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
@@ -308,7 +330,6 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 			})
 		}
 		for _, tc := range parseResult.ToolCalls {
-			// Keep tool name as-is (e.g., "WebSearch") to match tools list
 			assistantContent = append(assistantContent, map[string]any{
 				"type":  "tool_use",
 				"id":    tc.ID,
