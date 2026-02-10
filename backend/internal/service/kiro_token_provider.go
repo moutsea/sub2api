@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 )
 
 // Kiro token status constants
@@ -164,8 +166,16 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 		return state.AccessToken, nil
 	}
 
-	// Need to refresh token
-	tokenInfo, err := p.refreshToken(ctx, account)
+	// Need to refresh token — reload account from DB to get latest refresh_token.
+	// The account object passed in may hold a stale refresh_token if it was rotated
+	// by a previous successful refresh (written to DB async via updateAccountCredentials).
+	freshAccount, reloadErr := p.accountRepo.GetByID(ctx, account.ID)
+	if reloadErr != nil {
+		log.Printf("[KiroToken] Account %d: failed to reload from DB, using original account: %v", account.ID, reloadErr)
+		freshAccount = account
+	}
+
+	tokenInfo, err := p.refreshToken(ctx, freshAccount)
 	if err != nil {
 		errType := p.classifyRefreshError(err)
 		p.handleRefreshError(account.ID, state, errType, err)
@@ -430,9 +440,13 @@ func (p *KiroTokenProvider) classifyRefreshError(err error) KiroRefreshErrorType
 		return KiroRefreshErrorNetwork
 	}
 
-	// Account banned - 401 + Bad credentials
-	if strings.Contains(errMsg, "401") && strings.Contains(errMsg, "bad credentials") {
-		return KiroRefreshErrorBanned
+	// Refresh endpoint 401 — refresh token is invalid or expired.
+	// "bad credentials" means permanently banned; plain 401 means token rotated/expired.
+	if strings.Contains(errMsg, "status 401") || (strings.Contains(errMsg, "401") && strings.Contains(errMsg, "unauthorized")) {
+		if strings.Contains(errMsg, "bad credentials") {
+			return KiroRefreshErrorBanned
+		}
+		return KiroRefreshErrorExpired
 	}
 
 	// Account suspended
@@ -570,6 +584,21 @@ func (p *KiroTokenProvider) MarkBanned(accountID int64, reason string) {
 	go p.updateAccountStatus(accountID, KiroTokenStatusBanned, reason)
 }
 
+// InvalidateToken clears the cached access token for an account without changing its status.
+// This forces the next GetAccessToken call to trigger a refresh.
+// Used when upstream returns 401 (token expired) — not a ban, just a stale token.
+func (p *KiroTokenProvider) InvalidateToken(accountID int64) {
+	state := p.getOrCreateState(accountID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.AccessToken = ""
+	// Set ExpiresAt to past (not zero) to avoid initializeStateFromAccount reloading the stale token from DB.
+	// GetAccessToken checks (AccessToken=="" && ExpiresAt.IsZero()) to decide whether to re-init from DB;
+	// a non-zero past time skips that branch and falls through to the expiry check, triggering a refresh.
+	state.ExpiresAt = time.Unix(0, 0)
+	log.Printf("[KiroToken] Account %d token invalidated (will refresh on next use)", accountID)
+}
+
 // MarkAvailable recovers an account to available state
 func (p *KiroTokenProvider) MarkAvailable(accountID int64) {
 	state := p.getOrCreateState(accountID)
@@ -704,6 +733,73 @@ func (p *KiroTokenProvider) SetCooldownDuration(d time.Duration) {
 func (p *KiroTokenProvider) ClearState(accountID int64) {
 	p.cache.Delete(accountID)
 	p.refreshBackoff.Delete(accountID)
+}
+
+// ForceRefreshWithRetry attempts to recover at least one account from a list of unavailable Kiro accounts.
+// It tries each account up to maxRetries times to force-refresh the token.
+// Returns the first successfully recovered account, or an error if all attempts fail.
+func (p *KiroTokenProvider) ForceRefreshWithRetry(ctx context.Context, accounts []Account, maxRetries int) (*Account, error) {
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("no accounts to retry")
+	}
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		for i := range accounts {
+			acc := &accounts[i]
+			if !acc.IsKiro() {
+				continue
+			}
+
+			state := p.getOrCreateState(acc.ID)
+			state.mu.Lock()
+
+			// Skip permanently banned accounts (bad credentials / suspended / expired grant)
+			if state.Status == KiroTokenStatusBanned {
+				state.mu.Unlock()
+				continue
+			}
+
+			// Reload account from DB to get latest refresh_token
+			freshAcc, reloadErr := p.accountRepo.GetByID(ctx, acc.ID)
+			if reloadErr != nil {
+				log.Printf("[KiroToken] Force retry: failed to reload account %d from DB: %v", acc.ID, reloadErr)
+				freshAcc = acc
+			}
+
+			// Attempt refresh regardless of cooldown/exhausted status
+			tokenInfo, err := p.refreshToken(ctx, freshAcc)
+			if err != nil {
+				lastErr = err
+				log.Printf("[KiroToken] Force retry attempt %d/%d for account %d failed: %v", attempt, maxRetries, acc.ID, err)
+				state.mu.Unlock()
+				continue
+			}
+
+			// Success - recover the account
+			state.AccessToken = tokenInfo.AccessToken
+			state.ExpiresAt = tokenInfo.ExpiresAt
+			state.LastRefreshed = time.Now()
+			state.Status = KiroTokenStatusActive
+			state.RefreshFailures = 0
+			state.ErrorMsg = ""
+			state.mu.Unlock()
+
+			p.refreshBackoff.Delete(acc.ID)
+			go p.updateAccountCredentials(acc.ID, tokenInfo)
+
+			log.Printf("[KiroToken] Account %d recovered via force retry (attempt %d/%d)", acc.ID, attempt, maxRetries)
+			return acc, nil
+		}
+	}
+
+	if lastErr == nil {
+		return nil, fmt.Errorf("all %d accounts are permanently banned, no recovery possible", len(accounts))
+	}
+	return nil, fmt.Errorf("all %d retry attempts failed for %d accounts: %w", maxRetries, len(accounts), lastErr)
 }
 
 // ForceRefreshToken forces a token refresh regardless of current state
@@ -933,35 +1029,48 @@ func (p *KiroTokenProvider) dbErrorRecoveryLoop() {
 	}
 }
 
-// recoverDBErrorAccounts queries error Kiro accounts from database and attempts to recover them
+// recoverDBErrorAccounts queries error and soft-deleted Kiro accounts from database and attempts to recover them.
+// For error accounts: refresh token and restore to active status.
+// For deleted accounts: refresh token, restore from soft-delete, and reactivate (group bindings are preserved).
 func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	// Query error Kiro accounts from database
-	accounts, err := p.accountRepo.ListErrorByPlatform(ctx, PlatformKiro)
+	errorAccounts, err := p.accountRepo.ListErrorByPlatform(ctx, PlatformKiro)
 	if err != nil {
 		log.Printf("[KiroToken] Failed to query error accounts from database: %v", err)
+		errorAccounts = nil
+	}
+
+	// Query soft-deleted Kiro accounts from database
+	deletedAccounts, err := p.accountRepo.ListDeletedByPlatform(ctx, PlatformKiro)
+	if err != nil {
+		log.Printf("[KiroToken] Failed to query deleted accounts from database: %v", err)
+		deletedAccounts = nil
+	}
+
+	if len(errorAccounts) == 0 && len(deletedAccounts) == 0 {
 		return
 	}
 
-	if len(accounts) == 0 {
-		return
+	if len(errorAccounts) > 0 {
+		log.Printf("[KiroToken] Found %d error Kiro accounts in database, attempting recovery...", len(errorAccounts))
 	}
-
-	log.Printf("[KiroToken] Found %d error Kiro accounts in database, attempting recovery...", len(accounts))
+	if len(deletedAccounts) > 0 {
+		log.Printf("[KiroToken] Found %d deleted Kiro accounts in database, attempting recovery...", len(deletedAccounts))
+	}
 
 	recovered := 0
 	failed := 0
 
-	for i := range accounts {
-		account := &accounts[i]
+	// Recover error accounts
+	for i := range errorAccounts {
+		account := &errorAccounts[i]
 
-		// Try to refresh token
 		tokenInfo, err := p.refreshToken(ctx, account)
 		if err != nil {
 			errType := p.classifyRefreshError(err)
-			// Only log permanent errors, skip temporary ones
 			if errType == KiroRefreshErrorBanned || errType == KiroRefreshErrorSuspended || errType == KiroRefreshErrorExpired {
 				log.Printf("[KiroToken] Account %d (%s) recovery failed (permanent): %v", account.ID, account.Name, err)
 			}
@@ -969,28 +1078,79 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 			continue
 		}
 
-		// Success! Update credentials and status in database
 		p.updateAccountCredentials(account.ID, tokenInfo)
+		p.updateCacheOnRecovery(account.ID, tokenInfo)
+		recovered++
+		log.Printf("[KiroToken] Account %d (%s) recovered successfully from error state", account.ID, account.Name)
+	}
 
-		// Also update cache if exists
-		if state, ok := p.cache.Load(account.ID); ok {
-			s := state.(*KiroTokenState)
-			s.mu.Lock()
-			s.AccessToken = tokenInfo.AccessToken
-			s.ExpiresAt = tokenInfo.ExpiresAt
-			s.Status = KiroTokenStatusActive
-			s.LastRefreshed = time.Now()
-			s.RefreshFailures = 0
-			s.ErrorMsg = ""
-			s.mu.Unlock()
-			p.refreshBackoff.Delete(account.ID)
+	// Recover deleted accounts
+	for i := range deletedAccounts {
+		account := &deletedAccounts[i]
+
+		tokenInfo, err := p.refreshToken(ctx, account)
+		if err != nil {
+			errType := p.classifyRefreshError(err)
+			if errType == KiroRefreshErrorBanned || errType == KiroRefreshErrorSuspended || errType == KiroRefreshErrorExpired {
+				log.Printf("[KiroToken] Deleted account %d (%s) recovery failed (permanent): %v", account.ID, account.Name, err)
+			}
+			failed++
+			continue
 		}
 
+		// Verify usage limits before restoring — only revive accounts that have valid credits
+		region := account.GetKiroRegion()
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+		fetcher := kiro.NewUsageLimitsFetcher(nil)
+		limits, err := fetcher.FetchUsageLimits(ctx, tokenInfo.AccessToken, region, proxyURL)
+		if err != nil {
+			log.Printf("[KiroToken] Deleted account %d (%s) usage fetch failed, skipping restore: %v", account.ID, account.Name, err)
+			failed++
+			continue
+		}
+		creditsInfo := kiro.ExtractCreditsInfo(limits)
+		if creditsInfo == nil || creditsInfo.TotalCredits <= 0 {
+			log.Printf("[KiroToken] Deleted account %d (%s) has no valid credits (total=%.2f), skipping restore",
+				account.ID, account.Name, func() float64 { if creditsInfo != nil { return creditsInfo.TotalCredits }; return 0 }())
+			failed++
+			continue
+		}
+
+		// Restore from soft-delete (clears deleted_at, sets status=active)
+		if err := p.accountRepo.RestoreAccount(ctx, account.ID); err != nil {
+			log.Printf("[KiroToken] Failed to restore deleted account %d (%s): %v", account.ID, account.Name, err)
+			failed++
+			continue
+		}
+
+		// Update credentials after restore
+		p.updateAccountCredentials(account.ID, tokenInfo)
+		p.updateCacheOnRecovery(account.ID, tokenInfo)
 		recovered++
-		log.Printf("[KiroToken] Account %d (%s) recovered successfully from DB error state", account.ID, account.Name)
+		log.Printf("[KiroToken] Deleted account %d (%s) restored successfully (credits=%.2f/%.2f)", account.ID, account.Name, creditsInfo.AvailableCredits, creditsInfo.TotalCredits)
 	}
 
 	if recovered > 0 || failed > 0 {
-		log.Printf("[KiroToken] DB error recovery completed: %d recovered, %d failed", recovered, failed)
+		log.Printf("[KiroToken] DB recovery completed: %d recovered, %d failed (error=%d, deleted=%d)",
+			recovered, failed, len(errorAccounts), len(deletedAccounts))
 	}
+}
+
+// updateCacheOnRecovery updates the in-memory cache after a successful token recovery.
+// Uses getOrCreateState to ensure the cache entry exists — critical for restored
+// (previously deleted) accounts whose cache entry may have been evicted.
+func (p *KiroTokenProvider) updateCacheOnRecovery(accountID int64, tokenInfo *KiroTokenInfo) {
+	s := p.getOrCreateState(accountID)
+	s.mu.Lock()
+	s.AccessToken = tokenInfo.AccessToken
+	s.ExpiresAt = tokenInfo.ExpiresAt
+	s.Status = KiroTokenStatusActive
+	s.LastRefreshed = time.Now()
+	s.RefreshFailures = 0
+	s.ErrorMsg = ""
+	s.mu.Unlock()
+	p.refreshBackoff.Delete(accountID)
 }
