@@ -2186,6 +2186,7 @@ export default {
       noChange: '不修改',
       keyType: '密钥类型',
       quotaOnly: '仅限额',
+      timeLimited: '限时限额',
       totalQuota: '总额度',
       totalQuotaPlaceholder: '总额度（美元）',
       quota: '额度',

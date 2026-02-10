@@ -2039,6 +2039,7 @@ export default {
       noChange: 'No Change',
       keyType: 'Key Type',
       quotaOnly: 'Quota Only',
+      timeLimited: 'Time Limited',
       totalQuota: 'Total Quota',
       totalQuotaPlaceholder: 'Total quota in USD',
       quota: 'Quota',

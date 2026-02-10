@@ -135,9 +135,13 @@ func (r *TempAPIKeyRepo) BatchDelete(ctx context.Context, ids []int64) (int, err
 		Save(ctx)
 }
 
-// List lists temp API keys with pagination
-func (r *TempAPIKeyRepo) List(ctx context.Context, params pagination.PaginationParams) ([]*service.TempAPIKey, *pagination.PaginationResult, error) {
+// List lists temp API keys with pagination and optional key_type filter
+func (r *TempAPIKeyRepo) List(ctx context.Context, params pagination.PaginationParams, keyType string) ([]*service.TempAPIKey, *pagination.PaginationResult, error) {
 	query := r.activeQuery()
+
+	if keyType != "" {
+		query = query.Where(tempapikey.KeyType(keyType))
+	}
 
 	// Count total
 	total, err := query.Clone().Count(ctx)

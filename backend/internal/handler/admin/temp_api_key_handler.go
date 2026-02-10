@@ -84,13 +84,14 @@ type TempAPIKeyResponse struct {
 func (h *TempAPIKeyHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	keyType := c.Query("key_type")
 
 	params := pagination.PaginationParams{
 		Page:     page,
 		PageSize: pageSize,
 	}
 
-	keys, paginationResult, err := h.repo.List(c.Request.Context(), params)
+	keys, paginationResult, err := h.repo.List(c.Request.Context(), params, keyType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

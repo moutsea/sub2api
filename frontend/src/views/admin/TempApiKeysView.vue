@@ -19,6 +19,13 @@
 
       <template #filters>
         <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-center gap-3">
+            <Select
+              v-model="filterKeyType"
+              :options="filterKeyTypeOptions"
+              class="w-48"
+            />
+          </div>
           <div class="flex items-center gap-2" v-if="selectedIds.length > 0">
             <span class="text-sm text-gray-600 dark:text-gray-400">
               {{ t('common.selected', { count: selectedIds.length }) }}
@@ -359,7 +366,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { tempApiKeysAPI } from '@/api/admin/temp-api-keys'
@@ -418,6 +425,13 @@ const batchForm = ref({
 // Selection
 const selectedIds = ref<number[]>([])
 
+// Filter
+const filterKeyType = ref('')
+const filterKeyTypeOptions = computed(() => [
+  { value: '', label: t('common.all') },
+  { value: 'time_limited', label: t('admin.tempApiKeys.timeLimited') },
+  { value: 'quota_only', label: t('admin.tempApiKeys.quotaOnly') },
+])
 // Options
 const groupOptions = computed(() =>
   groups.value.map((g) => ({ value: g.id, label: g.name }))
@@ -456,7 +470,7 @@ const columns = computed(() => [
 const loadKeys = async () => {
   loading.value = true
   try {
-    const res = await tempApiKeysAPI.list(pagination.value.page, pagination.value.page_size)
+    const res = await tempApiKeysAPI.list(pagination.value.page, pagination.value.page_size, filterKeyType.value)
     keys.value = res.data || []
     pagination.value = res.pagination || { total: 0, page: 1, page_size: 20 }
   } catch (e: unknown) {
@@ -664,5 +678,11 @@ const formatDate = (date: string | null) => {
 onMounted(() => {
   loadKeys()
   loadGroups()
+})
+
+watch(filterKeyType, () => {
+  pagination.value.page = 1
+  selectedIds.value = []
+  loadKeys()
 })
 </script>

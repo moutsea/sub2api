@@ -21,15 +21,18 @@ export interface TempApiKeyListResponse {
 }
 
 /**
- * List all temp API keys with pagination
+ * List all temp API keys with pagination and optional key_type filter
  */
 export async function list(
   page: number = 1,
-  pageSize: number = 20
+  pageSize: number = 20,
+  keyType: string = ''
 ): Promise<TempApiKeyListResponse> {
-  const { data } = await apiClient.get('/admin/temp-api-keys', {
-    params: { page, page_size: pageSize },
-  })
+  const params: Record<string, unknown> = { page, page_size: pageSize }
+  if (keyType) {
+    params.key_type = keyType
+  }
+  const { data } = await apiClient.get('/admin/temp-api-keys', { params })
   return data
 }
 
