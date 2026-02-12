@@ -78,9 +78,11 @@ func provideCleanup(
 	openaiOAuth *service.OpenAIOAuthService,
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
+	antigravityTokenProvider *service.AntigravityTokenProvider,
 	kiroTokenProvider *service.KiroTokenProvider,
 ) func() {
-	// Start KiroTokenProvider background tasks
+	// Start background tasks
+	antigravityTokenProvider.Start()
 	kiroTokenProvider.Start()
 
 	return func() {
@@ -95,6 +97,12 @@ func provideCleanup(
 			{"KiroTokenProvider", func() error {
 				if kiroTokenProvider != nil {
 					kiroTokenProvider.Stop()
+				}
+				return nil
+			}},
+			{"AntigravityTokenProvider", func() error {
+				if antigravityTokenProvider != nil {
+					antigravityTokenProvider.Stop()
 				}
 				return nil
 			}},

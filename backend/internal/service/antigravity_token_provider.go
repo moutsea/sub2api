@@ -2,11 +2,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 )
 
 const (
@@ -143,4 +149,169 @@ func AntigravityTokenCacheKey(account *Account) string {
 		return "ag:" + projectID
 	}
 	return "ag:account:" + strconv.FormatInt(account.ID, 10)
+}
+
+const antigravityRecoveryInterval = 15 * time.Minute
+
+// Start starts background recovery tasks
+func (p *AntigravityTokenProvider) Start() {
+	log.Println("[AntigravityToken] Starting background recovery tasks...")
+	go p.recoveryLoop()
+}
+
+// Stop stops background recovery tasks
+func (p *AntigravityTokenProvider) Stop() {
+	log.Println("[AntigravityToken] Stopping background recovery tasks...")
+}
+
+func (p *AntigravityTokenProvider) recoveryLoop() {
+	ticker := time.NewTicker(antigravityRecoveryInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.recoverAccounts()
+	}
+}
+
+func (p *AntigravityTokenProvider) recoverAccounts() {
+	if p.antigravityOAuthService == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	errorAccounts, err := p.accountRepo.ListErrorByPlatform(ctx, PlatformAntigravity)
+	if err != nil {
+		log.Printf("[AntigravityToken] Failed to query error accounts: %v", err)
+		errorAccounts = nil
+	}
+	deletedAccounts, err := p.accountRepo.ListDeletedByPlatform(ctx, PlatformAntigravity)
+	if err != nil {
+		log.Printf("[AntigravityToken] Failed to query deleted accounts: %v", err)
+		deletedAccounts = nil
+	}
+	if len(errorAccounts) == 0 && len(deletedAccounts) == 0 {
+		return
+	}
+
+	recovered, failed := 0, 0
+
+	for i := range errorAccounts {
+		account := &errorAccounts[i]
+		if p.tryRecoverAccount(ctx, account, false) {
+			recovered++
+		} else {
+			failed++
+		}
+	}
+	for i := range deletedAccounts {
+		account := &deletedAccounts[i]
+		if p.tryRecoverAccount(ctx, account, true) {
+			recovered++
+		} else {
+			failed++
+		}
+	}
+
+	log.Printf("[AntigravityToken] Recovery complete: recovered=%d failed=%d (error=%d deleted=%d)",
+		recovered, failed, len(errorAccounts), len(deletedAccounts))
+}
+
+func (p *AntigravityTokenProvider) tryRecoverAccount(ctx context.Context, account *Account, isDeleted bool) bool {
+	if account.Type != AccountTypeOAuth {
+		return false
+	}
+
+	// 1. Refresh token
+	tokenInfo, err := p.antigravityOAuthService.RefreshAccountToken(ctx, account)
+	if err != nil {
+		log.Printf("[AntigravityToken] Account %d (%s) refresh failed: %v", account.ID, account.Name, err)
+		return false
+	}
+
+	// 2. Test connection with refreshed token
+	if err := p.testConnection(ctx, account, tokenInfo.AccessToken); err != nil {
+		log.Printf("[AntigravityToken] Account %d (%s) test failed: %v", account.ID, account.Name, err)
+		return false
+	}
+
+	// 3. Restore account
+	if isDeleted {
+		if err := p.accountRepo.RestoreAccount(ctx, account.ID); err != nil {
+			log.Printf("[AntigravityToken] Account %d (%s) restore failed: %v", account.ID, account.Name, err)
+			return false
+		}
+	} else {
+		account.Status = StatusActive
+		account.ErrorMessage = ""
+		if err := p.accountRepo.Update(ctx, account); err != nil {
+			log.Printf("[AntigravityToken] Account %d (%s) status update failed: %v", account.ID, account.Name, err)
+			return false
+		}
+	}
+
+	// 4. Update credentials
+	newCredentials := p.antigravityOAuthService.BuildAccountCredentials(tokenInfo)
+	for k, v := range account.Credentials {
+		if _, exists := newCredentials[k]; !exists {
+			newCredentials[k] = v
+		}
+	}
+	account.Credentials = newCredentials
+	if err := p.accountRepo.Update(ctx, account); err != nil {
+		log.Printf("[AntigravityToken] Account %d (%s) credential update failed: %v", account.ID, account.Name, err)
+	}
+
+	label := "error"
+	if isDeleted {
+		label = "deleted"
+	}
+	log.Printf("[AntigravityToken] Account %d (%s) recovered from %s state", account.ID, account.Name, label)
+	return true
+}
+
+// testConnection sends a minimal request to verify the account is usable
+func (p *AntigravityTokenProvider) testConnection(ctx context.Context, account *Account, accessToken string) error {
+	projectID := strings.TrimSpace(account.GetCredential("project_id"))
+	if projectID == "" {
+		projectID = antigravityDefaultProjectID
+	}
+
+	payload := map[string]any{
+		"contents": []map[string]any{
+			{"role": "user", "parts": []map[string]any{{"text": "hi"}}},
+		},
+		"systemInstruction": map[string]any{
+			"parts": []map[string]any{{"text": antigravity.GetDefaultIdentityPatch()}},
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	// Wrap in v1internal format
+	wrapped := map[string]any{
+		"project":     projectID,
+		"requestId":   "recovery-test",
+		"userAgent":   "antigravity",
+		"requestType": "agent",
+		"model":       "claude-sonnet-4-5",
+		"request":     json.RawMessage(payloadBytes),
+	}
+	body, _ := json.Marshal(wrapped)
+
+	req, err := antigravity.NewAPIRequest(ctx, "streamGenerateContent", accessToken, body)
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("upstream returned %d", resp.StatusCode)
+	}
+	return nil
 }
