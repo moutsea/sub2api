@@ -1053,6 +1053,27 @@ urlFallbackLoop:
 
 		// 处理错误响应（重试后仍失败或不触发重试）
 		if resp.StatusCode >= 400 {
+			// Project 不存在：用默认 project_id 重新 transform 并重试一次
+			if isProjectNotFoundError(resp.StatusCode, respBody) && projectID != antigravityDefaultProjectID {
+				log.Printf("%s Project not found (%s), retrying with default project_id", prefix, projectID)
+				retryBody, err := antigravity.TransformClaudeToGeminiWithOptions(&claudeReq, antigravityDefaultProjectID, mappedModel, transformOpts)
+				if err == nil {
+					retryBody = cleanCacheControlFromGeminiJSON(retryBody)
+					retryReq, err := antigravity.NewAPIRequest(ctx, action, accessToken, retryBody)
+					if err == nil {
+						retryResp, err := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency)
+						if err == nil && retryResp.StatusCode < 400 {
+							_ = resp.Body.Close()
+							resp = retryResp
+							respBody = nil
+						} else if retryResp != nil {
+							_ = retryResp.Body.Close()
+						}
+					}
+				}
+			}
+		}
+		if resp.StatusCode >= 400 && respBody != nil {
 			// URL 级别 429 不应标记账户限流，也不应触发 failover
 			urlLevelRateLimit := resp.StatusCode == http.StatusTooManyRequests && isURLLevelRateLimit(respBody)
 			if !urlLevelRateLimit {
