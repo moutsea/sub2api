@@ -244,6 +244,12 @@ func NewGatewayService(
 	}
 }
 
+// systemBlockFilterPrefixes 需要从 system 中过滤的文本前缀列表
+// OAuth/SetupToken 账号转发时，匹配这些前缀的 system 元素会被移除
+var systemBlockFilterPrefixes = []string{
+	"x-anthropic-billing-header",
+}
+
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
 // conversationID: 可选，来自请求 header X-Conversation-ID，优先级最高
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest, conversationID string) string {
@@ -385,12 +391,17 @@ func (s *GatewayService) hashContent(content string) string {
 }
 
 // replaceModelInBody 替换请求体中的model字段
+// 使用 json.RawMessage 保留其他字段的原始字节，避免 thinking 块等内容被修改
 func (s *GatewayService) replaceModelInBody(body []byte, newModel string) []byte {
-	var req map[string]any
+	var req map[string]json.RawMessage
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body
 	}
-	req["model"] = newModel
+	modelBytes, err := json.Marshal(newModel)
+	if err != nil {
+		return body
+	}
+	req["model"] = modelBytes
 	newBody, err := json.Marshal(req)
 	if err != nil {
 		return body
@@ -527,18 +538,28 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// Filter out Kiro accounts that are not available (cooldown/banned/exhausted)
 	if s.kiroTokenProvider != nil {
 		filteredAccounts := make([]Account, 0, len(accounts))
+		var unavailableKiroAccounts []Account
 		for i := range accounts {
 			acc := &accounts[i]
 			if acc.IsKiro() {
 				if !s.kiroTokenProvider.IsAvailable(acc.ID) {
+					unavailableKiroAccounts = append(unavailableKiroAccounts, accounts[i])
 					continue // Skip unavailable Kiro accounts
 				}
 			}
 			filteredAccounts = append(filteredAccounts, accounts[i])
 		}
 		accounts = filteredAccounts
-		if len(accounts) == 0 {
-			return nil, errors.New("no available accounts (all Kiro accounts are in cooldown/banned)")
+		if len(accounts) == 0 && len(unavailableKiroAccounts) > 0 {
+			// All Kiro accounts are unavailable, attempt force recovery
+			log.Printf("[GatewayService] All %d Kiro accounts unavailable, attempting force refresh recovery...", len(unavailableKiroAccounts))
+			recovered, err := s.kiroTokenProvider.ForceRefreshWithRetry(ctx, unavailableKiroAccounts, 3)
+			if err != nil {
+				return nil, fmt.Errorf("no available accounts (force refresh recovery failed): %w", err)
+			}
+			accounts = []Account{*recovered}
+		} else if len(accounts) == 0 {
+			return nil, errors.New("no available accounts")
 		}
 	}
 
@@ -2027,6 +2048,59 @@ func hasClaudeCodePrefix(text string) bool {
 	return false
 }
 
+// matchesFilterPrefix 检查文本是否匹配任一过滤前缀
+func matchesFilterPrefix(text string) bool {
+	for _, prefix := range systemBlockFilterPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterSystemBlocksByPrefix 从 body 的 system 中移除文本匹配 systemBlockFilterPrefixes 前缀的元素
+func filterSystemBlocksByPrefix(body []byte) []byte {
+	sys := gjson.GetBytes(body, "system")
+	if !sys.Exists() {
+		return body
+	}
+
+	switch {
+	case sys.Type == gjson.String:
+		if matchesFilterPrefix(sys.Str) {
+			result, err := sjson.DeleteBytes(body, "system")
+			if err != nil {
+				return body
+			}
+			return result
+		}
+	case sys.IsArray():
+		var parsed []any
+		if err := json.Unmarshal([]byte(sys.Raw), &parsed); err != nil {
+			return body
+		}
+		filtered := make([]any, 0, len(parsed))
+		changed := false
+		for _, item := range parsed {
+			if m, ok := item.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok && matchesFilterPrefix(text) {
+					changed = true
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+		if changed {
+			result, err := sjson.SetBytes(body, "system", filtered)
+			if err != nil {
+				return body
+			}
+			return result
+		}
+	}
+	return body
+}
+
 // injectClaudeCodePrompt 在 system 开头注入 Claude Code 提示词
 // 处理 null、字符串、数组三种格式
 func injectClaudeCodePrompt(body []byte, system any) []byte {
@@ -2266,6 +2340,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		!strings.Contains(strings.ToLower(reqModel), "haiku") &&
 		!systemIncludesClaudeCodePrompt(parsed.System) {
 		body = injectClaudeCodePrompt(body, parsed.System)
+	}
+
+	// OAuth/SetupToken 账号：移除黑名单前缀匹配的 system 元素（如客户端注入的计费元数据）
+	if account.IsOAuth() {
+		body = filterSystemBlocksByPrefix(body)
 	}
 
 	// 强制执行 cache_control 块数量限制（最多 4 个）
@@ -2847,6 +2926,13 @@ func (s *GatewayService) isThinkingBlockSignatureError(respBody []byte) bool {
 	// 例如: "Expected `thinking` or `redacted_thinking`, but found `text`"
 	if strings.Contains(msg, "expected") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
 		log.Printf("[SignatureCheck] Detected thinking block type error")
+		return true
+	}
+
+	// 检测 thinking block 被修改的错误
+	// 例如: "thinking or redacted_thinking blocks in the latest assistant message cannot be modified"
+	if strings.Contains(msg, "cannot be modified") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
+		log.Printf("[SignatureCheck] Detected thinking block modification error")
 		return true
 	}
 

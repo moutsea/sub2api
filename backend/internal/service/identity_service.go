@@ -160,19 +160,25 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 // RewriteUserID 重写body中的metadata.user_id
 // 输入格式：user_{clientId}_account__session_{sessionUUID}
 // 输出格式：user_{cachedClientID}_account_{accountUUID}_session_{newHash}
+// RewriteUserID 重写body中的metadata.user_id
+// 使用 json.RawMessage 保留其他字段的原始字节，避免 thinking 块等内容被修改
 func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUID, cachedClientID string) ([]byte, error) {
 	if len(body) == 0 || accountUUID == "" || cachedClientID == "" {
 		return body, nil
 	}
 
-	// 解析JSON
-	var reqMap map[string]any
+	var reqMap map[string]json.RawMessage
 	if err := json.Unmarshal(body, &reqMap); err != nil {
 		return body, nil
 	}
 
-	metadata, ok := reqMap["metadata"].(map[string]any)
+	metadataRaw, ok := reqMap["metadata"]
 	if !ok {
+		return body, nil
+	}
+
+	var metadata map[string]any
+	if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
 		return body, nil
 	}
 
@@ -194,11 +200,15 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 	newSessionHash := generateUUIDFromSeed(seed)
 
 	// 构建新的user_id
-	// 格式: user_{cachedClientID}_account_{account_uuid}_session_{newSessionHash}
 	newUserID := fmt.Sprintf("user_%s_account_%s_session_%s", cachedClientID, accountUUID, newSessionHash)
 
 	metadata["user_id"] = newUserID
-	reqMap["metadata"] = metadata
+
+	newMetadataRaw, err := json.Marshal(metadata)
+	if err != nil {
+		return body, nil
+	}
+	reqMap["metadata"] = newMetadataRaw
 
 	return json.Marshal(reqMap)
 }
