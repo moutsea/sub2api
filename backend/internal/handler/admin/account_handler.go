@@ -267,6 +267,10 @@ func (h *AccountHandler) List(c *gin.Context) {
 				if state.ErrorMsg != "" {
 					item.KiroErrorMsg = &state.ErrorMsg
 				}
+				// When DB status conflicts with runtime status, runtime wins.
+				// This prevents split-brain where recovery succeeded in memory
+				// but the async DB update failed silently.
+				reconcileKiroStatus(item.Account, state)
 			}
 		}
 
@@ -304,6 +308,7 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 			if state.ErrorMsg != "" {
 				result.KiroErrorMsg = &state.ErrorMsg
 			}
+			reconcileKiroStatus(result.Account, state)
 		}
 	}
 
@@ -1547,4 +1552,31 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	}
 
 	response.Success(c, results)
+}
+
+// reconcileKiroStatus overrides the DTO status/error_message with the in-memory
+// runtime state when they conflict. The runtime state is authoritative because
+// recovery may have succeeded in memory while the async DB write failed.
+func reconcileKiroStatus(acc *dto.Account, state *service.KiroTokenState) {
+	if acc == nil || state == nil {
+		return
+	}
+
+	// Map runtime status to DB-equivalent status
+	var effectiveStatus string
+	var effectiveErrMsg string
+	switch state.Status {
+	case service.KiroTokenStatusActive, service.KiroTokenStatusCooldown:
+		effectiveStatus = service.StatusActive
+	case service.KiroTokenStatusBanned, service.KiroTokenStatusExhausted:
+		effectiveStatus = service.StatusError
+		effectiveErrMsg = state.ErrorMsg
+	default:
+		return
+	}
+
+	if acc.Status != effectiveStatus {
+		acc.Status = effectiveStatus
+		acc.ErrorMessage = effectiveErrMsg
+	}
 }

@@ -35,7 +35,7 @@ const (
 	KiroRefreshErrorNetwork                               // Network error, don't change status
 	KiroRefreshErrorBanned                                // Account banned, mark as banned
 	KiroRefreshErrorSuspended                             // Account suspended, mark as banned
-	KiroRefreshErrorExpired                               // Refresh token expired, mark as banned
+	KiroRefreshErrorExpired                               // Refresh token expired (currently unused — 401/invalid_grant treated as Temporary)
 	KiroRefreshErrorExhausted                             // Quota exhausted, mark as exhausted
 	KiroRefreshErrorRateLimit                             // Rate limited, enter cooldown
 	KiroRefreshErrorTemporary                             // Temporary error, enter cooldown
@@ -451,13 +451,16 @@ func (p *KiroTokenProvider) classifyRefreshError(err error) KiroRefreshErrorType
 		return KiroRefreshErrorNetwork
 	}
 
-	// Refresh endpoint 401 — refresh token is invalid or expired.
-	// "bad credentials" means permanently banned; plain 401 means token rotated/expired.
+	// Refresh endpoint 401 — refresh token may be invalid or expired.
+	// "bad credentials" means permanently banned.
+	// Other 401s (e.g. token rotation race, transient auth issue) are treated as
+	// temporary so the account enters cooldown instead of being permanently disabled.
+	// The dbErrorRecoveryLoop will retry with the latest refresh_token from DB.
 	if strings.Contains(errMsg, "status 401") || (strings.Contains(errMsg, "401") && strings.Contains(errMsg, "unauthorized")) {
 		if strings.Contains(errMsg, "bad credentials") {
 			return KiroRefreshErrorBanned
 		}
-		return KiroRefreshErrorExpired
+		return KiroRefreshErrorTemporary
 	}
 
 	// Account suspended
@@ -465,10 +468,12 @@ func (p *KiroTokenProvider) classifyRefreshError(err error) KiroRefreshErrorType
 		return KiroRefreshErrorSuspended
 	}
 
-	// Refresh token expired or invalid
+	// Refresh token expired or invalid — treat as temporary to allow recovery.
+	// invalid_grant often means the refresh token was rotated by a concurrent request
+	// and the DB already has the new one; dbErrorRecoveryLoop will pick it up.
 	if strings.Contains(errMsg, "invalid_grant") ||
 		(strings.Contains(errMsg, "refresh token") && strings.Contains(errMsg, "expired")) {
-		return KiroRefreshErrorExpired
+		return KiroRefreshErrorTemporary
 	}
 
 	// Rate limit - 429
@@ -1029,8 +1034,10 @@ func (p *KiroTokenProvider) attemptRecovery(accountID int64) {
 	// Clear backoff
 	p.refreshBackoff.Delete(accountID)
 
-	// Update database
-	go p.updateAccountCredentials(accountID, tokenInfo)
+	// Update database synchronously — attemptRecovery runs in a background goroutine,
+	// so blocking is fine. Async update here caused DB status to remain "error" while
+	// the in-memory state was already "active", leading to a persistent split-brain.
+	p.updateAccountCredentials(accountID, tokenInfo)
 
 	log.Printf("[KiroToken] Account %d recovered successfully", accountID)
 }
