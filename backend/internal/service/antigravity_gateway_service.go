@@ -84,6 +84,7 @@ func logPrefix(sessionID, accountName string) string {
 
 // Antigravity 直接支持的模型（精确匹配透传）
 var antigravitySupportedModels = map[string]bool{
+	"claude-opus-4-6-thinking":   true,
 	"claude-opus-4-5-thinking":   true,
 	"claude-sonnet-4-5":          true,
 	"claude-sonnet-4-5-thinking": true,
@@ -109,6 +110,7 @@ var antigravityPrefixMapping = []struct {
 	{"claude-3-5-sonnet", "claude-sonnet-4-5"},       // 旧版 claude-3-5-sonnet-xxx
 	{"claude-sonnet-4-5", "claude-sonnet-4-5"},       // claude-sonnet-4-5-xxx
 	{"claude-haiku-4-5", "claude-sonnet-4-5"},        // claude-haiku-4-5-xxx → sonnet
+	{"claude-opus-4-6", "claude-opus-4-6-thinking"},  // claude-opus-4-6-xxx → thinking
 	{"claude-opus-4-5", "claude-opus-4-5-thinking"},  // claude-opus-4-5-xxx → thinking
 	{"claude-3-haiku", "claude-sonnet-4-5"},          // 旧版 claude-3-haiku-xxx → sonnet
 	{"claude-sonnet-4", "claude-sonnet-4-5"},
@@ -598,6 +600,19 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 
 	originalModel := claudeReq.Model
 	mappedModel := s.getMappedModel(account, claudeReq.Model)
+
+	// [FIX] 当客户端启用 thinking 但 mappedModel 不是 -thinking 变体时，自动升级
+	// Antigravity 上游只有 -thinking 模型才会返回 thinking 内容
+	if claudeReq.Thinking != nil && claudeReq.Thinking.Type == "enabled" {
+		if strings.HasPrefix(mappedModel, "claude-") && !strings.HasSuffix(mappedModel, "-thinking") {
+			thinkingModel := mappedModel + "-thinking"
+			if antigravitySupportedModels[thinkingModel] {
+				log.Printf("[antigravity-Forward] Auto-upgrading model for thinking: %s → %s", mappedModel, thinkingModel)
+				mappedModel = thinkingModel
+			}
+		}
+	}
+
 	quotaScope, _ := resolveAntigravityQuotaScope(originalModel)
 
 	// 获取 access_token
@@ -618,6 +633,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		proxyURL = account.Proxy.URL()
 	}
 
+	// [FIX] 清除该账号的签名缓存，防止跨会话签名污染导致 400 错误
+	antigravity.ClearThoughtSignature(account.ID)
+
 	// Sanitize thinking blocks (clean cache_control and flatten history thinking)
 	sanitizeThinkingBlocks(&claudeReq)
 
@@ -625,6 +643,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// Antigravity 上游要求必须包含身份提示词，否则会返回 429
 	transformOpts := s.getClaudeTransformOptions(ctx)
 	transformOpts.EnableIdentityPatch = true // 强制启用，Antigravity 上游必需
+	transformOpts.AccountID = account.ID
 
 	// 转换 Claude 请求为 Gemini 格式
 	geminiBody, err := antigravity.TransformClaudeToGeminiWithOptions(&claudeReq, projectID, mappedModel, transformOpts)
@@ -913,7 +932,9 @@ urlFallbackLoop:
 					// Opus 等只有 thinking 版本的模型：保持后缀
 				}
 
-				retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, retryMappedModel, s.getClaudeTransformOptions(ctx))
+				retryOpts := s.getClaudeTransformOptions(ctx)
+				retryOpts.AccountID = account.ID
+				retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, retryMappedModel, retryOpts)
 				if txErr != nil {
 					continue
 				}
@@ -1037,7 +1058,7 @@ urlFallbackLoop:
 	var firstTokenMs *int
 	if claudeReq.Stream {
 		// 客户端要求流式，直接透传转换
-		streamRes, err := s.handleClaudeStreamingResponse(c, resp, startTime, originalModel)
+		streamRes, err := s.handleClaudeStreamingResponse(c, resp, startTime, originalModel, account.ID)
 		if err != nil {
 			log.Printf("%s status=stream_error error=%v", prefix, err)
 			return nil, err
@@ -1046,7 +1067,7 @@ urlFallbackLoop:
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		// 客户端要求非流式，收集流式响应后转换返回
-		streamRes, err := s.handleClaudeStreamToNonStreaming(c, resp, startTime, originalModel)
+		streamRes, err := s.handleClaudeStreamToNonStreaming(c, resp, startTime, originalModel, account.ID)
 		if err != nil {
 			log.Printf("%s status=stream_collect_error error=%v", prefix, err)
 			return nil, err
@@ -1080,6 +1101,12 @@ func isSignatureRelatedError(respBody []byte) bool {
 	// Also detect thinking block structural errors:
 	// "Expected `thinking` or `redacted_thinking`, but found `text`"
 	if strings.Contains(msg, "expected") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
+		return true
+	}
+
+	// Detect thinking block modification errors:
+	// "thinking or redacted_thinking blocks in the latest assistant message cannot be modified"
+	if strings.Contains(msg, "cannot be modified") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
 		return true
 	}
 
@@ -2753,7 +2780,7 @@ func (s *AntigravityGatewayService) writeGoogleError(c *gin.Context, status int,
 
 // handleClaudeStreamToNonStreaming 收集上游流式响应，转换为 Claude 非流式格式返回
 // 用于处理客户端非流式请求但上游只支持流式的情况
-func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*antigravityStreamResult, error) {
+func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, accountID int64) (*antigravityStreamResult, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
 	if s.settingService.cfg != nil && s.settingService.cfg.Gateway.MaxLineSize > 0 {
@@ -2913,7 +2940,7 @@ returnResponse:
 	}
 
 	// 转换 Gemini 响应为 Claude 格式
-	claudeResp, agUsage, err := antigravity.TransformGeminiToClaude(geminiBody, originalModel)
+	claudeResp, agUsage, err := antigravity.TransformGeminiToClaude(geminiBody, originalModel, accountID)
 	if err != nil {
 		log.Printf("[antigravity-Forward] transform_error error=%v body=%s", err, string(geminiBody))
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
@@ -2933,7 +2960,7 @@ returnResponse:
 }
 
 // handleClaudeStreamingResponse 处理 Claude 流式响应（Gemini SSE → Claude SSE 转换）
-func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*antigravityStreamResult, error) {
+func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, accountID int64) (*antigravityStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -2945,7 +2972,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 		return nil, errors.New("streaming not supported")
 	}
 
-	processor := antigravity.NewStreamingProcessor(originalModel)
+	processor := antigravity.NewStreamingProcessor(originalModel, accountID)
 	var firstTokenMs *int
 	// 使用 Scanner 并限制单行大小，避免 ReadString 无上限导致 OOM
 	scanner := bufio.NewScanner(resp.Body)
