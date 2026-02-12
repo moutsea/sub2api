@@ -722,6 +722,9 @@ type StreamEventConverter struct {
 
 	// Tool name restoration map (shortened -> original)
 	toolNameReverseMap map[string]string
+
+	// Content block index offset for injected blocks (e.g. web search)
+	contentBlockOffset int
 }
 
 // NewStreamEventConverter creates a new converter
@@ -772,6 +775,12 @@ func (c *StreamEventConverter) SetCacheTokens(cacheCreation, cacheRead int) {
 	c.cacheReadTokens = cacheRead
 }
 
+// SetContentBlockOffset sets the starting index offset for content blocks.
+// Used when web search blocks are injected before the CW response stream.
+func (c *StreamEventConverter) SetContentBlockOffset(offset int) {
+	c.contentBlockOffset = offset
+}
+
 // ConvertEvent converts a StreamEvent to Claude SSE events
 func (c *StreamEventConverter) ConvertEvent(e StreamEvent) []ClaudeSSEEvent {
 	switch e.Type {
@@ -811,19 +820,20 @@ func (c *StreamEventConverter) ConvertEvent(e StreamEvent) []ClaudeSSEEvent {
 }
 
 func (c *StreamEventConverter) handleBlockStart(e StreamEvent) []ClaudeSSEEvent {
+	// Apply offset for injected blocks (e.g. web search)
+	adjustedIndex := e.Index + uint32(c.contentBlockOffset)
+
 	switch e.BlockType.Kind {
 	case BlockText:
-		idx := e.Index
-		c.activeTextBlockIndex = &idx
+		c.activeTextBlockIndex = &adjustedIndex
 
 	case BlockToolUse:
 		c.sawToolUse = true
-		c.toolIDToBlockIndex[e.BlockType.ToolID] = e.Index
-		c.blockIndexToToolID[e.Index] = e.BlockType.ToolID
+		c.toolIDToBlockIndex[e.BlockType.ToolID] = adjustedIndex
+		c.blockIndexToToolID[adjustedIndex] = e.BlockType.ToolID
 
 	case BlockThinking:
-		idx := e.Index
-		c.activeThinkingBlockIndex = &idx
+		c.activeThinkingBlockIndex = &adjustedIndex
 	}
 
 	// Restore original tool name if shortened
@@ -832,7 +842,7 @@ func (c *StreamEventConverter) handleBlockStart(e StreamEvent) []ClaudeSSEEvent 
 		blockType.ToolName = c.restoreToolName(blockType.ToolName)
 	}
 
-	return []ClaudeSSEEvent{BuildClaudeContentBlockStart(int(e.Index), blockType)}
+	return []ClaudeSSEEvent{BuildClaudeContentBlockStart(int(adjustedIndex), blockType)}
 }
 
 func (c *StreamEventConverter) handleTextDelta(e StreamEvent) []ClaudeSSEEvent {
@@ -872,18 +882,20 @@ func (c *StreamEventConverter) handleToolInputDelta(e StreamEvent) []ClaudeSSEEv
 }
 
 func (c *StreamEventConverter) handleBlockStop(e StreamEvent) []ClaudeSSEEvent {
-	if c.activeTextBlockIndex != nil && *c.activeTextBlockIndex == e.Index {
+	adjustedIndex := e.Index + uint32(c.contentBlockOffset)
+
+	if c.activeTextBlockIndex != nil && *c.activeTextBlockIndex == adjustedIndex {
 		c.activeTextBlockIndex = nil
 	}
-	if c.activeThinkingBlockIndex != nil && *c.activeThinkingBlockIndex == e.Index {
+	if c.activeThinkingBlockIndex != nil && *c.activeThinkingBlockIndex == adjustedIndex {
 		c.activeThinkingBlockIndex = nil
 	}
-	if toolID, ok := c.blockIndexToToolID[e.Index]; ok {
-		delete(c.blockIndexToToolID, e.Index)
+	if toolID, ok := c.blockIndexToToolID[adjustedIndex]; ok {
+		delete(c.blockIndexToToolID, adjustedIndex)
 		delete(c.toolIDToBlockIndex, toolID)
 	}
 
-	return []ClaudeSSEEvent{BuildClaudeContentBlockStop(int(e.Index))}
+	return []ClaudeSSEEvent{BuildClaudeContentBlockStop(int(adjustedIndex))}
 }
 
 // BuildInitialEvents builds the initial SSE events for a stream

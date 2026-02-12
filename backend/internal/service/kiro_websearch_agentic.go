@@ -18,7 +18,32 @@ import (
 const (
 	// MaxWebSearchIterations maximum web_search iteration count
 	MaxWebSearchIterations = 3
+
+	// ginKeyWebSearchEvents is the gin.Context key for storing web search events
+	ginKeyWebSearchEvents = "web_search_events"
 )
+
+// WebSearchEvent records a single web search execution for response injection
+type WebSearchEvent struct {
+	ID      string              // tool_use ID (server_tool_use)
+	Query   string              // search query
+	Results []WebSearchResultItem // search results
+}
+
+// SetWebSearchEvents stores web search events on gin.Context for response injection
+func SetWebSearchEvents(c *gin.Context, events []WebSearchEvent) {
+	c.Set(ginKeyWebSearchEvents, events)
+}
+
+// GetWebSearchEvents retrieves web search events from gin.Context
+func GetWebSearchEvents(c *gin.Context) []WebSearchEvent {
+	val, exists := c.Get(ginKeyWebSearchEvents)
+	if !exists {
+		return nil
+	}
+	events, _ := val.([]WebSearchEvent)
+	return events
+}
 
 // filterWebSearchTools removes Claude's built-in web_search tools from a ClaudeRequest.
 // It filters both the Tools list AND any WebSearch tool_use/tool_result content blocks
@@ -56,7 +81,7 @@ func filterWebSearchTools(req *kiro.ClaudeRequest) []byte {
 
 			blockType, _ := blockMap["type"].(string)
 
-			// Remove WebSearch tool_use blocks
+			// Remove WebSearch tool_use blocks, convert to text to preserve message structure
 			if blockType == "tool_use" {
 				name, _ := blockMap["name"].(string)
 				if IsWebSearchTool(name) {
@@ -64,14 +89,32 @@ func filterWebSearchTools(req *kiro.ClaudeRequest) []byte {
 					if id != "" {
 						removedToolUseIDs[id] = true
 					}
+					query := ""
+					if input, ok := blockMap["input"].(map[string]any); ok {
+						query, _ = input["query"].(string)
+					}
+					if query != "" {
+						filteredContent = append(filteredContent, map[string]any{
+							"type": "text",
+							"text": fmt.Sprintf("<web_search_query>%s</web_search_query>", query),
+						})
+					}
 					continue
 				}
 			}
 
-			// Remove tool_result blocks whose tool_use was removed
+			// Convert tool_result blocks (whose tool_use was removed) to text blocks
+			// to preserve search results in context
 			if blockType == "tool_result" {
 				toolUseID, _ := blockMap["tool_use_id"].(string)
 				if removedToolUseIDs[toolUseID] {
+					text := extractToolResultText(blockMap["content"])
+					if text != "" {
+						filteredContent = append(filteredContent, map[string]any{
+							"type": "text",
+							"text": fmt.Sprintf("<web_search_results>\n%s</web_search_results>", text),
+						})
+					}
 					continue
 				}
 			}
@@ -95,6 +138,33 @@ func filterWebSearchTools(req *kiro.ClaudeRequest) []byte {
 	filteredReq.Messages = filteredMessages
 	body, _ := json.Marshal(filteredReq)
 	return body
+}
+
+// extractToolResultText extracts text content from a tool_result content field.
+// Content can be a string or []any of content blocks.
+func extractToolResultText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []any:
+		var parts []string
+		for _, item := range c {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := itemMap["type"].(string); t == "text" {
+				if text, ok := itemMap["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	if content != nil {
+		return fmt.Sprintf("%v", content)
+	}
+	return ""
 }
 
 // isClaudeBuiltinWebSearch checks if the tool is Claude's built-in web_search
@@ -150,6 +220,7 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 	currentReq := claudeReq
 	iteration := 0
 	parser := &KiroResponseParser{}
+	var allSearchEvents []WebSearchEvent
 
 	for iteration < MaxWebSearchIterations {
 		iteration++
@@ -202,13 +273,15 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 				return s.Forward(ctx, c, account, filterWebSearchTools(claudeReq))
 			}
 			// After web_search loop: need to filter and re-execute with stream setting restored
+			SetWebSearchEvents(c, allSearchEvents)
 			finalReq := *currentReq
 			finalReq.Stream = claudeReq.Stream
 			return s.Forward(ctx, c, account, filterWebSearchTools(&finalReq))
 		}
 
 		// Execute web_search
-		toolResults := ExecuteWebSearch(ctx, webSearchCalls)
+		toolResults, searchEvents := ExecuteWebSearch(ctx, webSearchCalls)
+		allSearchEvents = append(allSearchEvents, searchEvents...)
 		if len(toolResults) == 0 {
 			if iteration == 1 {
 				return s.Forward(ctx, c, account, filterWebSearchTools(claudeReq))
@@ -240,6 +313,7 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 	}
 
 	// Max iterations reached
+	SetWebSearchEvents(c, allSearchEvents)
 	finalReq := *currentReq
 	finalReq.Stream = claudeReq.Stream
 	return s.Forward(ctx, c, account, filterWebSearchTools(&finalReq))
@@ -251,6 +325,7 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 	currentReq := claudeReq
 	iteration := 0
 	parser := &KiroResponseParser{}
+	var allSearchEvents []WebSearchEvent
 
 	for iteration < MaxWebSearchIterations {
 		iteration++
@@ -303,19 +378,22 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 				streamReq.Stream = true
 				return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 			}
+			SetWebSearchEvents(c, allSearchEvents)
 			streamReq := *currentReq
 			streamReq.Stream = true
 			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 		}
 
 		// Execute web_search
-		toolResults := ExecuteWebSearch(ctx, webSearchCalls)
+		toolResults, searchEvents := ExecuteWebSearch(ctx, webSearchCalls)
+		allSearchEvents = append(allSearchEvents, searchEvents...)
 		if len(toolResults) == 0 {
 			if iteration == 1 {
 				streamReq := *claudeReq
 				streamReq.Stream = true
 				return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 			}
+			SetWebSearchEvents(c, allSearchEvents)
 			streamReq := *currentReq
 			streamReq.Stream = true
 			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
@@ -343,6 +421,7 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 	}
 
 	// Max iterations reached, return streaming response
+	SetWebSearchEvents(c, allSearchEvents)
 	streamReq := *currentReq
 	streamReq.Stream = true
 	return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))

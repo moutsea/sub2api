@@ -577,6 +577,26 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	}
 	flusher.Flush()
 
+	// Inject web search events (server_tool_use + web_search_tool_result) if present
+	if wsEvents := GetWebSearchEvents(c); len(wsEvents) > 0 {
+		blockIndex := 0
+		for _, wsEvt := range wsEvents {
+			wsSSEEvents := buildWebSearchSSEEvents(wsEvt, blockIndex)
+			for _, evt := range wsSSEEvents {
+				sseStr, err := kiro.FormatClaudeSSE(evt)
+				if err != nil {
+					continue
+				}
+				if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
+					return nil, err
+				}
+			}
+			blockIndex += 2 // each search produces 2 blocks (server_tool_use + web_search_tool_result)
+		}
+		converter.SetContentBlockOffset(blockIndex)
+		flusher.Flush()
+	}
+
 	var firstTokenMs *int
 	var credits float64
 	var contextPct float64
@@ -772,6 +792,11 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	// Build Claude response with accurate input tokens
 	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, accurateInputTokens, parsedResp)
 
+	// Inject web search blocks (server_tool_use + web_search_tool_result) if present
+	if wsEvents := GetWebSearchEvents(c); len(wsEvents) > 0 {
+		injectWebSearchContentBlocks(claudeResp, wsEvents)
+	}
+
 	// Serialize and send
 	respJSON, err := json.Marshal(claudeResp)
 	if err != nil {
@@ -788,6 +813,134 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	}
 
 	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
+}
+
+// buildWebSearchSSEEvents builds SSE events for a single web search (server_tool_use + web_search_tool_result)
+func buildWebSearchSSEEvents(evt WebSearchEvent, startIndex int) []kiro.ClaudeSSEEvent {
+	toolUseIndex := startIndex
+	resultIndex := startIndex + 1
+
+	// Build search result content blocks
+	var resultContent []map[string]any
+	for _, r := range evt.Results {
+		item := map[string]any{
+			"type":  "web_search_result",
+			"url":   r.URL,
+			"title": r.Title,
+		}
+		if r.EncryptedContent != "" {
+			item["encrypted_content"] = r.EncryptedContent
+		}
+		if r.PageContent != "" {
+			item["page_content"] = r.PageContent
+		}
+		resultContent = append(resultContent, item)
+	}
+
+	inputJSON, _ := json.Marshal(map[string]string{"query": evt.Query})
+
+	return []kiro.ClaudeSSEEvent{
+		// content_block_start: server_tool_use
+		{
+			EventType: "content_block_start",
+			Data: map[string]any{
+				"type":  "content_block_start",
+				"index": toolUseIndex,
+				"content_block": map[string]any{
+					"type":  "server_tool_use",
+					"id":    evt.ID,
+					"name":  "web_search",
+					"input": map[string]any{},
+				},
+			},
+		},
+		// content_block_delta: input_json_delta
+		{
+			EventType: "content_block_delta",
+			Data: map[string]any{
+				"type":  "content_block_delta",
+				"index": toolUseIndex,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": string(inputJSON),
+				},
+			},
+		},
+		// content_block_stop: server_tool_use
+		{
+			EventType: "content_block_stop",
+			Data: map[string]any{
+				"type":  "content_block_stop",
+				"index": toolUseIndex,
+			},
+		},
+		// content_block_start: web_search_tool_result
+		{
+			EventType: "content_block_start",
+			Data: map[string]any{
+				"type":  "content_block_start",
+				"index": resultIndex,
+				"content_block": map[string]any{
+					"type":        "web_search_tool_result",
+					"tool_use_id": evt.ID,
+					"content":     resultContent,
+				},
+			},
+		},
+		// content_block_stop: web_search_tool_result
+		{
+			EventType: "content_block_stop",
+			Data: map[string]any{
+				"type":  "content_block_stop",
+				"index": resultIndex,
+			},
+		},
+	}
+}
+
+// injectWebSearchContentBlocks prepends server_tool_use + web_search_tool_result blocks
+// into a non-streaming Claude response's content array.
+func injectWebSearchContentBlocks(resp map[string]any, events []WebSearchEvent) {
+	existingContent, _ := resp["content"].([]map[string]any)
+
+	var injected []map[string]any
+	for _, evt := range events {
+		// server_tool_use block
+		injected = append(injected, map[string]any{
+			"type":  "server_tool_use",
+			"id":    evt.ID,
+			"name":  "web_search",
+			"input": map[string]string{"query": evt.Query},
+		})
+
+		// web_search_tool_result block
+		var resultContent []map[string]any
+		for _, r := range evt.Results {
+			item := map[string]any{
+				"type":  "web_search_result",
+				"url":   r.URL,
+				"title": r.Title,
+			}
+			if r.EncryptedContent != "" {
+				item["encrypted_content"] = r.EncryptedContent
+			}
+			if r.PageContent != "" {
+				item["page_content"] = r.PageContent
+			}
+			resultContent = append(resultContent, item)
+		}
+		injected = append(injected, map[string]any{
+			"type":        "web_search_tool_result",
+			"tool_use_id": evt.ID,
+			"content":     resultContent,
+		})
+	}
+
+	// Prepend web search blocks before existing content
+	combined := make([]map[string]any, 0, len(injected)+len(existingContent))
+	combined = append(combined, injected...)
+	combined = append(combined, existingContent...)
+	resp["content"] = combined
 }
 
 func (s *KiroGatewayService) shouldRetryUpstreamError(statusCode int) bool {

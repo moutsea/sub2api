@@ -94,14 +94,15 @@ type WebSearchToolUse struct {
 	Query string
 }
 
-// ExecuteWebSearch executes web_search and returns results
-func ExecuteWebSearch(ctx context.Context, calls []WebSearchToolUse) []map[string]any {
+// ExecuteWebSearch executes web_search and returns tool results + events for response injection
+func ExecuteWebSearch(ctx context.Context, calls []WebSearchToolUse) ([]map[string]any, []WebSearchEvent) {
 	ws := GetWebSearchService()
 	if ws == nil {
-		return nil
+		return nil, nil
 	}
 
 	var results []map[string]any
+	var events []WebSearchEvent
 	for _, call := range calls {
 		if call.Query == "" {
 			continue
@@ -126,9 +127,17 @@ func ExecuteWebSearch(ctx context.Context, calls []WebSearchToolUse) []map[strin
 			"tool_use_id": call.ID,
 			"content":     formattedResult,
 		})
+
+		// Record event for response injection (use srvtoolu_ prefix to match Claude API)
+		srvToolID := "srvtoolu_" + call.ID
+		events = append(events, WebSearchEvent{
+			ID:      srvToolID,
+			Query:   call.Query,
+			Results: searchResult.Results,
+		})
 	}
 
-	return results
+	return results, events
 }
 
 // BuildFollowUpRequest builds a follow-up request with search results
