@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -234,22 +236,7 @@ func (p *AntigravityTokenProvider) tryRecoverAccount(ctx context.Context, accoun
 		return false
 	}
 
-	// 3. Restore account
-	if isDeleted {
-		if err := p.accountRepo.RestoreAccount(ctx, account.ID); err != nil {
-			log.Printf("[AntigravityToken] Account %d (%s) restore failed: %v", account.ID, account.Name, err)
-			return false
-		}
-	} else {
-		account.Status = StatusActive
-		account.ErrorMessage = ""
-		if err := p.accountRepo.Update(ctx, account); err != nil {
-			log.Printf("[AntigravityToken] Account %d (%s) status update failed: %v", account.ID, account.Name, err)
-			return false
-		}
-	}
-
-	// 4. Update credentials
+	// 3. Restore account + update credentials in one step
 	newCredentials := p.antigravityOAuthService.BuildAccountCredentials(tokenInfo)
 	for k, v := range account.Credentials {
 		if _, exists := newCredentials[k]; !exists {
@@ -257,8 +244,23 @@ func (p *AntigravityTokenProvider) tryRecoverAccount(ctx context.Context, accoun
 		}
 	}
 	account.Credentials = newCredentials
-	if err := p.accountRepo.Update(ctx, account); err != nil {
-		log.Printf("[AntigravityToken] Account %d (%s) credential update failed: %v", account.ID, account.Name, err)
+
+	if isDeleted {
+		if err := p.accountRepo.RestoreAccount(ctx, account.ID); err != nil {
+			log.Printf("[AntigravityToken] Account %d (%s) restore failed: %v", account.ID, account.Name, err)
+			return false
+		}
+		// Update credentials after restore
+		if err := p.accountRepo.Update(ctx, account); err != nil {
+			log.Printf("[AntigravityToken] Account %d (%s) credential update failed: %v", account.ID, account.Name, err)
+		}
+	} else {
+		account.Status = StatusActive
+		account.ErrorMessage = ""
+		if err := p.accountRepo.Update(ctx, account); err != nil {
+			log.Printf("[AntigravityToken] Account %d (%s) update failed: %v", account.ID, account.Name, err)
+			return false
+		}
 	}
 
 	label := "error"
@@ -286,7 +288,6 @@ func (p *AntigravityTokenProvider) testConnection(ctx context.Context, account *
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	// Wrap in v1internal format
 	wrapped := map[string]any{
 		"project":     projectID,
 		"requestId":   "recovery-test",
@@ -303,6 +304,18 @@ func (p *AntigravityTokenProvider) testConnection(ctx context.Context, account *
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL := account.Proxy.URL()
+		if proxyURL != "" {
+			if pu, err := url.Parse(proxyURL); err == nil {
+				client.Transport = &http.Transport{
+					Proxy:           http.ProxyURL(pu),
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+				}
+			}
+		}
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
