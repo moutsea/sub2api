@@ -61,11 +61,11 @@ func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfi
 		return []kiroEndpointConfig{cw, awsq}
 	}
 
-	// Dynamic selection: large context → CodeWhisperer first (supports >200K),
+	// Dynamic selection: large context → CodeWhisperer only (AWSQ doesn't support >180K),
 	// otherwise → AWSQ first (supports thinking)
 	if estimatedTokens > kiroAWSQContextLimit {
-		log.Printf("[kiro-endpoints] dynamic=CodeWhisperer_first reason=large_context tokens=%d limit=%d", estimatedTokens, kiroAWSQContextLimit)
-		return []kiroEndpointConfig{cw, awsq}
+		log.Printf("[kiro-endpoints] dynamic=CodeWhisperer_only reason=large_context tokens=%d limit=%d", estimatedTokens, kiroAWSQContextLimit)
+		return []kiroEndpointConfig{cw}
 	}
 
 	// Default: AWSQ first (supports thinking)
@@ -195,14 +195,19 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		return nil, fmt.Errorf("get access_token failed: %w", err)
 	}
 
-	// Get profile ARN
-	profileArn := account.GetKiroProfileArn()
-
 	// Proxy URL
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+
+	// apikey accounts: direct Claude API passthrough (no CodeWhisperer transform)
+	if account.IsKiroApiKey() {
+		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime)
+	}
+
+	// Get profile ARN
+	profileArn := account.GetKiroProfileArn()
 
 	// Transform Claude request to CodeWhisperer format
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
@@ -350,6 +355,13 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				_ = resp.Body.Close()
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 				log.Printf("%s endpoint=%s status=400 bad_request, trying next endpoint body=%s", prefix, ep.Name, truncateForLog(respBody, 500))
+				cwToolCount := 0
+				if cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext != nil {
+					cwToolCount = len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools)
+				}
+				log.Printf("%s endpoint=%s status=400 debug: request_body_size=%d model=%s messages=%d tools=%d history_entries=%d cw_tools=%d",
+					prefix, ep.Name, len(reqBody), originalModel, len(claudeReq.Messages), len(claudeReq.Tools),
+					len(cwReq.ConversationState.History), cwToolCount)
 				lastErr = fmt.Errorf("endpoint %s: 400 %s", ep.Name, extractKiroErrorMessage(respBody))
 				break // try next endpoint
 			}
@@ -952,7 +964,7 @@ func sleepKiroBackoffWithContext(ctx context.Context, attempt int) bool {
 }
 
 // TestConnection tests Kiro account connection
-func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Account) (*TestConnectionResult, error) {
+func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
 	// Get token
 	if s.tokenProvider == nil {
 		return nil, errors.New("kiro token provider not configured")
@@ -962,12 +974,21 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		return nil, fmt.Errorf("get access_token failed: %w", err)
 	}
 
+	// apikey accounts: test connection directly against base_url
+	if account.IsKiroApiKey() {
+		return s.testClaudeAPIConnection(ctx, account, accessToken, modelID)
+	}
+
 	// Get profile ARN
 	profileArn := account.GetKiroProfileArn()
 
 	// Build test request
+	testModel := modelID
+	if testModel == "" {
+		testModel = "claude-3-5-sonnet-20241022"
+	}
 	testClaudeReq := &kiro.ClaudeRequest{
-		Model: "claude-3-5-sonnet-20241022",
+		Model: testModel,
 		Messages: []kiro.ClaudeMessage{
 			{
 				Role:    "user",
@@ -1061,4 +1082,270 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("all endpoints failed")
+}
+
+// forwardClaudeAPIRequest forwards Claude API requests directly to a base_url endpoint (apikey accounts).
+// No CodeWhisperer transformation — request and response are Claude API format.
+func (s *KiroGatewayService) forwardClaudeAPIRequest(
+	ctx context.Context, c *gin.Context, account *Account,
+	claudeReq *kiro.ClaudeRequest, body []byte,
+	apiKey, proxyURL, originalModel string,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	prefix := fmt.Sprintf("[kiro-apikey-Forward] account=%s", account.Name)
+
+	baseURL := account.GetKiroBaseURL()
+	if baseURL == "" {
+		return nil, fmt.Errorf("base_url is empty for apikey account %d", account.ID)
+	}
+	targetURL := strings.TrimRight(baseURL, "/") + "/v1/messages"
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	log.Printf("%s url=%s model=%s stream=%v body_size=%d", prefix, targetURL, originalModel, claudeReq.Stream, len(body))
+
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Handle error responses
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		log.Printf("%s status=%d body=%s", prefix, resp.StatusCode, truncateForLog(respBody, 1000))
+
+		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
+		}
+		return nil, s.writeMappedClaudeError(c, account, resp.StatusCode, resp.Header.Get("x-request-id"), respBody)
+	}
+
+	requestID := resp.Header.Get("x-request-id")
+	if requestID == "" {
+		requestID = resp.Header.Get("request-id")
+	}
+	if requestID != "" {
+		c.Header("x-request-id", requestID)
+	}
+
+	inputTokens := kiro.EstimateInputTokens(claudeReq)
+
+	if claudeReq.Stream {
+		// Stream: pipe SSE directly to client
+		c.Header("Content-Type", "text/event-stream; charset=utf-8")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			return nil, errors.New("streaming not supported")
+		}
+
+		var usage ClaudeUsage
+		var firstTokenMs *int
+		buf := make([]byte, 4096)
+
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if firstTokenMs == nil {
+					ms := int(time.Since(startTime).Milliseconds())
+					firstTokenMs = &ms
+				}
+
+				chunk := buf[:n]
+				// Extract usage from SSE data lines
+				s.extractClaudeSSEUsage(chunk, &usage)
+
+				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
+					break
+				}
+				flusher.Flush()
+			}
+			if readErr != nil {
+				break
+			}
+		}
+
+		if usage.InputTokens == 0 {
+			usage.InputTokens = inputTokens
+		}
+
+		return &ForwardResult{
+			RequestID:    requestID,
+			Usage:        usage,
+			Model:        originalModel,
+			Stream:       true,
+			Duration:     time.Since(startTime),
+			FirstTokenMs: firstTokenMs,
+		}, nil
+	}
+
+	// Non-stream: read and pipe JSON response
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	ms := int(time.Since(startTime).Milliseconds())
+
+	c.Data(http.StatusOK, "application/json", respBody)
+
+	// Extract usage from response
+	usage := s.extractClaudeJSONUsage(respBody, inputTokens)
+
+	return &ForwardResult{
+		RequestID:    requestID,
+		Usage:        usage,
+		Model:        originalModel,
+		Stream:       false,
+		Duration:     time.Since(startTime),
+		FirstTokenMs: &ms,
+	}, nil
+}
+
+// extractClaudeSSEUsage extracts usage info from Claude SSE stream chunks.
+// message_start: usage is at message.usage.input_tokens
+// message_delta: usage is at usage.output_tokens
+func (s *KiroGatewayService) extractClaudeSSEUsage(chunk []byte, usage *ClaudeUsage) {
+	lines := bytes.Split(chunk, []byte("\n"))
+	for _, line := range lines {
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		data := line[6:]
+		var raw map[string]json.RawMessage
+		if json.Unmarshal(data, &raw) != nil {
+			continue
+		}
+		var eventType string
+		if json.Unmarshal(raw["type"], &eventType) != nil {
+			continue
+		}
+		switch eventType {
+		case "message_start":
+			var msg struct {
+				Usage struct {
+					InputTokens int `json:"input_tokens"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal(raw["message"], &msg) == nil && msg.Usage.InputTokens > 0 {
+				usage.InputTokens = msg.Usage.InputTokens
+			}
+		case "message_delta":
+			var u struct {
+				OutputTokens int `json:"output_tokens"`
+			}
+			if json.Unmarshal(raw["usage"], &u) == nil && u.OutputTokens > 0 {
+				usage.OutputTokens = u.OutputTokens
+			}
+		}
+	}
+}
+
+// extractClaudeJSONUsage extracts usage from a Claude API JSON response.
+func (s *KiroGatewayService) extractClaudeJSONUsage(body []byte, fallbackInput int) ClaudeUsage {
+	var resp struct {
+		Usage struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(body, &resp) == nil && resp.Usage.InputTokens > 0 {
+		return ClaudeUsage{
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+		}
+	}
+	return ClaudeUsage{InputTokens: fallbackInput}
+}
+
+// testClaudeAPIConnection tests connection for apikey accounts by sending a minimal request to base_url.
+func (s *KiroGatewayService) testClaudeAPIConnection(ctx context.Context, account *Account, apiKey string, modelID string) (*TestConnectionResult, error) {
+	baseURL := account.GetKiroBaseURL()
+	if baseURL == "" {
+		return nil, fmt.Errorf("base_url is empty for apikey account %d", account.ID)
+	}
+	targetURL := strings.TrimRight(baseURL, "/") + "/v1/messages"
+
+	// Pick a test model: use provided modelID, or first key from model_mapping, or default
+	testModel := modelID
+	if testModel == "" {
+		if mapping := account.GetModelMapping(); len(mapping) > 0 {
+			for k := range mapping {
+				testModel = k
+				break
+			}
+		}
+	}
+	if testModel == "" {
+		testModel = "claude-sonnet-4-20250514"
+	}
+
+	testReq := map[string]any{
+		"model":      testModel,
+		"max_tokens": 10,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+	}
+	reqBody, err := json.Marshal(testReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, truncateForLog(respBody, 500))
+	}
+
+	// Extract text from Claude API response
+	var claudeResp struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	text := string(respBody)
+	if json.Unmarshal(respBody, &claudeResp) == nil && len(claudeResp.Content) > 0 {
+		text = claudeResp.Content[0].Text
+	}
+
+	return &TestConnectionResult{
+		Text:        text,
+		MappedModel: testModel,
+	}, nil
 }

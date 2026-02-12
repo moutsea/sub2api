@@ -805,11 +805,7 @@ func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *His
 
 	// AWSQ requires non-empty content for all messages
 	if text == "" {
-		if msg.HasToolUses() {
-			text = "."
-		} else {
-			text = "I understand."
-		}
+		text = " "
 	}
 
 	assistantMsg := &HistoryAssistantMessage{
