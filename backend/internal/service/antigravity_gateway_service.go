@@ -343,6 +343,30 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		}
 
 		if resp.StatusCode >= 400 {
+			// Project 不存在：用默认 project_id 重试一次
+			if isProjectNotFoundError(resp.StatusCode, respBody) && projectID != antigravityDefaultProjectID {
+				log.Printf("[antigravity-Test] Project not found (%s), retrying with default project_id (account: %s)", projectID, account.Name)
+				var retryBody []byte
+				if strings.HasPrefix(modelID, "gemini-") {
+					retryBody, _ = s.buildGeminiTestRequest(antigravityDefaultProjectID, mappedModel)
+				} else {
+					retryBody, _ = s.buildClaudeTestRequest(ctx, antigravityDefaultProjectID, mappedModel)
+				}
+				if retryBody != nil {
+					retryReq, err := antigravity.NewAPIRequestWithURL(ctx, baseURL, "streamGenerateContent", accessToken, retryBody)
+					if err == nil {
+						retryResp, err := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency)
+						if err == nil {
+							retryRespBody, _ := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
+							_ = retryResp.Body.Close()
+							if retryResp.StatusCode < 400 {
+								text := extractTextFromSSEResponse(retryRespBody)
+								return &TestConnectionResult{Text: text, MappedModel: mappedModel}, nil
+							}
+						}
+					}
+				}
+			}
 			return nil, fmt.Errorf("API 返回 %d: %s", resp.StatusCode, string(respBody))
 		}
 
