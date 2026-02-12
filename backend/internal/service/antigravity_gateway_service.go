@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	antigravityStickySessionTTL = time.Hour
-	antigravityMaxRetries       = 3
-	antigravityRetryBaseDelay   = 1 * time.Second
-	antigravityRetryMaxDelay    = 16 * time.Second
+	antigravityStickySessionTTL    = time.Hour
+	antigravityMaxRetries          = 3
+	antigravityRetryBaseDelay      = 1 * time.Second
+	antigravityRetryMaxDelay       = 16 * time.Second
+	antigravityDefaultProjectID    = "bamboo-precept-lgxtn"
 )
 
 // isAntigravityConnectionError 判断是否为连接错误（网络超时、DNS 失败、连接拒绝）
@@ -271,6 +272,9 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 
 	// 获取 project_id（部分账户类型可能没有）
 	projectID := strings.TrimSpace(account.GetCredential("project_id"))
+	if projectID == "" {
+		projectID = antigravityDefaultProjectID
+	}
 
 	// 模型映射
 	mappedModel := s.getMappedModel(account, modelID)
@@ -626,6 +630,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 
 	// 获取 project_id（部分账户类型可能没有）
 	projectID := strings.TrimSpace(account.GetCredential("project_id"))
+	if projectID == "" {
+		projectID = antigravityDefaultProjectID
+	}
 
 	// 代理 URL
 	proxyURL := ""
@@ -1719,6 +1726,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 	// 获取 project_id（部分账户类型可能没有）
 	projectID := strings.TrimSpace(account.GetCredential("project_id"))
+	if projectID == "" {
+		projectID = antigravityDefaultProjectID
+	}
 
 	// 代理 URL
 	proxyURL := ""
@@ -2095,7 +2105,7 @@ func (s *AntigravityGatewayService) shouldRetryUpstreamError(statusCode int) boo
 
 func (s *AntigravityGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 403, 429, 529:
+	case 401, 403, 404, 429, 529:
 		return true
 	default:
 		return statusCode >= 500

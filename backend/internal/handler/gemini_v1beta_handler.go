@@ -375,7 +375,7 @@ func mapGeminiUpstreamError(statusCode int) (int, string) {
 	case 401:
 		return http.StatusBadGateway, "Upstream authentication failed, please contact administrator"
 	case 403:
-		return http.StatusBadGateway, "Upstream access forbidden, please contact administrator"
+		return http.StatusServiceUnavailable, "Upstream access forbidden, please contact administrator"
 	case 429:
 		return http.StatusTooManyRequests, "Upstream rate limit exceeded, please retry later"
 	case 529:

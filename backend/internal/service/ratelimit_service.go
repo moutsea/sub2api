@@ -131,7 +131,19 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		s.handleAuthError(ctx, account, msg)
 		shouldDisable = true
 	case 403:
-		// 禁止访问：停止调度，记录错误
+		// VALIDATION_REQUIRED: 临时封禁 10 分钟，不永久 disable
+		if strings.Contains(strings.ToLower(upstreamMsg), "validation_required") ||
+			strings.Contains(strings.ToLower(upstreamMsg), "verify your account") {
+			until := time.Now().Add(10 * time.Minute)
+			if err := s.accountRepo.SetOverloaded(ctx, account.ID, until); err != nil {
+				slog.Warn("validation_required_set_overloaded_failed", "account_id", account.ID, "error", err)
+			} else {
+				slog.Warn("account_validation_required", "account_id", account.ID, "until", until, "msg", upstreamMsg)
+			}
+			shouldDisable = true
+			break
+		}
+		// 其他 403：永久 disable
 		msg := "Access forbidden (403): account may be suspended or lack permissions"
 		if upstreamMsg != "" {
 			msg = "Access forbidden (403): " + upstreamMsg
