@@ -80,6 +80,24 @@ func NewBillingService(cfg *config.Config, pricingService *PricingService) *Bill
 // initFallbackPricing 初始化硬编码回退价格（当动态价格不可用时使用）
 // 价格单位：USD per token（与LiteLLM格式一致）
 func (s *BillingService) initFallbackPricing() {
+	// Claude Opus 4.6
+	s.fallbackPrices["claude-opus-4-6"] = &ModelPricing{
+		InputPricePerToken:         5e-6,    // $5 per MTok
+		OutputPricePerToken:        25e-6,   // $25 per MTok
+		CacheCreationPricePerToken: 6.25e-6, // $6.25 per MTok
+		CacheReadPricePerToken:     0.5e-6,  // $0.50 per MTok
+		SupportsCacheBreakdown:     false,
+	}
+
+	// Claude Opus 4.6 (1M context, input tokens > 200K)
+	s.fallbackPrices["claude-opus-4-6-1m"] = &ModelPricing{
+		InputPricePerToken:         10e-6,   // $10 per MTok
+		OutputPricePerToken:        37.5e-6, // $37.5 per MTok
+		CacheCreationPricePerToken: 12.5e-6, // $12.5 per MTok (2x standard)
+		CacheReadPricePerToken:     1e-6,    // $1.0 per MTok (2x standard)
+		SupportsCacheBreakdown:     false,
+	}
+
 	// Claude 4.5 Opus
 	s.fallbackPrices["claude-opus-4.5"] = &ModelPricing{
 		InputPricePerToken:         5e-6,    // $5 per MTok
@@ -141,6 +159,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 	// 按模型系列匹配
 	if strings.Contains(modelLower, "opus") {
+		if strings.Contains(modelLower, "4.6") || strings.Contains(modelLower, "4-6") {
+			return s.fallbackPrices["claude-opus-4-6"]
+		}
 		if strings.Contains(modelLower, "4.5") || strings.Contains(modelLower, "4-5") {
 			return s.fallbackPrices["claude-opus-4.5"]
 		}
@@ -192,11 +213,26 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	return nil, fmt.Errorf("pricing not found for model: %s", model)
 }
 
+// opus46LargeContextThreshold is the input token threshold for opus-4-6 1M pricing.
+// When total input (including cache) exceeds this, use the higher 1M context pricing.
+const opus46LargeContextThreshold = 200000
+
 // CalculateCost 计算使用费用
 func (s *BillingService) CalculateCost(model string, tokens UsageTokens, rateMultiplier float64) (*CostBreakdown, error) {
 	pricing, err := s.GetModelPricing(model)
 	if err != nil {
 		return nil, err
+	}
+
+	// Opus 4.6 1M context pricing: if total input tokens > 200K, use higher price tier
+	modelLower := strings.ToLower(model)
+	if strings.Contains(modelLower, "opus-4-6") || strings.Contains(modelLower, "opus-4.6") {
+		totalInput := tokens.InputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
+		if totalInput > opus46LargeContextThreshold {
+			if p1m := s.fallbackPrices["claude-opus-4-6-1m"]; p1m != nil {
+				pricing = p1m
+			}
+		}
 	}
 
 	breakdown := &CostBreakdown{}
