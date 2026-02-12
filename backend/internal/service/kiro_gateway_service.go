@@ -820,11 +820,13 @@ func (s *KiroGatewayService) handleUpstreamError(ctx context.Context, prefix str
 	case 401:
 		// Token expired/invalid — invalidate cached token so next request triggers refresh.
 		// Do NOT ban the account; 401 is typically a stale access token.
+		// Skip rateLimitService to prevent permanent disable.
 		errMsg := extractKiroErrorMessage(body)
 		if s.tokenProvider != nil {
 			s.tokenProvider.InvalidateToken(account.ID)
 		}
 		log.Printf("%s status=401 token_invalidated msg=%s", prefix, errMsg)
+		return
 
 	case 403:
 		// Permission error — mark banned
