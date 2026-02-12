@@ -561,13 +561,26 @@ func isModelNotFoundError(statusCode int, body []byte) bool {
 	}
 
 	bodyStr := strings.ToLower(string(body))
-	keywords := []string{"model not found", "unknown model", "not found"}
-	for _, keyword := range keywords {
+	// 排除 project/resource 相关的 404（由 isProjectNotFoundError 处理）
+	if strings.Contains(bodyStr, "project") || strings.Contains(bodyStr, "resource name") {
+		return false
+	}
+	modelKeywords := []string{"model not found", "unknown model"}
+	for _, keyword := range modelKeywords {
 		if strings.Contains(bodyStr, keyword) {
 			return true
 		}
 	}
 	return true // 404 without specific message also treated as model not found
+}
+
+// isProjectNotFoundError 检测是否为 project_id 无效的 404 错误
+func isProjectNotFoundError(statusCode int, body []byte) bool {
+	if statusCode != 404 {
+		return false
+	}
+	bodyStr := strings.ToLower(string(body))
+	return strings.Contains(bodyStr, "project") || strings.Contains(bodyStr, "resource name")
 }
 
 // Forward 转发 Claude 协议请求（Claude → Gemini 转换）
@@ -1942,6 +1955,24 @@ urlFallbackLoop:
 		// 尽早关闭原始响应体，释放连接；后续逻辑仍可能需要读取 body，因此用内存副本重新包装。
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+		// Project 不存在：用默认 project_id 重试一次
+		if isProjectNotFoundError(resp.StatusCode, respBody) && projectID != antigravityDefaultProjectID {
+			log.Printf("[Antigravity] Project not found (%s), retrying with default project_id (account: %s)", projectID, account.Name)
+			retryWrapped, err := s.wrapV1InternalRequest(antigravityDefaultProjectID, mappedModel, injectedBody)
+			if err == nil {
+				retryReq, err := antigravity.NewAPIRequest(ctx, upstreamAction, accessToken, retryWrapped)
+				if err == nil {
+					retryResp, err := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency)
+					if err == nil && retryResp.StatusCode < 400 {
+						_ = resp.Body.Close()
+						resp = retryResp
+					} else if retryResp != nil {
+						_ = retryResp.Body.Close()
+					}
+				}
+			}
+		}
 
 		// 模型兜底：模型不存在且开启 fallback 时，自动用 fallback 模型重试一次
 		if s.settingService != nil && s.settingService.IsModelFallbackEnabled(ctx) &&
