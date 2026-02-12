@@ -25,6 +25,7 @@ import (
 	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -412,9 +413,10 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 		txClient = r.client
 	}
 
-	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(ctx); err != nil {
-		return err
-	}
+	// Note: Do NOT delete account_groups here. The account is soft-deleted,
+	// so it won't appear in queries. Preserving group bindings allows
+	// automatic restoration (e.g. Kiro token refresh) to recover with
+	// groups intact.
 	if _, err := txClient.Account.Delete().Where(dbaccount.IDEQ(id)).Exec(ctx); err != nil {
 		return err
 	}
@@ -517,6 +519,32 @@ func (r *accountRepository) ListErrorByPlatform(ctx context.Context, platform st
 		return nil, err
 	}
 	return r.accountsToService(ctx, accounts)
+}
+
+func (r *accountRepository) ListDeletedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	// Use SkipSoftDelete to include soft-deleted records, then filter for deleted ones only
+	skipCtx := mixins.SkipSoftDelete(ctx)
+	accounts, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(platform),
+			dbaccount.DeletedAtNotNil(),
+		).
+		All(skipCtx)
+	if err != nil {
+		return nil, err
+	}
+	return r.accountsToService(skipCtx, accounts)
+}
+
+func (r *accountRepository) RestoreAccount(ctx context.Context, id int64) error {
+	// Use SkipSoftDelete to access the soft-deleted record
+	skipCtx := mixins.SkipSoftDelete(ctx)
+	_, err := r.client.Account.UpdateOneID(id).
+		ClearDeletedAt().
+		SetStatus(service.StatusActive).
+		ClearErrorMessage().
+		Save(skipCtx)
+	return err
 }
 
 func (r *accountRepository) UpdateLastUsed(ctx context.Context, id int64) error {

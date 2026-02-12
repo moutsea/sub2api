@@ -37,6 +37,8 @@ type AccountRepository interface {
 	ListActive(ctx context.Context) ([]Account, error)
 	ListByPlatform(ctx context.Context, platform string) ([]Account, error)
 	ListErrorByPlatform(ctx context.Context, platform string) ([]Account, error)
+	ListDeletedByPlatform(ctx context.Context, platform string) ([]Account, error)
+	RestoreAccount(ctx context.Context, id int64) error
 
 	UpdateLastUsed(ctx context.Context, id int64) error
 	BatchUpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error
