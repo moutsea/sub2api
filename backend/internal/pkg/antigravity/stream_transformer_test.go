@@ -51,7 +51,7 @@ func TestMCPXMLBridge(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			processor := NewStreamingProcessor("test-model")
+			processor := NewStreamingProcessor("test-model", 0)
 
 			result := processor.processText(tt.text, "")
 
@@ -79,7 +79,7 @@ func TestMCPXMLBridge(t *testing.T) {
 
 func TestMCPXMLBridgeMultiChunk(t *testing.T) {
 	// Test that MCP XML Bridge can handle tags split across multiple chunks
-	processor := NewStreamingProcessor("test-model")
+	processor := NewStreamingProcessor("test-model", 0)
 
 	// First chunk: partial opening tag
 	result1 := processor.processText(`<mcp__filesystem__read_file>{"path":`, "")

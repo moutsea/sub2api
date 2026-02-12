@@ -46,6 +46,8 @@ type TransformOptions struct {
 	// IdentityPatch 可选：自定义注入到 systemInstruction 开头的身份防护提示词；
 	// 为空时使用默认模板（包含 [IDENTITY_PATCH] 及 SYSTEM_PROMPT_BEGIN 标记）。
 	IdentityPatch string
+	// AccountID 用于按账号隔离 thought signature 缓存，避免并发请求间签名污染
+	AccountID int64
 }
 
 func DefaultTransformOptions() TransformOptions {
@@ -98,12 +100,12 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	// 检测是否启用 thinking
 	isThinkingEnabled := claudeReq.Thinking != nil && claudeReq.Thinking.Type == "enabled"
 
-	// 只有 Gemini 模型支持 dummy thought workaround
-	// Claude 模型通过 Vertex/Google API 需要有效的 thought signatures
-	allowDummyThought := strings.HasPrefix(targetModel, "gemini-")
+	// Antigravity 上游（Cloud Code API）接受 dummy thought signature，
+	// 所有模型统一使用 dummy signature 兜底，永远不降级 thinking。
+	allowDummyThought := true
 
 	// 1. 构建 contents
-	contents, strippedThinking, err := buildContents(claudeReq.Messages, toolIDToName, isThinkingEnabled, allowDummyThought)
+	contents, _, err := buildContents(claudeReq.Messages, toolIDToName, isThinkingEnabled, allowDummyThought, opts.AccountID)
 	if err != nil {
 		return nil, fmt.Errorf("build contents: %w", err)
 	}
@@ -116,22 +118,6 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 
 	// 4. 构建 generationConfig
 	reqForConfig := claudeReq
-	if strippedThinking {
-		// If we had to downgrade thinking blocks to plain text due to missing/invalid signatures,
-		// disable upstream thinking mode to avoid signature/structure validation errors.
-		reqCopy := *claudeReq
-		reqCopy.Thinking = nil
-		reqForConfig = &reqCopy
-		// 同时移除模型名称中的 "-thinking" 后缀，避免上游根据模型名判断启用 thinking 模式
-		// 注意：Opus 模型只有 thinking 版本，不能移除后缀
-		if strings.HasSuffix(mappedModel, "-thinking") {
-			// 只对 Sonnet 等有非 thinking 版本的模型移除后缀
-			if strings.Contains(mappedModel, "sonnet") || strings.Contains(mappedModel, "gemini") {
-				mappedModel = strings.TrimSuffix(mappedModel, "-thinking")
-			}
-			// Opus 等只有 thinking 版本的模型：保持后缀
-		}
-	}
 	if targetModel != "" && targetModel != reqForConfig.Model {
 		reqCopy := *reqForConfig
 		reqCopy.Model = targetModel
@@ -345,6 +331,21 @@ func filterOpenCodePrompt(text string) string {
 	return ""
 }
 
+// systemBlockFilterPrefixes 需要从 system 中过滤的文本前缀列表
+var systemBlockFilterPrefixes = []string{
+	"x-anthropic-billing-header",
+}
+
+// filterSystemBlockByPrefix 如果文本匹配过滤前缀，返回空字符串
+func filterSystemBlockByPrefix(text string) string {
+	for _, prefix := range systemBlockFilterPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			return ""
+		}
+	}
+	return text
+}
+
 // buildSystemInstruction 构建 systemInstruction
 // 根据请求中是否包含工具定义，动态组装 Antigravity 身份提示词
 // 如果有 MCP 工具，注入 XML 调用协议
@@ -363,8 +364,8 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 				if strings.Contains(sysStr, "You are Antigravity") {
 					userHasAntigravityIdentity = true
 				}
-				// 过滤 OpenCode 默认提示词
-				filtered := filterOpenCodePrompt(sysStr)
+				// 过滤 OpenCode 默认提示词和黑名单前缀
+				filtered := filterSystemBlockByPrefix(filterOpenCodePrompt(sysStr))
 				if filtered != "" {
 					userSystemParts = append(userSystemParts, GeminiPart{Text: filtered})
 				}
@@ -378,8 +379,8 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 						if strings.Contains(block.Text, "You are Antigravity") {
 							userHasAntigravityIdentity = true
 						}
-						// 过滤 OpenCode 默认提示词
-						filtered := filterOpenCodePrompt(block.Text)
+						// 过滤 OpenCode 默认提示词和黑名单前缀
+						filtered := filterSystemBlockByPrefix(filterOpenCodePrompt(block.Text))
 						if filtered != "" {
 							userSystemParts = append(userSystemParts, GeminiPart{Text: filtered})
 						}
@@ -424,9 +425,8 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 }
 
 // buildContents 构建 contents
-func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isThinkingEnabled, allowDummyThought bool) ([]GeminiContent, bool, error) {
+func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isThinkingEnabled, allowDummyThought bool, accountID int64) ([]GeminiContent, bool, error) {
 	var contents []GeminiContent
-	strippedThinking := false
 
 	// 找到最后一条 assistant 消息的索引
 	// 这是为了确保在 thinking 模式下，最后一条 assistant 消息有 thinking block
@@ -444,23 +444,14 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 			role = "model"
 		}
 
-		parts, strippedThisMsg, err := buildParts(msg.Content, toolIDToName, allowDummyThought)
+		parts, _, err := buildParts(msg.Content, toolIDToName, allowDummyThought, accountID)
 		if err != nil {
 			return nil, false, fmt.Errorf("build parts for message %d: %w", i, err)
-		}
-		if strippedThisMsg {
-			strippedThinking = true
 		}
 
 		// 只对最后一条 assistant 消息添加 dummy thinking block（如果缺失）
 		// 服务器要求：当 thinking 启用时，最后一条 assistant 消息必须以 thinking block 开头
-		// 注意：
-		// 1. 这里改为检查 i == lastAssistantIdx，而不是 i == len(messages)-1
-		// 2. 如果已经有 thinking blocks 被降级（strippedThinking=true），则不添加 dummy thinking block
-		//    因为后续会禁用 thinking 模式，上游不需要 thinking block
-		// 3. 对于 Claude 模型（allowDummyThought=false），如果需要 dummy thinking block 但无法提供有效 signature，
-		//    则标记 strippedThinking=true 以触发 thinking 模式禁用，避免第一次请求就失败
-		if role == "model" && isThinkingEnabled && !strippedThinking && i == lastAssistantIdx {
+		if role == "model" && isThinkingEnabled && i == lastAssistantIdx {
 			hasThoughtPart := false
 			for _, p := range parts {
 				if p.Thought {
@@ -469,20 +460,16 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 				}
 			}
 			if !hasThoughtPart && len(parts) > 0 {
-				if allowDummyThought {
-					// Gemini 模型：添加 dummy thinking block with dummy signature
-					dummyPart := GeminiPart{
-						Text:             "Thinking...",
-						Thought:          true,
-						ThoughtSignature: dummyThoughtSignature,
-					}
-					parts = append([]GeminiPart{dummyPart}, parts...)
-				} else {
-					// Claude 模型：无法添加有效的 dummy thinking block
-					// （上游要求 signature 字段必须存在且有效，不能为空或 dummy 值）
-					// 标记为需要降级，以便后续禁用 thinking 模式
-					strippedThinking = true
+				sig := dummyThoughtSignature
+				if cached := GetThoughtSignature(accountID); cached != "" {
+					sig = cached
 				}
+				dummyPart := GeminiPart{
+					Text:             "Thinking...",
+					Thought:          true,
+					ThoughtSignature: sig,
+				}
+				parts = append([]GeminiPart{dummyPart}, parts...)
 			}
 		}
 
@@ -496,7 +483,7 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 		})
 	}
 
-	return contents, strippedThinking, nil
+	return contents, false, nil
 }
 
 // dummyThoughtSignature 用于跳过 Gemini 3 thought_signature 验证
@@ -525,10 +512,8 @@ func isValidSignature(sig string) bool {
 }
 
 // buildParts 构建消息的 parts
-// allowDummyThought: 只有 Gemini 模型支持 dummy thought signature
-func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDummyThought bool) ([]GeminiPart, bool, error) {
+func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDummyThought bool, accountID int64) ([]GeminiPart, bool, error) {
 	var parts []GeminiPart
-	strippedThinking := false
 
 	// 尝试解析为字符串
 	var textContent string
@@ -553,37 +538,21 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			}
 
 		case "thinking":
-			// Signature 处理逻辑：
-			// 1. 验证 signature 是否有效（非空、非 dummy、长度 >= 50）
-			// 2. 有效 signature：直接使用
-			// 3. 无效 signature：
-			//    - Gemini 模型：使用 dummy signature 跳过验证
-			//    - Claude 模型（Vertex AI）：降级为普通 text block
-			if isValidSignature(block.Signature) {
-				// 有效 signature，创建 thinking part
-				part := GeminiPart{
-					Text:             block.Thinking,
-					Thought:          true,
-					ThoughtSignature: block.Signature,
+			// Signature 优先级：原始签名 > 缓存签名 > dummy 兜底
+			sig := block.Signature
+			if !isValidSignature(sig) {
+				if cached := GetThoughtSignature(accountID); cached != "" {
+					sig = cached
+				} else {
+					sig = dummyThoughtSignature
 				}
-				parts = append(parts, part)
-			} else if allowDummyThought {
-				// Gemini 模型：使用 dummy signature
-				part := GeminiPart{
-					Text:             block.Thinking,
-					Thought:          true,
-					ThoughtSignature: dummyThoughtSignature,
-				}
-				parts = append(parts, part)
-			} else {
-				// Claude 模型（Vertex AI）：无效 signature，降级为普通文本
-				// 因为 Vertex AI 不接受 dummy signature
-				if strings.TrimSpace(block.Thinking) != "" {
-					parts = append(parts, GeminiPart{Text: block.Thinking})
-				}
-				strippedThinking = true
-				continue
 			}
+			part := GeminiPart{
+				Text:             block.Thinking,
+				Thought:          true,
+				ThoughtSignature: sig,
+			}
+			parts = append(parts, part)
 
 		case "image":
 			if block.Source != nil && block.Source.Type == "base64" {
@@ -608,21 +577,14 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 					ID:   block.ID,
 				},
 			}
-			// tool_use 的 signature 处理：
-			// 1. 验证 signature 是否有效
-			// 2. 有效 signature：直接使用
-			// 3. 无效 signature：
-			//    - Gemini 模型：使用 dummy signature 跳过验证
-			//    - Claude 模型（Vertex AI）：不添加 signature 字段
-			//      （让上游根据消息结构自动处理，避免 dummy signature 被拒绝）
+			// tool_use 的 signature：原始 > 缓存 > dummy
 			if isValidSignature(block.Signature) {
 				part.ThoughtSignature = block.Signature
-			} else if allowDummyThought {
-				// Gemini 模型：使用 dummy signature
+			} else if cached := GetThoughtSignature(accountID); cached != "" {
+				part.ThoughtSignature = cached
+			} else {
 				part.ThoughtSignature = dummyThoughtSignature
 			}
-			// Claude 模型（Vertex AI）且无有效 signature：不设置 ThoughtSignature
-			// 这样可以避免 "Invalid signature in thinking block" 错误
 			parts = append(parts, part)
 
 		case "tool_result":
@@ -651,7 +613,7 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 		}
 	}
 
-	return parts, strippedThinking, nil
+	return parts, false, nil
 }
 
 // parseToolResultContent 解析 tool_result 的 content

@@ -196,13 +196,16 @@ type StreamingProcessor struct {
 	// [NEW] MCP XML Bridge 状态
 	inMCPXML     bool   // 是否正在解析 MCP XML 标签
 	mcpXMLBuffer string // MCP XML 标签缓冲区
+
+	accountID int64
 }
 
 // NewStreamingProcessor 创建流式响应处理器
-func NewStreamingProcessor(originalModel string) *StreamingProcessor {
+func NewStreamingProcessor(originalModel string, accountID int64) *StreamingProcessor {
 	return &StreamingProcessor{
 		blockType:     BlockTypeNone,
 		originalModel: originalModel,
+		accountID:     accountID,
 	}
 }
 
@@ -336,6 +339,9 @@ func (p *StreamingProcessor) emitMessageStart(v1Resp *V1InternalResponse) []byte
 func (p *StreamingProcessor) processPart(part *GeminiPart) []byte {
 	var result bytes.Buffer
 	signature := part.ThoughtSignature
+
+	// 缓存上游返回的有效签名，供后续请求复用
+	StoreThoughtSignature(p.accountID, signature)
 
 	// 1. FunctionCall 处理
 	if part.FunctionCall != nil {

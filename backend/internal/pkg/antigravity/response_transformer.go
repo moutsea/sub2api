@@ -11,7 +11,7 @@ import (
 )
 
 // TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）
-func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *ClaudeUsage, error) {
+func TransformGeminiToClaude(geminiResp []byte, originalModel string, accountID int64) ([]byte, *ClaudeUsage, error) {
 	// 解包 v1internal 响应
 	var v1Resp V1InternalResponse
 	if err := json.Unmarshal(geminiResp, &v1Resp); err != nil {
@@ -35,7 +35,7 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 	}
 
 	// 使用处理器转换
-	processor := NewNonStreamingProcessor()
+	processor := NewNonStreamingProcessor(accountID)
 	claudeResp := processor.Process(&v1Resp.Response, v1Resp.ResponseID, originalModel)
 
 	// 序列化
@@ -56,12 +56,14 @@ type NonStreamingProcessor struct {
 	trailingSignature   string
 	hasToolCall         bool
 	hadNonThinkingBlock bool // [FIX] 跟踪是否已发送过非 thinking 块（text 或 tool_use）
+	accountID           int64
 }
 
 // NewNonStreamingProcessor 创建非流式响应处理器
-func NewNonStreamingProcessor() *NonStreamingProcessor {
+func NewNonStreamingProcessor(accountID int64) *NonStreamingProcessor {
 	return &NonStreamingProcessor{
 		contentBlocks: make([]ClaudeContentItem, 0),
+		accountID:     accountID,
 	}
 }
 
@@ -105,6 +107,9 @@ func (p *NonStreamingProcessor) Process(geminiResp *GeminiResponse, responseID, 
 // processPart 处理单个 part
 func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 	signature := part.ThoughtSignature
+
+	// 缓存上游返回的有效签名，供后续请求复用
+	StoreThoughtSignature(p.accountID, signature)
 
 	// 1. FunctionCall 处理
 	if part.FunctionCall != nil {
