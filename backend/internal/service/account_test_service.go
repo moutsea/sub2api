@@ -534,7 +534,7 @@ func (s *AccountTestService) testKiroAccountConnection(c *gin.Context, account *
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
 	// Call KiroGatewayService.TestConnection
-	result, err := s.kiroGatewayService.TestConnection(ctx, account)
+	result, err := s.kiroGatewayService.TestConnection(ctx, account, testModelID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}

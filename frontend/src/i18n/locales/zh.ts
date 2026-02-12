@@ -1769,6 +1769,10 @@ export default {
         // Auth types
         socialDesc: 'Kiro 桌面应用',
         idcDesc: 'AWS IAM Identity Center',
+        apikeyDesc: '自定义 Claude API 端点',
+        // API Key fields
+        baseUrlHint: 'Claude API 兼容端点，例如 https://my-proxy.example.com',
+        pleaseEnterApikeyCredentials: '请输入 Base URL 和 API Key',
         // Input modes
         singleAdd: '单个添加',
         batchImport: '批量导入',

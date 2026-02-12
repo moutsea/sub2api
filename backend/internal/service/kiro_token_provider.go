@@ -137,6 +137,15 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 		return "", fmt.Errorf("invalid Kiro account")
 	}
 
+	// apikey accounts use static api_key, no refresh needed
+	if account.IsKiroApiKey() {
+		apiKey := account.GetKiroApiKey()
+		if apiKey == "" {
+			return "", fmt.Errorf("api_key is empty for apikey account %d", account.ID)
+		}
+		return apiKey, nil
+	}
+
 	// Get or create token state
 	state := p.getOrCreateState(account.ID)
 
@@ -248,6 +257,8 @@ func (p *KiroTokenProvider) refreshToken(ctx context.Context, account *Account) 
 	authType := account.GetKiroAuthType()
 
 	switch authType {
+	case KiroAuthMethodAPIKey:
+		return nil, fmt.Errorf("apikey accounts do not support token refresh")
 	case KiroAuthMethodIdC:
 		return p.refreshIdCToken(ctx, account)
 	default:
@@ -750,7 +761,7 @@ func (p *KiroTokenProvider) ForceRefreshWithRetry(ctx context.Context, accounts 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		for i := range accounts {
 			acc := &accounts[i]
-			if !acc.IsKiro() {
+			if !acc.IsKiro() || acc.IsKiroApiKey() {
 				continue
 			}
 
@@ -807,6 +818,11 @@ func (p *KiroTokenProvider) ForceRefreshWithRetry(ctx context.Context, accounts 
 func (p *KiroTokenProvider) ForceRefreshToken(ctx context.Context, account *Account) error {
 	if account == nil || !account.IsKiro() {
 		return fmt.Errorf("invalid Kiro account")
+	}
+
+	// apikey accounts use static key, no refresh needed
+	if account.IsKiroApiKey() {
+		return nil
 	}
 
 	// Get or create token state
@@ -1068,6 +1084,10 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 	for i := range errorAccounts {
 		account := &errorAccounts[i]
 
+		if account.IsKiroApiKey() {
+			continue
+		}
+
 		tokenInfo, err := p.refreshToken(ctx, account)
 		if err != nil {
 			errType := p.classifyRefreshError(err)
@@ -1087,6 +1107,10 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 	// Recover deleted accounts
 	for i := range deletedAccounts {
 		account := &deletedAccounts[i]
+
+		if account.IsKiroApiKey() {
+			continue
+		}
 
 		tokenInfo, err := p.refreshToken(ctx, account)
 		if err != nil {

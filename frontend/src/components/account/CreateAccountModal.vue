@@ -574,7 +574,7 @@
       <!-- Account Type Selection (Kiro) -->
       <div v-if="form.platform === 'kiro'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-2 gap-3">
+        <div class="mt-2 grid grid-cols-3 gap-3">
           <button
             type="button"
             @click="kiroAuthType = 'social'"
@@ -626,10 +626,59 @@
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.kiro.idcDesc') }}</span>
             </div>
           </button>
+
+          <button
+            type="button"
+            @click="kiroAuthType = 'apikey'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              kiroAuthType === 'apikey'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                kiroAuthType === 'apikey'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="key" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">API Key</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.kiro.apikeyDesc') }}</span>
+            </div>
+          </button>
         </div>
 
-        <!-- Kiro Input Mode Selection -->
-        <div class="mt-4">
+        <!-- API Key Input (apikey auth type) -->
+        <div v-if="kiroAuthType === 'apikey'" class="mt-4 space-y-4">
+          <div>
+            <label class="input-label">Base URL *</label>
+            <input
+              v-model="kiroBaseUrl"
+              type="text"
+              class="input font-mono text-sm"
+              placeholder="https://my-proxy.example.com"
+            />
+            <p class="input-hint">{{ t('admin.accounts.kiro.baseUrlHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">API Key *</label>
+            <input
+              v-model="kiroApiKeyValue"
+              type="password"
+              class="input font-mono text-sm"
+              placeholder="sk-..."
+            />
+          </div>
+        </div>
+
+        <!-- Kiro Input Mode Selection (social/idc only) -->
+        <div v-if="kiroAuthType !== 'apikey'" class="mt-4">
           <div class="flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
             <button
               type="button"
@@ -659,7 +708,7 @@
         </div>
 
         <!-- Single Token Input -->
-        <div v-if="kiroInputMode === 'single'" class="mt-4 space-y-4">
+        <div v-if="kiroAuthType !== 'apikey' && kiroInputMode === 'single'" class="mt-4 space-y-4">
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
             <textarea
@@ -695,7 +744,7 @@
         </div>
 
         <!-- Batch Import -->
-        <div v-else class="mt-4 space-y-4">
+        <div v-if="kiroAuthType !== 'apikey' && kiroInputMode === 'batch'" class="mt-4 space-y-4">
           <!-- File Upload Area -->
           <div
             class="relative rounded-lg border-2 border-dashed p-6 text-center transition-colors"
@@ -1959,10 +2008,12 @@ const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
 const kiroRefreshToken = ref('') // For kiro accounts: refresh token
-const kiroAuthType = ref<'social' | 'idc'>('social') // Kiro auth type
+const kiroAuthType = ref<'social' | 'idc' | 'apikey'>('social') // Kiro auth type
 const kiroInputMode = ref<'single' | 'batch'>('single') // Kiro input mode
 const kiroClientId = ref('') // For IdC auth
 const kiroClientSecret = ref('') // For IdC auth
+const kiroApiKeyValue = ref('') // For apikey auth
+const kiroBaseUrl = ref('') // For apikey auth
 const kiroBatchJson = ref('') // For batch import
 const kiroIsDragging = ref(false) // For drag-drop
 const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }>>([])
@@ -2145,6 +2196,8 @@ watch(
       kiroInputMode.value = 'single'
       kiroClientId.value = ''
       kiroClientSecret.value = ''
+      kiroApiKeyValue.value = ''
+      kiroBaseUrl.value = ''
       kiroBatchJson.value = ''
       kiroParsedTokens.value = []
       kiroParseError.value = ''
@@ -2377,6 +2430,8 @@ const resetForm = () => {
   kiroInputMode.value = 'single'
   kiroClientId.value = ''
   kiroClientSecret.value = ''
+  kiroApiKeyValue.value = ''
+  kiroBaseUrl.value = ''
   kiroBatchJson.value = ''
   kiroParsedTokens.value = []
   kiroParseError.value = ''
@@ -2575,6 +2630,50 @@ const handleSubmit = async () => {
   if (form.platform === 'kiro') {
     if (!form.name.trim() && kiroInputMode.value === 'single') {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+
+    // API Key mode
+    if (kiroAuthType.value === 'apikey') {
+      if (!form.name.trim()) {
+        appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+        return
+      }
+      if (!kiroBaseUrl.value.trim() || !kiroApiKeyValue.value.trim()) {
+        appStore.showError(t('admin.accounts.kiro.pleaseEnterApikeyCredentials'))
+        return
+      }
+
+      const credentials: Record<string, unknown> = {
+        auth_type: 'apikey',
+        base_url: kiroBaseUrl.value.trim(),
+        api_key: kiroApiKeyValue.value.trim()
+      }
+
+      submitting.value = true
+      try {
+        await adminAPI.accounts.create({
+          name: form.name,
+          notes: form.notes,
+          platform: 'kiro',
+          type: 'oauth',
+          credentials,
+          proxy_id: form.proxy_id,
+          concurrency: form.concurrency,
+          priority: form.priority,
+          rate_multiplier: form.rate_multiplier,
+          group_ids: form.group_ids,
+          expires_at: form.expires_at,
+          auto_pause_on_expired: autoPauseOnExpired.value
+        })
+        appStore.showSuccess(t('admin.accounts.accountCreated'))
+        emit('created')
+        handleClose()
+      } catch (error: any) {
+        appStore.showError(error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+      } finally {
+        submitting.value = false
+      }
       return
     }
 

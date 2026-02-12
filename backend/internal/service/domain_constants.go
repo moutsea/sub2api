@@ -29,6 +29,7 @@ const (
 const (
 	KiroAuthMethodSocial = "social"
 	KiroAuthMethodIdC    = "idc"
+	KiroAuthMethodAPIKey = "apikey"
 )
 
 // Account type constants

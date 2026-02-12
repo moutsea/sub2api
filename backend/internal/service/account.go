@@ -743,6 +743,27 @@ func (a *Account) GetKiroAuthType() string {
 	return a.GetCredential("auth_type")
 }
 
+// IsKiroApiKey 判断是否为 Kiro apikey 类型账号
+func (a *Account) IsKiroApiKey() bool {
+	return a.IsKiro() && a.GetKiroAuthType() == KiroAuthMethodAPIKey
+}
+
+// GetKiroBaseURL 获取 Kiro apikey 账号的 base_url
+func (a *Account) GetKiroBaseURL() string {
+	if !a.IsKiroApiKey() {
+		return ""
+	}
+	return a.GetCredential("base_url")
+}
+
+// GetKiroApiKey 获取 Kiro apikey 账号的 api_key
+func (a *Account) GetKiroApiKey() string {
+	if !a.IsKiroApiKey() {
+		return ""
+	}
+	return a.GetCredential("api_key")
+}
+
 // GetKiroRefreshToken 获取 Kiro 账号的 refresh token
 func (a *Account) GetKiroRefreshToken() string {
 	if !a.IsKiro() {
@@ -793,6 +814,15 @@ func (a *Account) GetKiroProfileArn() string {
 		return ""
 	}
 	return a.GetCredential("profile_arn")
+}
+
+// GetKiroPreferredEndpoint 获取 Kiro 账号的首选端点
+// 返回 "awsq"/"ide" 或空字符串（使用默认顺序）
+func (a *Account) GetKiroPreferredEndpoint() string {
+	if !a.IsKiro() {
+		return ""
+	}
+	return a.GetCredential("preferred_endpoint")
 }
 
 // GetKiroTokenExpiresAt 获取 Kiro 账号 token 过期时间

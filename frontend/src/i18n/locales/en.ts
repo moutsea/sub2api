@@ -1657,6 +1657,10 @@ export default {
         // Auth types
         socialDesc: 'Kiro Desktop App',
         idcDesc: 'AWS IAM Identity Center',
+        apikeyDesc: 'Custom Claude API Endpoint',
+        // API Key fields
+        baseUrlHint: 'Claude API compatible endpoint, e.g. https://my-proxy.example.com',
+        pleaseEnterApikeyCredentials: 'Please enter Base URL and API Key',
         // Input modes
         singleAdd: 'Single Add',
         batchImport: 'Batch Import',
