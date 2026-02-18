@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -107,11 +108,9 @@ func (r *TempAPIKeyRepo) Update(ctx context.Context, key *service.TempAPIKey) er
 	if key.ExpiresAt != nil {
 		updater.SetExpiresAt(*key.ExpiresAt)
 	}
-	if key.CurrentPeriodStart != nil {
-		updater.SetCurrentPeriodStart(*key.CurrentPeriodStart)
-	}
-	updater.SetCurrentPeriodCount(key.CurrentPeriodCount)
-	updater.SetTotalRequests(key.TotalRequests)
+	// 注意：不更新 CurrentPeriodStart、CurrentPeriodCount、TotalRequests
+	// 这些运行时统计字段由 ActivateAndIncrement / IncrementUsageCounters 原子管理
+	// 在此处覆盖会与并发请求产生竞态，导致周期重置被撤销
 
 	_, err := updater.Save(ctx)
 	return err
@@ -135,12 +134,48 @@ func (r *TempAPIKeyRepo) BatchDelete(ctx context.Context, ids []int64) (int, err
 		Save(ctx)
 }
 
-// List lists temp API keys with pagination and optional key_type filter
-func (r *TempAPIKeyRepo) List(ctx context.Context, params pagination.PaginationParams, keyType string) ([]*service.TempAPIKey, *pagination.PaginationResult, error) {
+// TempAPIKeyListFilters holds optional filters for listing temp API keys
+type TempAPIKeyListFilters struct {
+	KeyType   string // "time_limited" or "quota_only"
+	Status    string // "active", "inactive", "expired", "exhausted"
+	GroupID   int64  // filter by group
+	Search    string // fuzzy match on name or key
+	Activated string // "yes" = activated, "no" = not activated
+}
+
+// List lists temp API keys with pagination and optional filters
+func (r *TempAPIKeyRepo) List(ctx context.Context, params pagination.PaginationParams, filters TempAPIKeyListFilters) ([]*service.TempAPIKey, *pagination.PaginationResult, error) {
 	query := r.activeQuery()
 
-	if keyType != "" {
-		query = query.Where(tempapikey.KeyType(keyType))
+	if filters.KeyType != "" {
+		query = query.Where(tempapikey.KeyType(filters.KeyType))
+	}
+	if filters.Status != "" {
+		switch filters.Status {
+		case "expired":
+			// expired = activated + expires_at in the past
+			query = query.Where(tempapikey.ActivatedAtNotNil(), tempapikey.ExpiresAtLT(time.Now()))
+		case "exhausted":
+			query = query.Where(tempapikey.StatusEQ("exhausted"))
+		default:
+			query = query.Where(tempapikey.StatusEQ(filters.Status))
+		}
+	}
+	if filters.GroupID > 0 {
+		query = query.Where(tempapikey.GroupID(filters.GroupID))
+	}
+	if filters.Search != "" {
+		query = query.Where(
+			tempapikey.Or(
+				tempapikey.NameContains(filters.Search),
+				tempapikey.KeyContains(filters.Search),
+			),
+		)
+	}
+	if filters.Activated == "yes" {
+		query = query.Where(tempapikey.ActivatedAtNotNil())
+	} else if filters.Activated == "no" {
+		query = query.Where(tempapikey.ActivatedAtIsNil())
 	}
 
 	// Count total
@@ -227,10 +262,10 @@ func (r *TempAPIKeyRepo) ListByGroupID(ctx context.Context, groupID int64, param
 	}, nil
 }
 
-// ActivateAndIncrement activates (if needed) and increments usage count
-// Returns updated key and whether rate limit is exceeded
-// 注意：此方法使用乐观锁策略，在高并发下可能有轻微的计数误差，但不会影响限流的有效性
-// 对于 quota_only 类型，此方法只检查是否已耗尽额度，实际消费金额在 RecordUsage 中更新
+// ActivateAndIncrement activates (if needed) and validates rate limits.
+// For time_limited: increments current_period_count for daily limit checking.
+// For quota_only: checks quota exhaustion only.
+// total_requests is incremented separately in RecordUsage after successful completion.
 func (r *TempAPIKeyRepo) ActivateAndIncrement(ctx context.Context, id int64) (*service.TempAPIKey, bool, error) {
 	// Get current state with edges
 	row, err := r.client.TempAPIKey.Query().
@@ -251,69 +286,59 @@ func (r *TempAPIKeyRepo) ActivateAndIncrement(ctx context.Context, id int64) (*s
 			return r.toServiceModel(row), true, nil // Quota exhausted
 		}
 
-		// 更新激活时间和请求次数（消费金额在 RecordUsage 中更新）
-		updateBuilder := r.client.TempAPIKey.Update().
-			Where(tempapikey.ID(id))
-
 		// 首次使用时记录激活时间
 		if row.ActivatedAt == nil {
-			updateBuilder.SetActivatedAt(now)
+			_, err := r.client.TempAPIKey.Update().
+				Where(tempapikey.ID(id)).
+				SetActivatedAt(now).
+				Save(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+			// 查询更新后的记录
+			updated, err := r.client.TempAPIKey.Query().
+				Where(tempapikey.ID(id)).
+				WithGroup().
+				WithCreator().
+				Only(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+			return r.toServiceModel(updated), false, nil
 		}
 
-		// 递增总请求数（用于统计，不用于限额检查）
-		updateBuilder.AddTotalRequests(1)
-
-		_, err := updateBuilder.Save(ctx)
-		if err != nil {
-			return nil, false, err
-		}
-
-		// 查询更新后的记录
-		updated, err := r.client.TempAPIKey.Query().
-			Where(tempapikey.ID(id)).
-			WithGroup().
-			WithCreator().
-			Only(ctx)
-		if err != nil {
-			return nil, false, err
-		}
-		return r.toServiceModel(updated), false, nil
+		return r.toServiceModel(row), false, nil
 	}
 
-	// time_limited 类型：原有逻辑
+	// time_limited 类型
 	updater := r.client.TempAPIKey.UpdateOneID(id)
-	{
-		// time_limited 类型：原有逻辑
-		// Check rate limit first (before any update)
-		// 如果已激活且在当前周期内，检查是否超限
-		if row.ActivatedAt != nil && row.CurrentPeriodStart != nil {
-			periodExpired := now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour
-			if !periodExpired && row.CurrentPeriodCount >= row.DailyLimit {
-				return r.toServiceModel(row), true, nil // Rate limited
-			}
-		}
 
-		// Activate if not yet activated
-		if row.ActivatedAt == nil {
-			expiresAt := now.Add(time.Duration(row.ValidDays) * 24 * time.Hour)
-			updater.SetActivatedAt(now)
-			updater.SetExpiresAt(expiresAt)
-			updater.SetCurrentPeriodStart(now)
-			updater.SetCurrentPeriodCount(1)
-		} else {
-			// Check if current period has expired (24 hours)
-			if row.CurrentPeriodStart != nil && now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour {
-				// Reset period
-				updater.SetCurrentPeriodStart(now)
-				updater.SetCurrentPeriodCount(1)
-			} else {
-				// Increment count - 使用 AddCurrentPeriodCount 进行原子增加
-				updater.AddCurrentPeriodCount(1)
-			}
+	if row.ActivatedAt == nil {
+		// 首次激活（count 在 RecordUsage 成功后递增）
+		expiresAt := now.Add(time.Duration(row.ValidDays) * 24 * time.Hour)
+		updater.SetActivatedAt(now)
+		updater.SetExpiresAt(expiresAt)
+		updater.SetCurrentPeriodStart(now)
+		updater.SetCurrentPeriodCount(0)
+	} else if row.CurrentPeriodStart != nil && now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour {
+		// 周期已过期，重置（count 在 RecordUsage 成功后递增）
+		// 以 ActivatedAt 为锚点对齐周期，防止漂移
+		// 例：10:00 激活，每个周期都是 10:00-10:00，无论用户何时请求
+		anchor := *row.ActivatedAt
+		elapsed := now.Sub(anchor)
+		periods := int(elapsed / (24 * time.Hour))
+		newPeriodStart := anchor.Add(time.Duration(periods) * 24 * time.Hour)
+		updater.SetCurrentPeriodStart(newPeriodStart)
+		updater.SetCurrentPeriodCount(0)
+	} else if row.CurrentPeriodCount >= row.DailyLimit {
+		// 当前周期内已达上限
+		elapsed := time.Duration(0)
+		if row.CurrentPeriodStart != nil {
+			elapsed = now.Sub(*row.CurrentPeriodStart)
 		}
-
-		// Increment total requests - 使用 AddTotalRequests 进行原子增加
-		updater.AddTotalRequests(1)
+		log.Printf("[TempAPIKey] Rate limited: id=%d count=%d limit=%d periodStart=%v elapsed=%v",
+			id, row.CurrentPeriodCount, row.DailyLimit, row.CurrentPeriodStart, elapsed)
+		return r.toServiceModel(row), true, nil
 	}
 
 	_, err = updater.Save(ctx)
@@ -391,9 +416,34 @@ func (r *TempAPIKeyRepo) ExistsByKey(ctx context.Context, key string) (bool, err
 	return r.activeQuery().Where(tempapikey.Key(key)).Exist(ctx)
 }
 
+// DeleteExpiredBefore soft deletes all temp API keys that expired before the given time.
+// Returns the number of keys deleted.
+func (r *TempAPIKeyRepo) DeleteExpiredBefore(ctx context.Context, before time.Time) (int, error) {
+	now := time.Now()
+	return r.client.TempAPIKey.Update().
+		Where(
+			tempapikey.DeletedAtIsNil(),
+			tempapikey.ExpiresAtNotNil(),
+			tempapikey.ExpiresAtLT(before),
+		).
+		SetDeletedAt(now).
+		Save(ctx)
+}
+
 // CountByGroupID counts keys by group ID
 func (r *TempAPIKeyRepo) CountByGroupID(ctx context.Context, groupID int64) (int, error) {
 	return r.activeQuery().Where(tempapikey.GroupID(groupID)).Count(ctx)
+}
+
+// IncrementUsageCounters atomically increments both current_period_count and total_requests.
+// Called after a request completes successfully (in RecordUsage), so upstream failures don't consume daily quota.
+func (r *TempAPIKeyRepo) IncrementUsageCounters(ctx context.Context, id int64) error {
+	_, err := r.client.TempAPIKey.Update().
+		Where(tempapikey.ID(id)).
+		AddCurrentPeriodCount(1).
+		AddTotalRequests(1).
+		Save(ctx)
+	return err
 }
 
 // AddCostUSD adds cost to a quota_only temp API key and checks if exhausted

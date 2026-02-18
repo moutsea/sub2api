@@ -2064,7 +2064,17 @@ export default {
       batchUpdateSuccess: 'Successfully updated {count} keys',
       confirmDelete: 'Are you sure you want to delete this temp key?',
       confirmBatchDelete: 'Are you sure you want to delete {count} selected temp keys?',
-      loadFailed: 'Failed to load temp API keys'
+      loadFailed: 'Failed to load temp API keys',
+      searchPlaceholder: 'Search name or key...',
+      allStatuses: 'All Statuses',
+      allGroups: 'All Groups',
+      allActivation: 'All Activation',
+      activated: 'Activated',
+      cleanupExpired: 'Cleanup Expired',
+      confirmCleanup: 'Delete all temp keys expired over 1 day? This cannot be undone.',
+      cleanupSuccess: 'Successfully cleaned up {count} expired keys',
+      cleanupNone: 'No expired keys to clean up',
+      cleanupFailed: 'Failed to cleanup expired keys'
     },
 
     // Usage Records

@@ -20,18 +20,28 @@ export interface TempApiKeyListResponse {
   }
 }
 
+export interface TempApiKeyListFilters {
+  keyType?: string
+  status?: string
+  groupId?: number
+  search?: string
+  activated?: string
+}
+
 /**
- * List all temp API keys with pagination and optional key_type filter
+ * List all temp API keys with pagination and optional filters
  */
 export async function list(
   page: number = 1,
   pageSize: number = 20,
-  keyType: string = ''
+  filters: TempApiKeyListFilters = {}
 ): Promise<TempApiKeyListResponse> {
   const params: Record<string, unknown> = { page, page_size: pageSize }
-  if (keyType) {
-    params.key_type = keyType
-  }
+  if (filters.keyType) params.key_type = filters.keyType
+  if (filters.status) params.status = filters.status
+  if (filters.groupId) params.group_id = filters.groupId
+  if (filters.search) params.search = filters.search
+  if (filters.activated) params.activated = filters.activated
   const { data } = await apiClient.get('/admin/temp-api-keys', { params })
   return data
 }
@@ -91,6 +101,14 @@ export async function batchUpdate(
   return data
 }
 
+/**
+ * Cleanup expired temp API keys (expired > 1 day)
+ */
+export async function cleanupExpired(): Promise<{ deleted: number }> {
+  const { data } = await apiClient.post('/admin/temp-api-keys/cleanup-expired')
+  return data
+}
+
 export const tempApiKeysAPI = {
   list,
   getById,
@@ -99,4 +117,5 @@ export const tempApiKeysAPI = {
   delete: deleteKey,
   batchDelete,
   batchUpdate,
+  cleanupExpired,
 }

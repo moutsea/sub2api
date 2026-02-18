@@ -84,14 +84,22 @@ type TempAPIKeyResponse struct {
 func (h *TempAPIKeyHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	keyType := c.Query("key_type")
 
 	params := pagination.PaginationParams{
 		Page:     page,
 		PageSize: pageSize,
 	}
 
-	keys, paginationResult, err := h.repo.List(c.Request.Context(), params, keyType)
+	groupID, _ := strconv.ParseInt(c.Query("group_id"), 10, 64)
+	filters := repository.TempAPIKeyListFilters{
+		KeyType:   c.Query("key_type"),
+		Status:    c.Query("status"),
+		GroupID:   groupID,
+		Search:    c.Query("search"),
+		Activated: c.Query("activated"),
+	}
+
+	keys, paginationResult, err := h.repo.List(c.Request.Context(), params, filters)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -346,7 +354,7 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 		TotalCost:          key.TotalCostUSD,
 		ValidDays:          key.ValidDays,
 		DailyLimit:         key.DailyLimit,
-		CurrentPeriodCount: key.CurrentPeriodCount,
+		CurrentPeriodCount: key.CurrentPeriodUsed(),
 		TotalRequests:      key.TotalRequests,
 		Status:             key.Status,
 		CreatedBy:          key.CreatedBy,
@@ -374,6 +382,17 @@ func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyRespon
 	}
 
 	return resp
+}
+
+// CleanupExpired deletes temp API keys that expired more than 1 day ago
+func (h *TempAPIKeyHandler) CleanupExpired(c *gin.Context) {
+	before := time.Now().Add(-24 * time.Hour)
+	deleted, err := h.repo.DeleteExpiredBefore(c.Request.Context(), before)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
 
 // generateTempAPIKey generates a random temp API key

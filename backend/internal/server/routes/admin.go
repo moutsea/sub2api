@@ -387,5 +387,6 @@ func registerTempAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		tempKeys.DELETE("/:id", h.Admin.TempAPIKey.Delete)
 		tempKeys.POST("/batch-delete", h.Admin.TempAPIKey.BatchDelete)
 		tempKeys.POST("/batch-update", h.Admin.TempAPIKey.BatchUpdate)
+		tempKeys.POST("/cleanup-expired", h.Admin.TempAPIKey.CleanupExpired)
 	}
 }

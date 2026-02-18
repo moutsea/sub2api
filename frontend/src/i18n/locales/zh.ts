@@ -2211,7 +2211,17 @@ export default {
       batchUpdateSuccess: '成功更新 {count} 个密钥',
       confirmDelete: '确定要删除此临时密钥吗？',
       confirmBatchDelete: '确定要删除选中的 {count} 个临时密钥吗？',
-      loadFailed: '加载临时密钥失败'
+      loadFailed: '加载临时密钥失败',
+      searchPlaceholder: '搜索名称或密钥...',
+      allStatuses: '全部状态',
+      allGroups: '全部分组',
+      allActivation: '全部激活状态',
+      activated: '已激活',
+      cleanupExpired: '清理过期密钥',
+      confirmCleanup: '确定要删除所有过期超过 1 天的临时密钥吗？此操作不可撤销。',
+      cleanupSuccess: '成功清理 {count} 个过期密钥',
+      cleanupNone: '没有需要清理的过期密钥',
+      cleanupFailed: '清理过期密钥失败'
     },
 
     // Usage Records

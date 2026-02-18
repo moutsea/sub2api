@@ -11,6 +11,13 @@
           >
             <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
           </button>
+          <button
+            @click="handleCleanupExpired"
+            :disabled="cleaningUp"
+            class="btn btn-warning"
+          >
+            {{ cleaningUp ? '...' : t('admin.tempApiKeys.cleanupExpired') }}
+          </button>
           <button @click="showCreateDialog = true" class="btn btn-primary">
             {{ t('admin.tempApiKeys.create') }}
           </button>
@@ -18,12 +25,34 @@
       </template>
 
       <template #filters>
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div class="flex items-center gap-3">
+        <div class="flex flex-col gap-4">
+          <div class="flex flex-wrap items-center gap-3">
+            <input
+              v-model="filterSearch"
+              type="text"
+              class="input w-56"
+              :placeholder="t('admin.tempApiKeys.searchPlaceholder')"
+              @keyup.enter="handleSearchApply"
+            />
             <Select
               v-model="filterKeyType"
               :options="filterKeyTypeOptions"
-              class="w-48"
+              class="w-40"
+            />
+            <Select
+              v-model="filterStatus"
+              :options="filterStatusOptions"
+              class="w-40"
+            />
+            <Select
+              v-model="filterGroupId"
+              :options="filterGroupOptions"
+              class="w-40"
+            />
+            <Select
+              v-model="filterActivated"
+              :options="filterActivatedOptions"
+              class="w-40"
             />
           </div>
           <div class="flex items-center gap-2" v-if="selectedIds.length > 0">
@@ -388,6 +417,7 @@ const groups = ref<AdminGroup[]>([])
 const loading = ref(false)
 const creating = ref(false)
 const updating = ref(false)
+const cleaningUp = ref(false)
 const pagination = ref({ total: 0, page: 1, page_size: 20 })
 
 // Dialogs
@@ -427,10 +457,34 @@ const selectedIds = ref<number[]>([])
 
 // Filter
 const filterKeyType = ref('')
+const filterStatus = ref('')
+const filterGroupId = ref(0)
+const filterSearch = ref('')
+const filterActivated = ref('')
+
 const filterKeyTypeOptions = computed(() => [
   { value: '', label: t('common.all') },
   { value: 'time_limited', label: t('admin.tempApiKeys.timeLimited') },
   { value: 'quota_only', label: t('admin.tempApiKeys.quotaOnly') },
+])
+
+const filterStatusOptions = computed(() => [
+  { value: '', label: t('admin.tempApiKeys.allStatuses') },
+  { value: 'active', label: t('admin.tempApiKeys.active') },
+  { value: 'inactive', label: t('admin.tempApiKeys.inactive') },
+  { value: 'expired', label: t('admin.tempApiKeys.expired') },
+  { value: 'exhausted', label: t('admin.tempApiKeys.exhausted') },
+])
+
+const filterGroupOptions = computed(() => [
+  { value: 0, label: t('admin.tempApiKeys.allGroups') },
+  ...groups.value.map((g) => ({ value: g.id, label: g.name })),
+])
+
+const filterActivatedOptions = computed(() => [
+  { value: '', label: t('admin.tempApiKeys.allActivation') },
+  { value: 'yes', label: t('admin.tempApiKeys.activated') },
+  { value: 'no', label: t('admin.tempApiKeys.notActivated') },
 ])
 // Options
 const groupOptions = computed(() =>
@@ -470,7 +524,13 @@ const columns = computed(() => [
 const loadKeys = async () => {
   loading.value = true
   try {
-    const res = await tempApiKeysAPI.list(pagination.value.page, pagination.value.page_size, filterKeyType.value)
+    const res = await tempApiKeysAPI.list(pagination.value.page, pagination.value.page_size, {
+      keyType: filterKeyType.value,
+      status: filterStatus.value,
+      groupId: filterGroupId.value || undefined,
+      search: filterSearch.value || undefined,
+      activated: filterActivated.value || undefined,
+    })
     keys.value = res.data || []
     pagination.value = res.pagination || { total: 0, page: 1, page_size: 20 }
   } catch (e: unknown) {
@@ -552,6 +612,24 @@ const handleUpdate = async () => {
     appStore.showError((e as Error).message || t('admin.tempApiKeys.updateFailed'))
   } finally {
     updating.value = false
+  }
+}
+
+const handleCleanupExpired = async () => {
+  if (!confirm(t('admin.tempApiKeys.confirmCleanup'))) return
+  cleaningUp.value = true
+  try {
+    const res = await tempApiKeysAPI.cleanupExpired()
+    if (res.deleted > 0) {
+      appStore.showSuccess(t('admin.tempApiKeys.cleanupSuccess', { count: res.deleted }))
+      loadKeys()
+    } else {
+      appStore.showSuccess(t('admin.tempApiKeys.cleanupNone'))
+    }
+  } catch (e: unknown) {
+    appStore.showError((e as Error).message || t('admin.tempApiKeys.cleanupFailed'))
+  } finally {
+    cleaningUp.value = false
   }
 }
 
@@ -680,7 +758,13 @@ onMounted(() => {
   loadGroups()
 })
 
-watch(filterKeyType, () => {
+const handleSearchApply = () => {
+  pagination.value.page = 1
+  selectedIds.value = []
+  loadKeys()
+}
+
+watch([filterKeyType, filterStatus, filterGroupId, filterActivated], () => {
   pagination.value.page = 1
   selectedIds.value = []
   loadKeys()
