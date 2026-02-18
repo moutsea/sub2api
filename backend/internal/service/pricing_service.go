@@ -582,6 +582,7 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 		"opus-4.6":   {"claude-opus-4.6", "claude-opus-4-6"},
 		"opus-4.5":   {"claude-opus-4.5", "claude-opus-4-5"},
 		"opus-4":     {"claude-opus-4", "claude-3-opus"},
+		"sonnet-4.6": {"claude-sonnet-4.6", "claude-sonnet-4-6"},
 		"sonnet-4.5": {"claude-sonnet-4.5", "claude-sonnet-4-5"},
 		"sonnet-4":   {"claude-sonnet-4", "claude-3-5-sonnet"},
 		"sonnet-3.5": {"claude-3-5-sonnet", "claude-3.5-sonnet"},

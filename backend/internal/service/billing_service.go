@@ -98,6 +98,24 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:     false,
 	}
 
+	// Claude Sonnet 4.6
+	s.fallbackPrices["claude-sonnet-4-6"] = &ModelPricing{
+		InputPricePerToken:         3e-6,    // $3 per MTok
+		OutputPricePerToken:        15e-6,   // $15 per MTok
+		CacheCreationPricePerToken: 3.75e-6, // $3.75 per MTok
+		CacheReadPricePerToken:     0.3e-6,  // $0.30 per MTok
+		SupportsCacheBreakdown:     false,
+	}
+
+	// Claude Sonnet 4.6 (1M context)
+	s.fallbackPrices["claude-sonnet-4-6-1m"] = &ModelPricing{
+		InputPricePerToken:         6e-6,    // $6 per MTok
+		OutputPricePerToken:        22.5e-6, // $22.5 per MTok
+		CacheCreationPricePerToken: 7.5e-6,  // $7.5 per MTok (2x standard)
+		CacheReadPricePerToken:     0.6e-6,  // $0.60 per MTok (2x standard)
+		SupportsCacheBreakdown:     false,
+	}
+
 	// Claude 4.5 Opus
 	s.fallbackPrices["claude-opus-4.5"] = &ModelPricing{
 		InputPricePerToken:         5e-6,    // $5 per MTok
@@ -168,6 +186,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["claude-3-opus"]
 	}
 	if strings.Contains(modelLower, "sonnet") {
+		if strings.Contains(modelLower, "4.6") || strings.Contains(modelLower, "4-6") {
+			return s.fallbackPrices["claude-sonnet-4-6"]
+		}
 		if strings.Contains(modelLower, "4") && !strings.Contains(modelLower, "3") {
 			return s.fallbackPrices["claude-sonnet-4"]
 		}

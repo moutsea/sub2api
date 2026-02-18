@@ -87,6 +87,8 @@ func logPrefix(sessionID, accountName string) string {
 var antigravitySupportedModels = map[string]bool{
 	"claude-opus-4-6-thinking":   true,
 	"claude-opus-4-5-thinking":   true,
+	"claude-sonnet-4-6":          true,
+	"claude-sonnet-4-6-thinking": true,
 	"claude-sonnet-4-5":          true,
 	"claude-sonnet-4-5-thinking": true,
 	"gemini-2.5-flash":           true,
@@ -108,16 +110,17 @@ var antigravityPrefixMapping = []struct {
 	{"gemini-2.5-flash-image", "gemini-3-pro-image"}, // gemini-2.5-flash-image → 3-pro-image
 	{"gemini-3-pro-image", "gemini-3-pro-image"},     // gemini-3-pro-image-preview 等
 	{"gemini-3-flash", "gemini-3-flash"},             // gemini-3-flash-preview 等 → gemini-3-flash
-	{"claude-3-5-sonnet", "claude-sonnet-4-5"},       // 旧版 claude-3-5-sonnet-xxx
+	{"claude-3-5-sonnet", "claude-sonnet-4-6"},       // 旧版 claude-3-5-sonnet-xxx → sonnet 4.6
+	{"claude-sonnet-4-6", "claude-sonnet-4-6"},       // claude-sonnet-4-6-xxx
 	{"claude-sonnet-4-5", "claude-sonnet-4-5"},       // claude-sonnet-4-5-xxx
 	{"claude-haiku-4-5", "claude-sonnet-4-5"},        // claude-haiku-4-5-xxx → sonnet
 	{"claude-opus-4-6", "claude-opus-4-6-thinking"},  // claude-opus-4-6-xxx → thinking
 	{"claude-opus-4-5", "claude-opus-4-5-thinking"},  // claude-opus-4-5-xxx → thinking
 	{"claude-3-haiku", "claude-sonnet-4-5"},          // 旧版 claude-3-haiku-xxx → sonnet
-	{"claude-sonnet-4", "claude-sonnet-4-5"},
-	{"claude-haiku-4", "claude-sonnet-4-5"},        // → sonnet
-	{"claude-opus-4", "claude-opus-4-5-thinking"}, // claude-opus-4-xxx → thinking
-	{"gemini-3-pro", "gemini-3-pro-high"},          // gemini-3-pro, gemini-3-pro-preview 等
+	{"claude-sonnet-4", "claude-sonnet-4-6"},         // claude-sonnet-4-xxx → sonnet 4.6
+	{"claude-haiku-4", "claude-sonnet-4-5"},          // → sonnet
+	{"claude-opus-4", "claude-opus-4-5-thinking"},    // claude-opus-4-xxx → thinking
+	{"gemini-3-pro", "gemini-3-pro-high"},            // gemini-3-pro, gemini-3-pro-preview 等
 }
 
 // AntigravityGatewayService 处理 Antigravity 平台的 API 转发

@@ -32,12 +32,9 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
-// kiroAWSQContextLimit is the conservative threshold for switching away from AWSQ endpoint.
-// AWSQ hard limit is ~200K, use 180K to avoid edge cases.
-const kiroAWSQContextLimit = 180000
 
-// getKiroEndpoints returns ordered endpoint list based on account config and request characteristics.
-// Priority: preferred_endpoint config > dynamic selection based on context size > default (AWSQ first).
+// getKiroEndpoints returns ordered endpoint list based on account config.
+// Priority: preferred_endpoint config > default (AWSQ first with CW fallback).
 func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfig {
 	region := account.GetKiroRegion()
 
@@ -53,7 +50,7 @@ func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfi
 		Name:      "CodeWhisperer",
 	}
 
-	// Explicit preferred_endpoint overrides dynamic logic
+	// Explicit preferred_endpoint overrides default
 	switch account.GetKiroPreferredEndpoint() {
 	case "awsq", "q", "cli":
 		return []kiroEndpointConfig{awsq, cw}
@@ -61,14 +58,7 @@ func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfi
 		return []kiroEndpointConfig{cw, awsq}
 	}
 
-	// Dynamic selection: large context → CodeWhisperer only (AWSQ doesn't support >180K),
-	// otherwise → AWSQ first (supports thinking)
-	if estimatedTokens > kiroAWSQContextLimit {
-		log.Printf("[kiro-endpoints] dynamic=CodeWhisperer_only reason=large_context tokens=%d limit=%d", estimatedTokens, kiroAWSQContextLimit)
-		return []kiroEndpointConfig{cw}
-	}
-
-	// Default: AWSQ first (supports thinking)
+	// Default: AWSQ first with CW fallback
 	return []kiroEndpointConfig{awsq, cw}
 }
 
@@ -147,10 +137,11 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Pre-check: Estimate input tokens and truncate messages if exceeding context limit
 	// This prevents 400 errors from Kiro upstream due to context length exceeding threshold
-	// Skip for opus-4-6 which may support up to 1M context window
-	isOpus46 := strings.Contains(originalModel, "opus-4-6") || strings.Contains(originalModel, "opus-4.6")
+	// Skip for opus-4-6 and sonnet-4-6 which may support up to 1M context window
+	is46Model := strings.Contains(originalModel, "opus-4-6") || strings.Contains(originalModel, "opus-4.6") ||
+		strings.Contains(originalModel, "sonnet-4-6") || strings.Contains(originalModel, "sonnet-4.6")
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if !isOpus46 && estimatedTokens > kiro.KiroContextPreCheckLimit {
+	if !is46Model && estimatedTokens > kiro.KiroContextPreCheckLimit {
 		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
 			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
 

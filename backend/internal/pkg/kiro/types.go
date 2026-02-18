@@ -17,6 +17,8 @@ const (
 var ModelMap = map[string]string{
 	// Opus 4.6 series
 	"claude-opus-4-6": "claude-opus-4.6",
+	// Sonnet 4.6 series
+	"claude-sonnet-4-6": "claude-sonnet-4.6",
 	// Opus 4.5 series
 	"claude-opus-4-5":          "claude-opus-4.5",
 	"claude-opus-4-5-20251101": "claude-opus-4.5",
@@ -27,21 +29,21 @@ var ModelMap = map[string]string{
 	// Sonnet 4.5 series
 	"claude-sonnet-4-5":          "claude-sonnet-4.5",
 	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-	// Sonnet 4 series (map to sonnet-4.5)
-	"claude-sonnet-4-20250514": "claude-sonnet-4.5",
-	// Sonnet 3.7 series (map to sonnet-4.5)
-	"claude-3-7-sonnet-20250219": "claude-sonnet-4.5",
-	// Sonnet 3.5 series (legacy, map to sonnet-4.5)
-	"claude-3-5-sonnet-20241022": "claude-sonnet-4.5",
-	"claude-3-5-sonnet-latest":   "claude-sonnet-4.5",
-	"claude-3-5-sonnet-v2":       "claude-sonnet-4.5",
+	// Sonnet 4 series (map to sonnet-4.6)
+	"claude-sonnet-4-20250514": "claude-sonnet-4.6",
+	// Sonnet 3.7 series (map to sonnet-4.6)
+	"claude-3-7-sonnet-20250219": "claude-sonnet-4.6",
+	// Sonnet 3.5 series (legacy, map to sonnet-4.6)
+	"claude-3-5-sonnet-20241022": "claude-sonnet-4.6",
+	"claude-3-5-sonnet-latest":   "claude-sonnet-4.6",
+	"claude-3-5-sonnet-v2":       "claude-sonnet-4.6",
 	// Haiku 3.5 series (legacy, map to Haiku 4.5)
 	"claude-3-5-haiku-20241022": "claude-haiku-4.5",
 	"claude-3-5-haiku-latest":   "claude-haiku-4.5",
 }
 
 // Default model ID for AWSQ
-const DefaultModelID = "claude-sonnet-4.5"
+const DefaultModelID = "claude-sonnet-4.6"
 
 // GetModelID returns the CodeWhisperer model ID for a given Claude model
 func GetModelID(claudeModel string) string {

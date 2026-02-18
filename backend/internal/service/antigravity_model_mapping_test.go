@@ -16,6 +16,8 @@ func TestIsAntigravityModelSupported(t *testing.T) {
 	}{
 		// 直接支持的模型
 		{"直接支持 - claude-sonnet-4-5", "claude-sonnet-4-5", true},
+		{"直接支持 - claude-sonnet-4-6", "claude-sonnet-4-6", true},
+		{"直接支持 - claude-sonnet-4-6-thinking", "claude-sonnet-4-6-thinking", true},
 		{"直接支持 - claude-opus-4-5-thinking", "claude-opus-4-5-thinking", true},
 		{"直接支持 - claude-sonnet-4-5-thinking", "claude-sonnet-4-5-thinking", true},
 		{"直接支持 - gemini-2.5-flash", "gemini-2.5-flash", true},
@@ -83,13 +85,13 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			name:           "系统映射 - claude-3-5-sonnet-20241022",
 			requestedModel: "claude-3-5-sonnet-20241022",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-5",
+			expected:       "claude-sonnet-4-6",
 		},
 		{
 			name:           "系统映射 - claude-3-5-sonnet-20240620",
 			requestedModel: "claude-3-5-sonnet-20240620",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-5",
+			expected:       "claude-sonnet-4-6",
 		},
 		{
 			name:           "系统映射 - claude-opus-4",
@@ -132,6 +134,18 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			requestedModel: "claude-sonnet-4-5-20250929",
 			accountMapping: nil,
 			expected:       "claude-sonnet-4-5",
+		},
+		{
+			name:           "直接支持 - claude-sonnet-4-6",
+			requestedModel: "claude-sonnet-4-6",
+			accountMapping: nil,
+			expected:       "claude-sonnet-4-6",
+		},
+		{
+			name:           "直接支持 - claude-sonnet-4-6-thinking",
+			requestedModel: "claude-sonnet-4-6-thinking",
+			accountMapping: nil,
+			expected:       "claude-sonnet-4-6-thinking",
 		},
 
 		// 3. Gemini 透传
