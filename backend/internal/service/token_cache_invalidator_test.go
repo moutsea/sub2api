@@ -51,7 +51,7 @@ func TestCompositeTokenCacheInvalidator_Gemini(t *testing.T) {
 
 	err := invalidator.InvalidateToken(context.Background(), account)
 	require.NoError(t, err)
-	require.Equal(t, []string{"gemini:project-x"}, cache.deletedKeys)
+	require.Equal(t, []string{"gemini:project-x", "gemini:account:10"}, cache.deletedKeys)
 }
 
 func TestCompositeTokenCacheInvalidator_Antigravity(t *testing.T) {
@@ -68,7 +68,7 @@ func TestCompositeTokenCacheInvalidator_Antigravity(t *testing.T) {
 
 	err := invalidator.InvalidateToken(context.Background(), account)
 	require.NoError(t, err)
-	require.Equal(t, []string{"ag:ag-project"}, cache.deletedKeys)
+	require.Equal(t, []string{"ag:ag-project", "ag:account:99"}, cache.deletedKeys)
 }
 
 func TestCompositeTokenCacheInvalidator_OpenAI(t *testing.T) {
@@ -254,7 +254,9 @@ func TestCompositeTokenCacheInvalidator_AllPlatformsIntegration(t *testing.T) {
 
 	expectedKeys := []string{
 		"gemini:gemini-proj",
+		"gemini:account:1",
 		"ag:ag-proj",
+		"ag:account:2",
 		"openai:account:3",
 		"claude:account:4",
 	}

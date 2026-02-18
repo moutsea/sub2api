@@ -153,6 +153,18 @@ func (m *mockAccountRepoForGemini) UpdateExtra(ctx context.Context, id int64, up
 func (m *mockAccountRepoForGemini) BulkUpdate(ctx context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	return 0, nil
 }
+func (m *mockAccountRepoForGemini) FindByKiroRefreshToken(ctx context.Context, refreshToken string) (*Account, error) {
+	return nil, nil
+}
+func (m *mockAccountRepoForGemini) ListDeletedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (m *mockAccountRepoForGemini) ListErrorByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (m *mockAccountRepoForGemini) RestoreAccount(ctx context.Context, id int64) error {
+	return nil
+}
 
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForGemini)(nil)

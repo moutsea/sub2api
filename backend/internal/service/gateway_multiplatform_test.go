@@ -172,6 +172,18 @@ func (m *mockAccountRepoForPlatform) UpdateExtra(ctx context.Context, id int64, 
 func (m *mockAccountRepoForPlatform) BulkUpdate(ctx context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	return 0, nil
 }
+func (m *mockAccountRepoForPlatform) FindByKiroRefreshToken(ctx context.Context, refreshToken string) (*Account, error) {
+	return nil, nil
+}
+func (m *mockAccountRepoForPlatform) ListDeletedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (m *mockAccountRepoForPlatform) ListErrorByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (m *mockAccountRepoForPlatform) RestoreAccount(ctx context.Context, id int64) error {
+	return nil
+}
 
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)

@@ -182,6 +182,18 @@ func (s *accountRepoStub) UpdateExtra(ctx context.Context, id int64, updates map
 func (s *accountRepoStub) BulkUpdate(ctx context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	panic("unexpected BulkUpdate call")
 }
+func (s *accountRepoStub) FindByKiroRefreshToken(ctx context.Context, refreshToken string) (*Account, error) {
+	return nil, nil
+}
+func (s *accountRepoStub) ListDeletedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (s *accountRepoStub) ListErrorByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (s *accountRepoStub) RestoreAccount(ctx context.Context, id int64) error {
+	return nil
+}
 
 // TestAccountService_Delete_NotFound 测试删除不存在的账号时返回正确的错误。
 // 预期行为：
