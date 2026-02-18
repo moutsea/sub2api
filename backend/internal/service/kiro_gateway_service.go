@@ -32,9 +32,12 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
+// kiroAWSQContextLimit is the conservative threshold for switching away from AWSQ endpoint.
+// AWSQ hard limit is ~200K, use 160K to avoid edge cases where upstream becomes unresponsive.
+const kiroAWSQContextLimit = 160000
 
-// getKiroEndpoints returns ordered endpoint list based on account config.
-// Priority: preferred_endpoint config > default (AWSQ first with CW fallback).
+// getKiroEndpoints returns ordered endpoint list based on account config and request characteristics.
+// Priority: preferred_endpoint config > dynamic selection based on context size > default (AWSQ first).
 func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfig {
 	region := account.GetKiroRegion()
 
@@ -50,7 +53,7 @@ func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfi
 		Name:      "CodeWhisperer",
 	}
 
-	// Explicit preferred_endpoint overrides default
+	// Explicit preferred_endpoint overrides dynamic logic
 	switch account.GetKiroPreferredEndpoint() {
 	case "awsq", "q", "cli":
 		return []kiroEndpointConfig{awsq, cw}
@@ -58,7 +61,14 @@ func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfi
 		return []kiroEndpointConfig{cw, awsq}
 	}
 
-	// Default: AWSQ first with CW fallback
+	// Dynamic selection: large context → CodeWhisperer only (AWSQ doesn't handle >160K reliably),
+	// otherwise → AWSQ first (supports thinking)
+	if estimatedTokens > kiroAWSQContextLimit {
+		log.Printf("[kiro-endpoints] dynamic=CodeWhisperer_only reason=large_context tokens=%d limit=%d", estimatedTokens, kiroAWSQContextLimit)
+		return []kiroEndpointConfig{cw}
+	}
+
+	// Default: AWSQ first (supports thinking)
 	return []kiroEndpointConfig{awsq, cw}
 }
 
