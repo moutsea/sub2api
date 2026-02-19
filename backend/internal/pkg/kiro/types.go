@@ -277,6 +277,7 @@ type StopReason int
 const (
 	StopReasonEndTurn StopReason = iota
 	StopReasonToolUse
+	StopReasonMaxTokens
 )
 
 // ToAnthropic converts stop reason to Anthropic format
@@ -284,6 +285,8 @@ func (r StopReason) ToAnthropic() string {
 	switch r {
 	case StopReasonToolUse:
 		return "tool_use"
+	case StopReasonMaxTokens:
+		return "max_tokens"
 	default:
 		return "end_turn"
 	}

@@ -17,19 +17,19 @@ const (
 
 // awsPayload represents the JSON payload from CodeWhisperer stream
 type awsPayload struct {
-	Content             *string         `json:"content"`
-	FollowupPrompt      json.RawMessage `json:"followupPrompt"`
-	ToolUseID           *string         `json:"toolUseId"`
-	Name                *string         `json:"name"`
-	Input               *string         `json:"input"`
-	Stop                *bool           `json:"stop"`
-	Usage               *float64        `json:"usage"`
-	ContextUsagePercent *float64        `json:"contextUsagePercentage"`
-	MeteringEvent       map[string]any  `json:"meteringEvent"`
-	ContextUsageEvent   map[string]any  `json:"contextUsageEvent"`
-	MessageMetadataEvent map[string]any `json:"messageMetadataEvent"`
-	MetadataEvent        map[string]any `json:"metadataEvent"`
-	TokenUsage           map[string]any `json:"tokenUsage"`
+	Content              *string         `json:"content"`
+	FollowupPrompt       json.RawMessage `json:"followupPrompt"`
+	ToolUseID            *string         `json:"toolUseId"`
+	Name                 *string         `json:"name"`
+	Input                *string         `json:"input"`
+	Stop                 *bool           `json:"stop"`
+	Usage                *float64        `json:"usage"`
+	ContextUsagePercent  *float64        `json:"contextUsagePercentage"`
+	MeteringEvent        map[string]any  `json:"meteringEvent"`
+	ContextUsageEvent    map[string]any  `json:"contextUsageEvent"`
+	MessageMetadataEvent map[string]any  `json:"messageMetadataEvent"`
+	MetadataEvent        map[string]any  `json:"metadataEvent"`
+	TokenUsage           map[string]any  `json:"tokenUsage"`
 }
 
 // toolAccumulator tracks state for a tool use block
@@ -65,6 +65,8 @@ type AwsEventStreamParser struct {
 
 	toolAccumulators map[string]*toolAccumulator
 	sawToolUse       bool
+	sawText          bool
+	sawThinking      bool
 
 	// Thinking tag parsing state
 	inThinkingBlock    bool
@@ -182,6 +184,9 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		stopReason := StopReasonEndTurn
 		if p.sawToolUse {
 			stopReason = StopReasonToolUse
+		} else if p.sawThinking && !p.sawText {
+			// Thinking-only: model spent entire token budget on thinking
+			stopReason = StopReasonMaxTokens
 		}
 		events = append(events, StreamEvent{Type: EventMessageStop, StopReason: stopReason})
 		p.messageStopped = true
@@ -478,6 +483,8 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		stopReason := StopReasonEndTurn
 		if p.sawToolUse {
 			stopReason = StopReasonToolUse
+		} else if p.sawThinking && !p.sawText {
+			stopReason = StopReasonMaxTokens
 		}
 		events = append(events, StreamEvent{Type: EventMessageStop, StopReason: stopReason})
 		p.messageStopped = true
@@ -729,6 +736,8 @@ type StreamEventConverter struct {
 	blockIndexToToolID       map[uint32]string
 
 	sawToolUse        bool
+	sawText           bool
+	sawThinking       bool
 	totalOutputTokens int
 	contextPct        float64 // Context usage percentage from backend
 
@@ -841,6 +850,7 @@ func (c *StreamEventConverter) handleBlockStart(e StreamEvent) []ClaudeSSEEvent 
 
 	switch e.BlockType.Kind {
 	case BlockText:
+		c.sawText = true
 		c.activeTextBlockIndex = &adjustedIndex
 
 	case BlockToolUse:
@@ -849,6 +859,7 @@ func (c *StreamEventConverter) handleBlockStart(e StreamEvent) []ClaudeSSEEvent 
 		c.blockIndexToToolID[adjustedIndex] = e.BlockType.ToolID
 
 	case BlockThinking:
+		c.sawThinking = true
 		c.activeThinkingBlockIndex = &adjustedIndex
 	}
 
@@ -929,6 +940,12 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 	stopReason := "end_turn"
 	if c.sawToolUse {
 		stopReason = "tool_use"
+	} else if c.sawThinking && !c.sawText {
+		// Thinking-only: model spent entire token budget on thinking
+		stopReason = "max_tokens"
+	}
+	if c.contextPct >= 100 {
+		stopReason = "model_context_window_exceeded"
 	}
 
 	outputTokens := c.totalOutputTokens
@@ -1093,6 +1110,9 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 	if len(resp.ToolCalls) > 0 {
 		stopReason = "tool_use"
 	}
+	if resp.ContextPct >= 100 {
+		stopReason = "model_context_window_exceeded"
+	}
 
 	// Subtract cache tokens from input_tokens to match Anthropic's definition:
 	// - input_tokens = non-cached input tokens (excludes cache_read and cache_creation)
@@ -1234,6 +1254,7 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 						})
 					}
 					// Send text delta
+					p.sawText = true
 					events = append(events, StreamEvent{Type: EventTextDelta, Text: textBefore})
 				}
 				// Close text block before entering thinking
@@ -1244,6 +1265,7 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 					p.inTextBlock = false
 				}
 				p.inThinkingBlock = true
+				p.sawThinking = true
 				processContent = processContent[startIdx+len(ThinkingStartTag):]
 			} else {
 				// No start tag found - check for partial match at end
@@ -1267,6 +1289,7 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 							},
 						})
 					}
+					p.sawText = true
 					events = append(events, StreamEvent{Type: EventTextDelta, Text: processContent})
 				}
 				processContent = ""
