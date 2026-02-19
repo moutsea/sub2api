@@ -395,6 +395,17 @@ func (h *TempAPIKeyHandler) CleanupExpired(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
 
+// RecalculateCounts recalculates current_period_count for all active time_limited keys
+// by counting actual usage_logs within each key's 24-hour period window.
+func (h *TempAPIKeyHandler) RecalculateCounts(c *gin.Context) {
+	updated, err := h.repo.RecalculatePeriodCounts(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": updated})
+}
+
 // generateTempAPIKey generates a random temp API key
 func generateTempAPIKey() string {
 	bytes := make([]byte, 24)

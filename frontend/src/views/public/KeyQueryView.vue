@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import axios from 'axios'
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
+const route = useRoute()
 
 interface UsageLogEntry {
   id: number
@@ -166,6 +168,15 @@ const goToPage = (page: number) => {
     queryKey(page)
   }
 }
+
+// Auto-query if key parameter is present in URL
+onMounted(() => {
+  const keyParam = route.query.key as string
+  if (keyParam) {
+    keyInput.value = keyParam
+    queryKey()
+  }
+})
 </script>
 
 <template>

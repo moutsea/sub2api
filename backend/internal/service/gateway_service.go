@@ -3743,6 +3743,13 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		}
 	}
 
+	// 递增临时 API Key 的请求计数（current_period_count + total_requests）
+	if input.TempAPIKey != nil && s.tempAPIKeyRepo != nil {
+		if err := s.tempAPIKeyRepo.IncrementUsageCounters(ctx, input.TempAPIKey.ID); err != nil {
+			log.Printf("Increment temp API key usage counters failed: %v", err)
+		}
+	}
+
 	// Schedule batch update for account last_used_at
 	s.deferredService.ScheduleLastUsedUpdate(account.ID)
 

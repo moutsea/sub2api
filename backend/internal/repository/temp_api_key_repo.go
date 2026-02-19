@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -16,11 +17,12 @@ import (
 // TempAPIKeyRepo implements the temp API key repository
 type TempAPIKeyRepo struct {
 	client *dbent.Client
+	sqlDB  *sql.DB
 }
 
 // NewTempAPIKeyRepo creates a new TempAPIKeyRepo
-func NewTempAPIKeyRepo(client *dbent.Client) *TempAPIKeyRepo {
-	return &TempAPIKeyRepo{client: client}
+func NewTempAPIKeyRepo(client *dbent.Client, sqlDB *sql.DB) *TempAPIKeyRepo {
+	return &TempAPIKeyRepo{client: client, sqlDB: sqlDB}
 }
 
 // activeQuery returns a query with soft delete filter
@@ -530,4 +532,82 @@ func (r *TempAPIKeyRepo) toServiceModel(row *dbent.TempAPIKey) *service.TempAPIK
 	}
 
 	return key
+}
+
+// RecalculatePeriodCounts recalculates current_period_count for all active time_limited keys
+// by counting actual usage_logs within each key's current 24-hour period window.
+// Returns the number of keys updated.
+func (r *TempAPIKeyRepo) RecalculatePeriodCounts(ctx context.Context) (int, error) {
+	if r.sqlDB == nil {
+		return 0, fmt.Errorf("sql.DB not available")
+	}
+
+	// Get all active, activated time_limited keys
+	keys, err := r.client.TempAPIKey.Query().
+		Where(
+			tempapikey.DeletedAtIsNil(),
+			tempapikey.KeyType(service.TempAPIKeyTypeLimited),
+			tempapikey.Status(service.TempAPIKeyStatusActive),
+			tempapikey.ActivatedAtNotNil(),
+		).
+		All(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("query time_limited keys: %w", err)
+	}
+
+	now := time.Now()
+	updated := 0
+
+	for _, key := range keys {
+		if key.ActivatedAt == nil {
+			continue
+		}
+
+		// Calculate current period start (aligned to activated_at, 24h windows)
+		anchor := *key.ActivatedAt
+		elapsed := now.Sub(anchor)
+		if elapsed < 0 {
+			continue
+		}
+		periods := int(elapsed / (24 * time.Hour))
+		periodStart := anchor.Add(time.Duration(periods) * 24 * time.Hour)
+		periodEnd := periodStart.Add(24 * time.Hour)
+
+		// Count actual requests in this period from usage_logs
+		var count int
+		err := r.sqlDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM usage_logs WHERE temp_api_key_id = $1 AND created_at >= $2 AND created_at < $3",
+			key.ID, periodStart, periodEnd,
+		).Scan(&count)
+		if err != nil {
+			log.Printf("[TempAPIKey] RecalculatePeriodCounts: count query failed for id=%d: %v", key.ID, err)
+			continue
+		}
+
+		// Also count total requests across all time
+		var totalCount int64
+		err = r.sqlDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM usage_logs WHERE temp_api_key_id = $1",
+			key.ID,
+		).Scan(&totalCount)
+		if err != nil {
+			log.Printf("[TempAPIKey] RecalculatePeriodCounts: total count query failed for id=%d: %v", key.ID, err)
+			continue
+		}
+
+		// Update the key
+		_, err = r.client.TempAPIKey.UpdateOneID(key.ID).
+			SetCurrentPeriodStart(periodStart).
+			SetCurrentPeriodCount(count).
+			SetTotalRequests(totalCount).
+			Save(ctx)
+		if err != nil {
+			log.Printf("[TempAPIKey] RecalculatePeriodCounts: update failed for id=%d: %v", key.ID, err)
+			continue
+		}
+
+		updated++
+	}
+
+	return updated, nil
 }

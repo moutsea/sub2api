@@ -109,6 +109,15 @@ export async function cleanupExpired(): Promise<{ deleted: number }> {
   return data
 }
 
+/**
+ * Recalculate current_period_count for all active time_limited keys
+ * by counting actual usage_logs within each key's 24h period window.
+ */
+export async function recalculateCounts(): Promise<{ updated: number }> {
+  const { data } = await apiClient.post('/admin/temp-api-keys/recalculate-counts')
+  return data
+}
+
 export const tempApiKeysAPI = {
   list,
   getById,
@@ -118,4 +127,5 @@ export const tempApiKeysAPI = {
   batchDelete,
   batchUpdate,
   cleanupExpired,
+  recalculateCounts,
 }

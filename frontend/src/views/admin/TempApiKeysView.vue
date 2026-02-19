@@ -18,6 +18,13 @@
           >
             {{ cleaningUp ? '...' : t('admin.tempApiKeys.cleanupExpired') }}
           </button>
+          <button
+            @click="handleRecalculateCounts"
+            :disabled="recalculating"
+            class="btn btn-warning"
+          >
+            {{ recalculating ? '...' : t('admin.tempApiKeys.recalculateCounts') }}
+          </button>
           <button @click="showCreateDialog = true" class="btn btn-primary">
             {{ t('admin.tempApiKeys.create') }}
           </button>
@@ -175,6 +182,13 @@
 
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
+              <button
+                @click="handleViewUsage(row)"
+                class="btn btn-ghost btn-sm"
+                :title="t('admin.tempApiKeys.viewUsage')"
+              >
+                <Icon name="eye" size="sm" />
+              </button>
               <button
                 @click="handleEdit(row)"
                 class="btn btn-ghost btn-sm"
@@ -397,6 +411,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { tempApiKeysAPI } from '@/api/admin/temp-api-keys'
 import { groupsAPI } from '@/api/admin/groups'
@@ -411,6 +426,7 @@ import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const router = useRouter()
 
 const keys = ref<TempApiKey[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -418,6 +434,7 @@ const loading = ref(false)
 const creating = ref(false)
 const updating = ref(false)
 const cleaningUp = ref(false)
+const recalculating = ref(false)
 const pagination = ref({ total: 0, page: 1, page_size: 20 })
 
 // Dialogs
@@ -631,6 +648,28 @@ const handleCleanupExpired = async () => {
   } finally {
     cleaningUp.value = false
   }
+}
+
+const handleRecalculateCounts = async () => {
+  if (!confirm(t('admin.tempApiKeys.confirmRecalculate'))) return
+  recalculating.value = true
+  try {
+    const res = await tempApiKeysAPI.recalculateCounts()
+    if (res.updated > 0) {
+      appStore.showSuccess(t('admin.tempApiKeys.recalculateSuccess', { count: res.updated }))
+      loadKeys()
+    } else {
+      appStore.showSuccess(t('admin.tempApiKeys.recalculateNone'))
+    }
+  } catch (e: unknown) {
+    appStore.showError((e as Error).message || t('admin.tempApiKeys.recalculateFailed'))
+  } finally {
+    recalculating.value = false
+  }
+}
+
+const handleViewUsage = (key: TempApiKey) => {
+  router.push({ name: 'KeyQuery', query: { key: key.key } })
 }
 
 const handleDelete = async (id: number) => {

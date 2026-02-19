@@ -2074,7 +2074,13 @@ export default {
       confirmCleanup: 'Delete all temp keys expired over 1 day? This cannot be undone.',
       cleanupSuccess: 'Successfully cleaned up {count} expired keys',
       cleanupNone: 'No expired keys to clean up',
-      cleanupFailed: 'Failed to cleanup expired keys'
+      cleanupFailed: 'Failed to cleanup expired keys',
+      recalculateCounts: 'Recalculate Counts',
+      confirmRecalculate: 'Recalculate current period request counts for all time-limited keys based on usage logs?',
+      recalculateSuccess: 'Successfully recalculated counts for {count} keys',
+      recalculateNone: 'No keys to recalculate',
+      recalculateFailed: 'Failed to recalculate counts',
+      viewUsage: 'View Usage'
     },
 
     // Usage Records

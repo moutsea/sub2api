@@ -2221,7 +2221,13 @@ export default {
       confirmCleanup: '确定要删除所有过期超过 1 天的临时密钥吗？此操作不可撤销。',
       cleanupSuccess: '成功清理 {count} 个过期密钥',
       cleanupNone: '没有需要清理的过期密钥',
-      cleanupFailed: '清理过期密钥失败'
+      cleanupFailed: '清理过期密钥失败',
+      recalculateCounts: '刷新请求计数',
+      confirmRecalculate: '确定要根据使用日志重新计算所有限时限额密钥的当前周期请求数吗？',
+      recalculateSuccess: '成功刷新 {count} 个密钥的请求计数',
+      recalculateNone: '没有需要刷新的密钥',
+      recalculateFailed: '刷新请求计数失败',
+      viewUsage: '查看使用'
     },
 
     // Usage Records
