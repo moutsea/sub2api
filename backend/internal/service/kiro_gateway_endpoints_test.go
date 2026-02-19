@@ -16,9 +16,9 @@ func newKiroAccount(preferredEndpoint string) *Account {
 	}
 }
 
-func TestGetKiroEndpoints_DefaultSmallContext(t *testing.T) {
+func TestGetKiroEndpoints_Default(t *testing.T) {
 	account := newKiroAccount("")
-	endpoints := getKiroEndpoints(account, 100000)
+	endpoints := getKiroEndpoints(account)
 
 	if len(endpoints) != 2 {
 		t.Fatalf("expected 2 endpoints, got %d", len(endpoints))
@@ -31,36 +31,10 @@ func TestGetKiroEndpoints_DefaultSmallContext(t *testing.T) {
 	}
 }
 
-func TestGetKiroEndpoints_LargeContextSwitchesToCW(t *testing.T) {
-	account := newKiroAccount("")
-	endpoints := getKiroEndpoints(account, 160001)
-
-	if len(endpoints) != 1 {
-		t.Fatalf("expected 1 endpoint for large context, got %d", len(endpoints))
-	}
-	if endpoints[0].Name != "CodeWhisperer" {
-		t.Errorf("expected CodeWhisperer only, got %s", endpoints[0].Name)
-	}
-}
-
-func TestGetKiroEndpoints_BoundaryExact(t *testing.T) {
-	account := newKiroAccount("")
-
-	// Exactly at limit: should NOT trigger dynamic switch
-	endpoints := getKiroEndpoints(account, 160000)
-	if len(endpoints) != 2 {
-		t.Fatalf("expected 2 endpoints at boundary, got %d", len(endpoints))
-	}
-	if endpoints[0].Name != "AWSQ" {
-		t.Errorf("expected AWSQ first at boundary, got %s", endpoints[0].Name)
-	}
-}
-
 func TestGetKiroEndpoints_PreferredAWSQ(t *testing.T) {
 	account := newKiroAccount("awsq")
+	endpoints := getKiroEndpoints(account)
 
-	// Even with large context, preferred_endpoint overrides dynamic logic
-	endpoints := getKiroEndpoints(account, 200000)
 	if len(endpoints) != 2 {
 		t.Fatalf("expected 2 endpoints with preferred=awsq, got %d", len(endpoints))
 	}
@@ -71,8 +45,8 @@ func TestGetKiroEndpoints_PreferredAWSQ(t *testing.T) {
 
 func TestGetKiroEndpoints_PreferredCW(t *testing.T) {
 	account := newKiroAccount("cw")
+	endpoints := getKiroEndpoints(account)
 
-	endpoints := getKiroEndpoints(account, 0)
 	if len(endpoints) != 2 {
 		t.Fatalf("expected 2 endpoints with preferred=cw, got %d", len(endpoints))
 	}
@@ -84,28 +58,21 @@ func TestGetKiroEndpoints_PreferredCW(t *testing.T) {
 	}
 }
 
-func TestGetKiroEndpoints_PreferredOverridesDynamic(t *testing.T) {
-	// preferred_endpoint = "awsq" should override even when context > limit
-	account := newKiroAccount("awsq")
-	endpoints := getKiroEndpoints(account, 180000)
-
-	if len(endpoints) != 2 {
-		t.Fatalf("expected 2 endpoints (preferred overrides dynamic), got %d", len(endpoints))
+func TestGetKiroEndpoints_PreferredAliases(t *testing.T) {
+	// Test all AWSQ aliases
+	for _, alias := range []string{"awsq", "q", "cli"} {
+		account := newKiroAccount(alias)
+		endpoints := getKiroEndpoints(account)
+		if endpoints[0].Name != "AWSQ" {
+			t.Errorf("alias %q: expected AWSQ first, got %s", alias, endpoints[0].Name)
+		}
 	}
-	if endpoints[0].Name != "AWSQ" {
-		t.Errorf("expected AWSQ first (preferred overrides dynamic), got %s", endpoints[0].Name)
-	}
-}
-
-func TestGetKiroEndpoints_ZeroTokens(t *testing.T) {
-	// Test connection scenario: estimatedTokens = 0
-	account := newKiroAccount("")
-	endpoints := getKiroEndpoints(account, 0)
-
-	if len(endpoints) != 2 {
-		t.Fatalf("expected 2 endpoints for zero tokens, got %d", len(endpoints))
-	}
-	if endpoints[0].Name != "AWSQ" {
-		t.Errorf("expected AWSQ first for zero tokens, got %s", endpoints[0].Name)
+	// Test all CW aliases
+	for _, alias := range []string{"cw", "codewhisperer", "kiro"} {
+		account := newKiroAccount(alias)
+		endpoints := getKiroEndpoints(account)
+		if endpoints[0].Name != "CodeWhisperer" {
+			t.Errorf("alias %q: expected CodeWhisperer first, got %s", alias, endpoints[0].Name)
+		}
 	}
 }

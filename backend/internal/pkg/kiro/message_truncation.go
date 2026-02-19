@@ -3,7 +3,11 @@
 package kiro
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
+
+	"github.com/gin-gonic/gin"
 )
 
 // TruncationConfig holds configuration for message truncation
@@ -244,6 +248,64 @@ func extractToolResultIDs(msg ClaudeMessage) []string {
 	}
 
 	return ids
+}
+
+// TruncateToFitBodySize truncates Claude message history until the serialized
+// CodeWhisperer request body fits within maxBodySize bytes.
+// It iteratively removes the earliest complete conversation turns (respecting
+// tool_use/tool_result pairs) and re-transforms until the body is small enough.
+// Returns the truncated CW request, the serialized body, or an error.
+func TruncateToFitBodySize(req *ClaudeRequest, profileArn string, ginCtx *gin.Context, maxBodySize int) (*CodeWhispererRequest, []byte, error) {
+	if req == nil {
+		return nil, nil, fmt.Errorf("request is nil")
+	}
+
+	messages := req.Messages
+	minKeep := 4 // Keep at least 4 messages (2 turns)
+
+	// Find all safe truncation points
+	truncationPoints := findSafeTruncationPoints(messages, minKeep)
+	if len(truncationPoints) == 0 {
+		return nil, nil, fmt.Errorf("no safe truncation points found (messages=%d, minKeep=%d)", len(messages), minKeep)
+	}
+
+	// Try each truncation point from least aggressive to most aggressive
+	// (keep as much history as possible while fitting within the limit)
+	for _, point := range truncationPoints {
+		truncatedMessages := messages[point:]
+
+		truncatedClaudeReq := &ClaudeRequest{
+			Model:       req.Model,
+			Messages:    truncatedMessages,
+			System:      req.System,
+			Tools:       req.Tools,
+			ToolChoice:  req.ToolChoice,
+			MaxTokens:   req.MaxTokens,
+			Temperature: req.Temperature,
+			Stream:      req.Stream,
+			Thinking:    req.Thinking,
+		}
+
+		cwReq, err := TransformClaudeToCodeWhisperer(truncatedClaudeReq, profileArn, ginCtx)
+		if err != nil {
+			log.Printf("[kiro] TruncateToFitBodySize: transform failed at point %d: %v", point, err)
+			continue
+		}
+
+		body, err := json.Marshal(cwReq)
+		if err != nil {
+			log.Printf("[kiro] TruncateToFitBodySize: marshal failed at point %d: %v", point, err)
+			continue
+		}
+
+		if len(body) <= maxBodySize {
+			log.Printf("[kiro] TruncateToFitBodySize: success, removed %d/%d messages, body=%d bytes (limit=%d)",
+				point, len(messages), len(body), maxBodySize)
+			return cwReq, body, nil
+		}
+	}
+
+	return nil, nil, fmt.Errorf("cannot fit body within %d bytes even after maximum truncation", maxBodySize)
 }
 
 // TruncateAndRetry is a helper that truncates messages and returns a modified request.
