@@ -32,11 +32,14 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
-// getKiroEndpoints returns ordered endpoint list based on account config.
-// Priority: preferred_endpoint config > default (AWSQ first with CW fallback).
-// Note: CodeWhisperer has a lower context limit than AWSQ, so dynamic switching
-// based on context size is intentionally not done.
-func getKiroEndpoints(account *Account) []kiroEndpointConfig {
+// kiroAWSQContextLimit is the conservative threshold for switching away from AWSQ endpoint.
+// AWSQ becomes unresponsive or returns 400 at ~160K tokens.
+// CodeWhisperer (Kiro IDE endpoint) handles larger context reliably.
+const kiroAWSQContextLimit = 160000
+
+// getKiroEndpoints returns ordered endpoint list based on account config and request characteristics.
+// Priority: preferred_endpoint config > dynamic selection based on context size > default (AWSQ first).
+func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfig {
 	region := account.GetKiroRegion()
 
 	awsq := kiroEndpointConfig{
@@ -51,10 +54,19 @@ func getKiroEndpoints(account *Account) []kiroEndpointConfig {
 		Name:      "CodeWhisperer",
 	}
 
-	// Explicit preferred_endpoint overrides default order
+	// Explicit preferred_endpoint overrides dynamic logic
 	switch account.GetKiroPreferredEndpoint() {
+	case "awsq", "q", "cli":
+		return []kiroEndpointConfig{awsq, cw}
 	case "cw", "codewhisperer", "kiro":
 		return []kiroEndpointConfig{cw, awsq}
+	}
+
+	// Dynamic selection: large context → CodeWhisperer only (AWSQ doesn't handle >160K reliably),
+	// otherwise → AWSQ first (supports thinking)
+	if estimatedTokens > kiroAWSQContextLimit {
+		log.Printf("[kiro-endpoints] dynamic=CodeWhisperer_only reason=large_context tokens=%d limit=%d", estimatedTokens, kiroAWSQContextLimit)
+		return []kiroEndpointConfig{cw}
 	}
 
 	// Default: AWSQ first (supports thinking), CW as fallback
@@ -211,10 +223,21 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Check request body size to prevent upstream rejection
+	// Kiro API has undocumented limits on request body size (observed ~1MB)
+	const maxRequestBodySize = 1024 * 1024 // 1 MB
+	if len(reqBody) > maxRequestBodySize {
+		log.Printf("%s status=request_too_large request_body_size=%d max=%d", prefix, len(reqBody), maxRequestBodySize)
+		return nil, &ContextTooLongError{
+			EstimatedTokens: estimatedTokens,
+			Limit:           kiro.KiroContextWindowLimit,
+		}
+	}
+
 	log.Printf("%s request_size=%d model=%s mapped_model=%s", prefix, len(reqBody), originalModel, mappedModel)
 
-	// Build endpoint list (primary + fallback)
-	endpoints := getKiroEndpoints(account)
+	// Build endpoint list (primary + fallback) with dynamic selection
+	endpoints := getKiroEndpoints(account, estimatedTokens)
 
 	// Generate machine ID for User-Agent headers
 	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
@@ -344,7 +367,10 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
-				log.Printf("%s endpoint=%s status=400 bad_request, trying next endpoint body=%s", prefix, ep.Name, truncateForLog(respBody, 500))
+
+				errorMsg := extractKiroErrorMessage(respBody)
+				log.Printf("%s endpoint=%s status=400 bad_request body=%s", prefix, ep.Name, truncateForLog(respBody, 500))
+
 				cwToolCount := 0
 				if cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext != nil {
 					cwToolCount = len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools)
@@ -352,7 +378,22 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				log.Printf("%s endpoint=%s status=400 debug: request_body_size=%d model=%s messages=%d tools=%d history_entries=%d cw_tools=%d",
 					prefix, ep.Name, len(reqBody), originalModel, len(claudeReq.Messages), len(claudeReq.Tools),
 					len(cwReq.ConversationState.History), cwToolCount)
-				lastErr = fmt.Errorf("endpoint %s: 400 %s", ep.Name, extractKiroErrorMessage(respBody))
+
+				// Check if error is context/input size related
+				errorMsgLower := strings.ToLower(errorMsg)
+				if strings.Contains(errorMsgLower, "input too long") ||
+					strings.Contains(errorMsgLower, "too large") ||
+					strings.Contains(errorMsgLower, "context") ||
+					strings.Contains(errorMsgLower, "exceeds") ||
+					strings.Contains(errorMsgLower, "maximum") {
+					log.Printf("%s status=context_error_detected error=%s", prefix, errorMsg)
+					return nil, &ContextTooLongError{
+						EstimatedTokens: estimatedTokens,
+						Limit:           kiro.KiroContextWindowLimit,
+					}
+				}
+
+				lastErr = fmt.Errorf("endpoint %s: 400 %s", ep.Name, errorMsg)
 				break // try next endpoint
 			}
 
@@ -1160,8 +1201,8 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		proxyURL = account.Proxy.URL()
 	}
 
-	// Build endpoint list
-	endpoints := getKiroEndpoints(account)
+	// Build endpoint list (test connection: small request)
+	endpoints := getKiroEndpoints(account, 0)
 
 	// Generate machine ID for User-Agent headers
 	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
