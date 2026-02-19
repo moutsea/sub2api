@@ -3,8 +3,10 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -237,7 +239,12 @@ func handleTempAPIKey(c *gin.Context, apiKeyString string, tempAPIKeyService *se
 		case errors.Is(err, service.ErrTempAPIKeyInactive):
 			AbortWithError(c, 401, "TEMP_API_KEY_INACTIVE", "Temporary API key is inactive")
 		case errors.Is(err, service.ErrTempAPIKeyRateLimited):
-			AbortWithError(c, 429, "TEMP_API_KEY_RATE_LIMITED", "Temporary API key daily limit exceeded")
+			msg := "Temporary API key daily limit exceeded"
+			if updatedKey != nil && updatedKey.CurrentPeriodStart != nil {
+				nextAvailable := updatedKey.CurrentPeriodStart.Add(24 * time.Hour)
+				msg = fmt.Sprintf("Temporary API key daily limit exceeded, next available at %s", nextAvailable.UTC().Format(time.RFC3339))
+			}
+			AbortWithError(c, 429, "TEMP_API_KEY_RATE_LIMITED", msg)
 		case errors.Is(err, service.ErrTempAPIKeyExhausted):
 			AbortWithError(c, 429, "TEMP_API_KEY_EXHAUSTED", "Temporary API key quota exhausted")
 		default:

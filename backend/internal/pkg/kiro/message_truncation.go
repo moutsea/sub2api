@@ -22,7 +22,7 @@ type TruncationConfig struct {
 func DefaultTruncationConfig() TruncationConfig {
 	return TruncationConfig{
 		// Target 80% of the limit to leave room for response and estimation errors
-		TargetTokens:      int(float64(KiroContextWindowLimit) * 0.80), // 120k tokens
+		TargetTokens:      int(float64(KiroContextWindowLimit) * 0.80), // 160k tokens
 		MinMessagesToKeep: 4, // Keep at least 4 messages (2 turns)
 		EnableLogging:     true,
 	}

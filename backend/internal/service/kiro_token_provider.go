@@ -49,7 +49,7 @@ const (
 	kiroRefreshBackoffMax        = 30 * time.Minute
 	kiroTokenRefreshBuffer       = 60 * time.Second  // Refresh token 60s before expiry
 	kiroCooldownRecoveryInterval = 30 * time.Second  // Check cooldown accounts every 30s
-	kiroBannedRecoveryInterval   = 15 * time.Minute  // Check banned accounts every 15min
+	kiroBannedRecoveryInterval   = 10 * time.Minute  // Check banned accounts every 10min
 	kiroDBErrorRecoveryInterval  = 15 * time.Minute  // Check DB error accounts every 15min
 	kiroMaxRefreshFailures       = 3                 // Mark as banned after 3 consecutive failures
 )
@@ -455,7 +455,7 @@ func (p *KiroTokenProvider) classifyRefreshError(err error) KiroRefreshErrorType
 	// "bad credentials" means permanently banned.
 	// Other 401s (e.g. token rotation race, transient auth issue) are treated as
 	// temporary so the account enters cooldown instead of being permanently disabled.
-	// The dbErrorRecoveryLoop will retry with the latest refresh_token from DB.
+	// The bannedRecoveryLoop will retry with the latest refresh_token from DB.
 	if strings.Contains(errMsg, "status 401") || (strings.Contains(errMsg, "401") && strings.Contains(errMsg, "unauthorized")) {
 		if strings.Contains(errMsg, "bad credentials") {
 			return KiroRefreshErrorBanned
@@ -470,7 +470,7 @@ func (p *KiroTokenProvider) classifyRefreshError(err error) KiroRefreshErrorType
 
 	// Refresh token expired or invalid — treat as temporary to allow recovery.
 	// invalid_grant often means the refresh token was rotated by a concurrent request
-	// and the DB already has the new one; dbErrorRecoveryLoop will pick it up.
+	// and the DB already has the new one; bannedRecoveryLoop will pick it up.
 	if strings.Contains(errMsg, "invalid_grant") ||
 		(strings.Contains(errMsg, "refresh token") && strings.Contains(errMsg, "expired")) {
 		return KiroRefreshErrorTemporary
@@ -516,10 +516,23 @@ func (p *KiroTokenProvider) handleRefreshError(accountID int64, state *KiroToken
 		go p.updateAccountStatus(accountID, KiroTokenStatusExhausted, err.Error())
 
 	case KiroRefreshErrorRateLimit, KiroRefreshErrorTemporary:
+		if errType == KiroRefreshErrorTemporary {
+			state.RefreshFailures++
+		}
+		// If consecutive temporary failures exceed threshold, escalate to banned.
+		// This prevents zombie accounts that loop in cooldown forever when the
+		// refresh_token is truly invalid (not just a transient rotation race).
+		if errType == KiroRefreshErrorTemporary && state.RefreshFailures >= kiroMaxRefreshFailures {
+			state.Status = KiroTokenStatusBanned
+			state.ErrorMsg = fmt.Sprintf("escalated to banned after %d consecutive refresh failures: %s", state.RefreshFailures, err.Error())
+			log.Printf("[KiroToken] Account %d escalated to banned after %d consecutive failures: %v", accountID, state.RefreshFailures, err)
+			go p.updateAccountStatus(accountID, KiroTokenStatusBanned, state.ErrorMsg)
+			return
+		}
 		state.Status = KiroTokenStatusCooldown
 		state.CooldownUntil = time.Now().Add(p.cooldownDuration)
-		state.ErrorMsg = err.Error() // Keep error message for debugging
-		log.Printf("[KiroToken] Account %d entered cooldown until %v: %v", accountID, state.CooldownUntil, err)
+		state.ErrorMsg = err.Error()
+		log.Printf("[KiroToken] Account %d entered cooldown until %v (failure %d/%d): %v", accountID, state.CooldownUntil, state.RefreshFailures, kiroMaxRefreshFailures, err)
 		// Sync status to database (cooldown maps to active in DB)
 		go p.updateAccountStatus(accountID, KiroTokenStatusCooldown, err.Error())
 
@@ -855,8 +868,9 @@ func (p *KiroTokenProvider) ForceRefreshToken(ctx context.Context, account *Acco
 	// Clear backoff on success
 	p.refreshBackoff.Delete(account.ID)
 
-	// Update account credentials in database (async)
-	go p.updateAccountCredentials(account.ID, tokenInfo)
+	// Update account credentials in database synchronously — the admin is waiting
+	// for the result, and async update can cause split-brain (memory active, DB error).
+	p.updateAccountCredentials(account.ID, tokenInfo)
 
 	return nil
 }
@@ -866,7 +880,7 @@ func (p *KiroTokenProvider) Start() {
 	log.Println("[KiroToken] Starting background recovery tasks...")
 	go p.cooldownRecoveryLoop()
 	go p.bannedRecoveryLoop()
-	go p.dbErrorRecoveryLoop()
+	go p.dbDeletedRecoveryLoop()
 	log.Println("[KiroToken] Background recovery tasks started")
 }
 
@@ -906,15 +920,14 @@ func (p *KiroTokenProvider) cooldownRecoveryLoop() {
 	}
 }
 
-// bannedRecoveryLoop periodically checks banned accounts and attempts to recover them
+// bannedRecoveryLoop periodically checks banned accounts (in-memory) and error accounts (DB) and attempts to recover them.
 func (p *KiroTokenProvider) bannedRecoveryLoop() {
 	ticker := time.NewTicker(kiroBannedRecoveryInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
+		// 1. Collect in-memory banned accounts (excluding exhausted - those need manual intervention)
 		var bannedAccounts []int64
-
-		// Collect banned accounts (excluding exhausted - those need manual intervention)
 		p.cache.Range(func(key, value any) bool {
 			accountID := key.(int64)
 			state := value.(*KiroTokenState)
@@ -927,11 +940,58 @@ func (p *KiroTokenProvider) bannedRecoveryLoop() {
 		})
 
 		if len(bannedAccounts) > 0 {
-			log.Printf("[KiroToken] Attempting to recover %d banned accounts", len(bannedAccounts))
+			log.Printf("[KiroToken] Attempting to recover %d in-memory banned accounts", len(bannedAccounts))
 			for _, accountID := range bannedAccounts {
 				p.attemptRecovery(accountID)
 			}
 		}
+
+		// 2. Query DB for error Kiro accounts that may not be in memory cache
+		//    (e.g. after process restart, or accounts that were never loaded).
+		p.recoverDBErrorAccounts()
+	}
+}
+
+// recoverDBErrorAccounts queries error (non-deleted) Kiro accounts from database and attempts to recover them.
+func (p *KiroTokenProvider) recoverDBErrorAccounts() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	errorAccounts, err := p.accountRepo.ListErrorByPlatform(ctx, PlatformKiro)
+	if err != nil {
+		log.Printf("[KiroToken] Failed to query error accounts from database: %v", err)
+		return
+	}
+	if len(errorAccounts) == 0 {
+		return
+	}
+
+	log.Printf("[KiroToken] Found %d error Kiro accounts in database, attempting recovery...", len(errorAccounts))
+	recovered := 0
+	failed := 0
+
+	for i := range errorAccounts {
+		account := &errorAccounts[i]
+		if account.IsKiroApiKey() {
+			continue
+		}
+
+		tokenInfo, err := p.refreshToken(ctx, account)
+		if err != nil {
+			errType := p.classifyRefreshError(err)
+			log.Printf("[KiroToken] Account %d (%s) recovery failed (type=%d): %v", account.ID, account.Name, errType, err)
+			failed++
+			continue
+		}
+
+		p.updateAccountCredentials(account.ID, tokenInfo)
+		p.updateCacheOnRecovery(account.ID, tokenInfo)
+		recovered++
+		log.Printf("[KiroToken] Account %d (%s) recovered successfully from error state", account.ID, account.Name)
+	}
+
+	if recovered > 0 || failed > 0 {
+		log.Printf("[KiroToken] DB error recovery completed: %d recovered, %d failed out of %d", recovered, failed, len(errorAccounts))
 	}
 }
 
@@ -977,7 +1037,12 @@ func (p *KiroTokenProvider) attemptRecovery(accountID int64) {
 	if err != nil {
 		errType := p.classifyRefreshError(err)
 		state.mu.Lock()
-		state.RefreshFailures++
+
+		// Only count non-RateLimit errors toward the escalation threshold.
+		// 429 is normal throttling and should not pollute the failure counter.
+		if errType != KiroRefreshErrorRateLimit {
+			state.RefreshFailures++
+		}
 
 		// Handle based on error type
 		switch errType {
@@ -986,38 +1051,36 @@ func (p *KiroTokenProvider) attemptRecovery(accountID int64) {
 			state.Status = KiroTokenStatusBanned
 			state.ErrorMsg = err.Error()
 			log.Printf("[KiroToken] Account %d recovery failed (permanent): %v", accountID, err)
-			// Sync status to database
 			errMsg := state.ErrorMsg
 			state.mu.Unlock()
 			go p.updateAccountStatus(accountID, KiroTokenStatusBanned, errMsg)
 			return
 		case KiroRefreshErrorNetwork, KiroRefreshErrorUnknown:
-			// Temporary error, check failure count
-			if state.RefreshFailures >= kiroMaxRefreshFailures {
-				state.Status = KiroTokenStatusBanned
-				state.ErrorMsg = fmt.Sprintf("recovery failed %d times: %v", state.RefreshFailures, err)
-				log.Printf("[KiroToken] Account %d marked banned after %d refresh failures", accountID, state.RefreshFailures)
-				// Sync status to database
-				errMsg := state.ErrorMsg
-				state.mu.Unlock()
-				go p.updateAccountStatus(accountID, KiroTokenStatusBanned, errMsg)
-				return
-			} else {
-				p.scheduleRefreshBackoff(accountID)
-				log.Printf("[KiroToken] Account %d recovery attempt %d failed: %v", accountID, state.RefreshFailures, err)
-			}
+			// Network/unknown error, apply backoff
+			p.scheduleRefreshBackoff(accountID)
+			log.Printf("[KiroToken] Account %d recovery attempt %d/%d failed (network/unknown): %v", accountID, state.RefreshFailures, kiroMaxRefreshFailures, err)
 		default:
 			// Rate limit or temporary, back to cooldown
-			state.Status = KiroTokenStatusCooldown
-			state.CooldownUntil = time.Now().Add(p.cooldownDuration)
-			log.Printf("[KiroToken] Account %d back to cooldown: %v", accountID, err)
-			// Sync status to database
-			errMsg := err.Error()
+			log.Printf("[KiroToken] Account %d back to cooldown (failure %d/%d): %v", accountID, state.RefreshFailures, kiroMaxRefreshFailures, err)
+		}
+
+		// Escalate to banned if consecutive failures exceed threshold
+		if state.RefreshFailures >= kiroMaxRefreshFailures {
+			state.Status = KiroTokenStatusBanned
+			state.ErrorMsg = fmt.Sprintf("recovery failed %d times: %v", state.RefreshFailures, err)
+			log.Printf("[KiroToken] Account %d escalated to banned after %d recovery failures", accountID, state.RefreshFailures)
+			errMsg := state.ErrorMsg
 			state.mu.Unlock()
-			go p.updateAccountStatus(accountID, KiroTokenStatusCooldown, errMsg)
+			go p.updateAccountStatus(accountID, KiroTokenStatusBanned, errMsg)
 			return
 		}
+
+		// Not yet escalated — enter cooldown
+		state.Status = KiroTokenStatusCooldown
+		state.CooldownUntil = time.Now().Add(p.cooldownDuration)
+		errMsg := err.Error()
 		state.mu.Unlock()
+		go p.updateAccountStatus(accountID, KiroTokenStatusCooldown, errMsg)
 		return
 	}
 
@@ -1042,76 +1105,36 @@ func (p *KiroTokenProvider) attemptRecovery(accountID int64) {
 	log.Printf("[KiroToken] Account %d recovered successfully", accountID)
 }
 
-// dbErrorRecoveryLoop periodically checks error accounts in database and attempts to recover them
-func (p *KiroTokenProvider) dbErrorRecoveryLoop() {
+// dbDeletedRecoveryLoop periodically checks soft-deleted Kiro accounts in database and attempts to recover them.
+// Error accounts are handled by bannedRecoveryLoop instead.
+func (p *KiroTokenProvider) dbDeletedRecoveryLoop() {
 	ticker := time.NewTicker(kiroDBErrorRecoveryInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		p.recoverDBErrorAccounts()
+		p.recoverDBDeletedAccounts()
 	}
 }
 
-// recoverDBErrorAccounts queries error and soft-deleted Kiro accounts from database and attempts to recover them.
-// For error accounts: refresh token and restore to active status.
-// For deleted accounts: refresh token, restore from soft-delete, and reactivate (group bindings are preserved).
-func (p *KiroTokenProvider) recoverDBErrorAccounts() {
+// recoverDBDeletedAccounts queries soft-deleted Kiro accounts from database and attempts to recover them.
+// Refresh token, verify credits, restore from soft-delete, and reactivate (group bindings are preserved).
+func (p *KiroTokenProvider) recoverDBDeletedAccounts() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// Query error Kiro accounts from database
-	errorAccounts, err := p.accountRepo.ListErrorByPlatform(ctx, PlatformKiro)
-	if err != nil {
-		log.Printf("[KiroToken] Failed to query error accounts from database: %v", err)
-		errorAccounts = nil
-	}
-
-	// Query soft-deleted Kiro accounts from database
 	deletedAccounts, err := p.accountRepo.ListDeletedByPlatform(ctx, PlatformKiro)
 	if err != nil {
 		log.Printf("[KiroToken] Failed to query deleted accounts from database: %v", err)
-		deletedAccounts = nil
+		return
 	}
-
-	if len(errorAccounts) == 0 && len(deletedAccounts) == 0 {
+	if len(deletedAccounts) == 0 {
 		return
 	}
 
-	if len(errorAccounts) > 0 {
-		log.Printf("[KiroToken] Found %d error Kiro accounts in database, attempting recovery...", len(errorAccounts))
-	}
-	if len(deletedAccounts) > 0 {
-		log.Printf("[KiroToken] Found %d deleted Kiro accounts in database, attempting recovery...", len(deletedAccounts))
-	}
-
+	log.Printf("[KiroToken] Found %d deleted Kiro accounts in database, attempting recovery...", len(deletedAccounts))
 	recovered := 0
 	failed := 0
 
-	// Recover error accounts
-	for i := range errorAccounts {
-		account := &errorAccounts[i]
-
-		if account.IsKiroApiKey() {
-			continue
-		}
-
-		tokenInfo, err := p.refreshToken(ctx, account)
-		if err != nil {
-			errType := p.classifyRefreshError(err)
-			if errType == KiroRefreshErrorBanned || errType == KiroRefreshErrorSuspended || errType == KiroRefreshErrorExpired {
-				log.Printf("[KiroToken] Account %d (%s) recovery failed (permanent): %v", account.ID, account.Name, err)
-			}
-			failed++
-			continue
-		}
-
-		p.updateAccountCredentials(account.ID, tokenInfo)
-		p.updateCacheOnRecovery(account.ID, tokenInfo)
-		recovered++
-		log.Printf("[KiroToken] Account %d (%s) recovered successfully from error state", account.ID, account.Name)
-	}
-
-	// Recover deleted accounts
 	for i := range deletedAccounts {
 		account := &deletedAccounts[i]
 
@@ -1122,9 +1145,7 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 		tokenInfo, err := p.refreshToken(ctx, account)
 		if err != nil {
 			errType := p.classifyRefreshError(err)
-			if errType == KiroRefreshErrorBanned || errType == KiroRefreshErrorSuspended || errType == KiroRefreshErrorExpired {
-				log.Printf("[KiroToken] Deleted account %d (%s) recovery failed (permanent): %v", account.ID, account.Name, err)
-			}
+			log.Printf("[KiroToken] Deleted account %d (%s) recovery failed (type=%d): %v", account.ID, account.Name, errType, err)
 			failed++
 			continue
 		}
@@ -1143,9 +1164,11 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 			continue
 		}
 		creditsInfo := kiro.ExtractCreditsInfo(limits)
-		if creditsInfo == nil || creditsInfo.TotalCredits <= 0 {
-			log.Printf("[KiroToken] Deleted account %d (%s) has no valid credits (total=%.2f), skipping restore",
-				account.ID, account.Name, func() float64 { if creditsInfo != nil { return creditsInfo.TotalCredits }; return 0 }())
+		if creditsInfo == nil || creditsInfo.TotalCredits <= 0 || creditsInfo.AvailableCredits <= 0 {
+			log.Printf("[KiroToken] Deleted account %d (%s) has no valid credits (total=%.2f, available=%.2f), skipping restore",
+				account.ID, account.Name,
+				func() float64 { if creditsInfo != nil { return creditsInfo.TotalCredits }; return 0 }(),
+				func() float64 { if creditsInfo != nil { return creditsInfo.AvailableCredits }; return 0 }())
 			failed++
 			continue
 		}
@@ -1165,8 +1188,7 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 	}
 
 	if recovered > 0 || failed > 0 {
-		log.Printf("[KiroToken] DB recovery completed: %d recovered, %d failed (error=%d, deleted=%d)",
-			recovered, failed, len(errorAccounts), len(deletedAccounts))
+		log.Printf("[KiroToken] DB deleted recovery completed: %d recovered, %d failed out of %d", recovered, failed, len(deletedAccounts))
 	}
 }
 

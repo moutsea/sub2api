@@ -94,6 +94,18 @@ func (k *TempAPIKey) IsRateLimited() bool {
 	return k.CurrentPeriodCount >= k.DailyLimit
 }
 
+// CurrentPeriodUsed returns the number of requests used in the current period.
+// Returns 0 if the period has expired (not yet reset in DB).
+func (k *TempAPIKey) CurrentPeriodUsed() int {
+	if k.CurrentPeriodStart == nil {
+		return 0
+	}
+	if time.Since(*k.CurrentPeriodStart) >= 24*time.Hour {
+		return 0
+	}
+	return k.CurrentPeriodCount
+}
+
 // RemainingRequests returns the number of remaining requests in current period
 // 对于 time_limited 类型，返回当前周期剩余请求次数
 // 对于 quota_only 类型，此方法不适用，请使用 RemainingQuotaUSD

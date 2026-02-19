@@ -222,3 +222,69 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 	return accessToken, nil
 }
+
+// RefreshToken 清除缓存并强制刷新 token（忽略 expires_at），用于 403 token revoked 场景
+// 返回新 token，如果刷新失败则返回错误
+func (p *ClaudeTokenProvider) RefreshToken(ctx context.Context, account *Account) (string, error) {
+	if account == nil {
+		return "", errors.New("account is nil")
+	}
+
+	// 清除缓存
+	if p.tokenCache != nil {
+		cacheKey := ClaudeTokenCacheKey(account)
+		_ = p.tokenCache.DeleteAccessToken(ctx, cacheKey)
+	}
+
+	// 从数据库获取最新账户信息
+	if p.accountRepo != nil {
+		fresh, err := p.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && fresh != nil {
+			account = fresh
+		}
+	}
+
+	// 强制刷新（不检查 expires_at）
+	if p.oauthService == nil {
+		return "", errors.New("oauth service not configured")
+	}
+	tokenInfo, err := p.oauthService.RefreshAccountToken(ctx, account)
+	if err != nil {
+		return "", err
+	}
+
+	// 更新 credentials
+	newCredentials := make(map[string]any)
+	for k, v := range account.Credentials {
+		newCredentials[k] = v
+	}
+	newCredentials["access_token"] = tokenInfo.AccessToken
+	newCredentials["token_type"] = tokenInfo.TokenType
+	newCredentials["expires_in"] = strconv.FormatInt(tokenInfo.ExpiresIn, 10)
+	newCredentials["expires_at"] = strconv.FormatInt(tokenInfo.ExpiresAt, 10)
+	if tokenInfo.RefreshToken != "" {
+		newCredentials["refresh_token"] = tokenInfo.RefreshToken
+	}
+	if tokenInfo.Scope != "" {
+		newCredentials["scope"] = tokenInfo.Scope
+	}
+	account.Credentials = newCredentials
+	if updateErr := p.accountRepo.Update(ctx, account); updateErr != nil {
+		slog.Error("claude_token_force_refresh_update_failed", "account_id", account.ID, "error", updateErr)
+	}
+
+	// 写入缓存
+	if p.tokenCache != nil {
+		cacheKey := ClaudeTokenCacheKey(account)
+		expiresAt := account.GetCredentialAsTime("expires_at")
+		ttl := 30 * time.Minute
+		if expiresAt != nil {
+			if until := time.Until(*expiresAt); until > claudeTokenCacheSkew {
+				ttl = until - claudeTokenCacheSkew
+			}
+		}
+		_ = p.tokenCache.SetAccessToken(ctx, cacheKey, tokenInfo.AccessToken, ttl)
+	}
+
+	return tokenInfo.AccessToken, nil
+}

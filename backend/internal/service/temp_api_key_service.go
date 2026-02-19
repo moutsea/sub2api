@@ -16,6 +16,7 @@ type TempAPIKeyRepository interface {
 	GetByKey(ctx context.Context, key string) (*TempAPIKey, error)
 	ActivateAndIncrement(ctx context.Context, id int64) (*TempAPIKey, bool, error)
 	AddCostUSD(ctx context.Context, id int64, costUSD float64) (*TempAPIKey, bool, error)
+	IncrementUsageCounters(ctx context.Context, id int64) error
 }
 
 // NewTempAPIKeyService creates a new TempAPIKeyService
@@ -69,7 +70,7 @@ func (s *TempAPIKeyService) ValidateAndIncrement(ctx context.Context, key *TempA
 	}
 
 	if rateLimited {
-		return nil, ErrTempAPIKeyRateLimited
+		return updated, ErrTempAPIKeyRateLimited
 	}
 
 	return updated, nil

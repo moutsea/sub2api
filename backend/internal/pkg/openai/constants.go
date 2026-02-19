@@ -15,6 +15,12 @@ type Model struct {
 
 // DefaultModels OpenAI models list
 var DefaultModels = []Model{
+	{ID: "gpt-5.3-codex-xhigh", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex XHigh"},
+	{ID: "gpt-5.3-codex-high", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex High"},
+	{ID: "gpt-5.3-codex-medium", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Medium"},
+	{ID: "gpt-5.3-codex-low", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Low"},
+	{ID: "gpt-5.3-codex", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex"},
+	{ID: "gpt-5.2-codex-xhigh", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2 Codex XHigh"},
 	{ID: "gpt-5.2", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2"},
 	{ID: "gpt-5.2-codex", Object: "model", Created: 1733011200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2 Codex"},
 	{ID: "gpt-5.1-codex-max", Object: "model", Created: 1730419200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.1 Codex Max"},
@@ -34,7 +40,7 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel default model for testing OpenAI accounts
-const DefaultTestModel = "gpt-5.1-codex"
+const DefaultTestModel = "gpt-5.2-codex"
 
 // DefaultInstructions default instructions for non-Codex CLI requests
 // Content loaded from instructions.txt at compile time

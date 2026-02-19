@@ -88,7 +88,7 @@ func (h *TempAPIKeyQueryHandler) Query(c *gin.Context) {
 		KeyType:            key.KeyType,
 		ValidDays:          key.ValidDays,
 		DailyLimit:         key.DailyLimit,
-		CurrentPeriodCount: key.CurrentPeriodCount,
+		CurrentPeriodCount: key.CurrentPeriodUsed(),
 		TotalRequests:      key.TotalRequests,
 		RemainingRequests:  key.RemainingRequests(),
 		IsExpired:          key.IsExpired(),

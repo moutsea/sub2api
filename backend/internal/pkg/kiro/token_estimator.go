@@ -31,13 +31,12 @@ const (
 	LargeToolPerOverhead  = 60
 
 	// Context window limits for Kiro
-	// Kiro upstream limit is 75% of 200k = 150k tokens
-	KiroContextWindowLimit = 150000
+	KiroContextWindowLimit = 200000
 	// Safety margin: trigger pre-check at 95% of the limit
 	// This is a last-resort check to provide a cleaner error message
 	// than the upstream API error. No compression is performed.
 	KiroContextSafetyMargin = 0.95
-	// Effective limit for pre-check (150k * 0.95 = 142.5k)
+	// Effective limit for pre-check (200k * 0.95 = 190k)
 	KiroContextPreCheckLimit = int(float64(KiroContextWindowLimit) * KiroContextSafetyMargin)
 
 	// Input token inflation for client-side context compression trigger

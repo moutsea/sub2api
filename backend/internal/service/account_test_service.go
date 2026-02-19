@@ -183,6 +183,12 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		testModelID = claude.DefaultTestModel
 	}
 
+	// 检测 1M 上下文测试：去掉 -1m 后缀，实际模型名不变
+	test1MContext := strings.HasSuffix(testModelID, "-1m")
+	if test1MContext {
+		testModelID = strings.TrimSuffix(testModelID, "-1m")
+	}
+
 	// For API Key accounts with model mapping, map the model
 	if account.Type == "apikey" {
 		mapping := account.GetModelMapping()
@@ -252,7 +258,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	// Set common headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", claude.DefaultBetaHeader)
+	betaHeader := claude.DefaultBetaHeader
+	if test1MContext {
+		betaHeader += "," + claude.BetaContext1M
+	}
+	req.Header.Set("anthropic-beta", betaHeader)
 
 	// Apply Claude Code client headers
 	for key, value := range claude.DefaultHeaders {
