@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	mathrand "math/rand"
 	"regexp"
 	"sort"
 	"strings"
@@ -450,6 +451,12 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 	return s.selectAccountForModelWithPlatform(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
 }
 
+// accountWithLoad wraps Account with its load information for load-aware sorting.
+type accountWithLoad struct {
+	account  *Account
+	loadInfo *AccountLoadInfo
+}
+
 // SelectAccountWithLoadAwareness selects account with load-awareness and wait plan.
 // metadataUserID: 原始 metadata.user_id 字段（用于提取会话 UUID 进行会话数量限制）
 func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, metadataUserID string) (*AccountSelectionResult, error) {
@@ -721,10 +728,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			routingLoadMap, _ := s.concurrencyService.GetAccountsLoadBatch(ctx, routingLoads)
 
 			// 3. 按负载感知排序
-			type accountWithLoad struct {
-				account  *Account
-				loadInfo *AccountLoadInfo
-			}
 			var routingAvailable []accountWithLoad
 			for _, acc := range routingCandidates {
 				loadInfo := routingLoadMap[acc.ID]
@@ -780,6 +783,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 					}
 				})
+				shuffleWithinSortGroups(routingAvailable)
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -928,10 +932,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			return result, nil
 		}
 	} else {
-		type accountWithLoad struct {
-			account  *Account
-			loadInfo *AccountLoadInfo
-		}
 		var available []accountWithLoad
 		for _, acc := range candidates {
 			loadInfo := loadMap[acc.ID]
@@ -992,6 +992,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 				}
 			})
+			shuffleWithinSortGroups(available)
 
 			for _, item := range available {
 				result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
@@ -1411,6 +1412,79 @@ func (s *GatewayService) sortAccountsByPriorityAndLastUsed(accounts []*Account, 
 			return a.LastUsedAt.Before(*b.LastUsedAt)
 		}
 	})
+	shuffleWithinPriorityAndLastUsed(accounts)
+}
+
+// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
+// 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号（惊群效应）。
+func shuffleWithinSortGroups(accounts []accountWithLoad) {
+	if len(accounts) <= 1 {
+		return
+	}
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && sameAccountWithLoadGroup(accounts[i], accounts[j]) {
+			j++
+		}
+		if j-i > 1 {
+			mathrand.Shuffle(j-i, func(a, b int) {
+				accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
+			})
+		}
+		i = j
+	}
+}
+
+// sameAccountWithLoadGroup 判断两个 accountWithLoad 是否属于同一排序组
+func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
+	if a.account.Priority != b.account.Priority {
+		return false
+	}
+	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+		return false
+	}
+	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
+}
+
+// shuffleWithinPriorityAndLastUsed 对排序后的 []*Account 切片，按 (Priority, LastUsedAt) 分组后组内随机打乱。
+func shuffleWithinPriorityAndLastUsed(accounts []*Account) {
+	if len(accounts) <= 1 {
+		return
+	}
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && sameAccountGroup(accounts[i], accounts[j]) {
+			j++
+		}
+		if j-i > 1 {
+			mathrand.Shuffle(j-i, func(a, b int) {
+				accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
+			})
+		}
+		i = j
+	}
+}
+
+// sameAccountGroup 判断两个 Account 是否属于同一排序组（Priority + LastUsedAt）
+func sameAccountGroup(a, b *Account) bool {
+	if a.Priority != b.Priority {
+		return false
+	}
+	return sameLastUsedAt(a.LastUsedAt, b.LastUsedAt)
+}
+
+// sameLastUsedAt 判断两个 LastUsedAt 是否相同（精度到秒）
+func sameLastUsedAt(a, b *time.Time) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return a.Unix() == b.Unix()
+	}
 }
 
 // selectAccountForModelWithPlatform 选择单平台账户（完全隔离）

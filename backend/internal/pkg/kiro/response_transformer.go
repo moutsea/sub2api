@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -33,9 +34,10 @@ type awsPayload struct {
 
 // toolAccumulator tracks state for a tool use block
 type toolAccumulator struct {
-	name       string
-	blockIndex uint32
-	started    bool
+	name        string
+	blockIndex  uint32
+	started     bool
+	inputBuffer strings.Builder // accumulates complete tool input JSON for truncation detection
 }
 
 // AwsEventStreamParser parses CodeWhisperer AWS EventStream binary format
@@ -146,6 +148,12 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 	// Close all unclosed tool blocks
 	for toolID, acc := range p.toolAccumulators {
 		if acc.started {
+			accumulated := acc.inputBuffer.String()
+			if DetectToolInputTruncation(acc.name, accumulated) {
+				log.Printf("[kiro-truncation] stream-finish tool=%s TRUNCATED", acc.name)
+				softJSON, _ := json.Marshal(BuildSoftLimitInput())
+				events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: string(softJSON)})
+			}
 			events = append(events,
 				StreamEvent{Type: EventToolUseStop, ToolID: toolID},
 				StreamEvent{Type: EventContentBlockStop, Index: acc.blockIndex},
@@ -395,11 +403,18 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		}
 
 		if payload.Input != nil && *payload.Input != "" {
+			acc.inputBuffer.WriteString(*payload.Input)
 			events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: *payload.Input})
 		}
 
 		isStop := payload.Stop != nil && *payload.Stop
 		if isStop {
+			accumulated := acc.inputBuffer.String()
+			if DetectToolInputTruncation(acc.name, accumulated) {
+				log.Printf("[kiro-truncation] tool=%s id=%s TRUNCATED at stop, injecting SOFT_LIMIT", acc.name, toolID)
+				softJSON, _ := json.Marshal(BuildSoftLimitInput())
+				events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: string(softJSON)})
+			}
 			delete(p.toolAccumulators, toolID)
 			events = append(events,
 				StreamEvent{Type: EventToolUseStop, ToolID: toolID},
@@ -432,6 +447,7 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 				)
 			}
 
+			acc.inputBuffer.WriteString(input)
 			events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: input})
 			return events, nil
 		}
@@ -963,6 +979,7 @@ type ToolCallData struct {
 	ID           string
 	Name         string
 	ArgumentsRaw string
+	IsTruncated  bool
 }
 
 // ParseCompleteResponse parses a complete (non-streaming) response
@@ -1018,7 +1035,14 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 	// Assign accumulated inputs to tool calls
 	for i := range resp.ToolCalls {
 		if input, ok := toolInputs[resp.ToolCalls[i].ID]; ok {
-			resp.ToolCalls[i].ArgumentsRaw = input
+			if DetectToolInputTruncation(resp.ToolCalls[i].Name, input) {
+				log.Printf("[kiro-truncation] non-stream tool=%s TRUNCATED, injecting SOFT_LIMIT", resp.ToolCalls[i].Name)
+				softInput, _ := json.Marshal(BuildSoftLimitInput())
+				resp.ToolCalls[i].ArgumentsRaw = string(softInput)
+				resp.ToolCalls[i].IsTruncated = true
+			} else {
+				resp.ToolCalls[i].ArgumentsRaw = input
+			}
 		}
 	}
 

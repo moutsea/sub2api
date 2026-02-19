@@ -32,13 +32,11 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
-// kiroAWSQContextLimit is the conservative threshold for switching away from AWSQ endpoint.
-// AWSQ hard limit is ~200K, use 160K to avoid edge cases where upstream becomes unresponsive.
-const kiroAWSQContextLimit = 160000
-
-// getKiroEndpoints returns ordered endpoint list based on account config and request characteristics.
-// Priority: preferred_endpoint config > dynamic selection based on context size > default (AWSQ first).
-func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfig {
+// getKiroEndpoints returns ordered endpoint list based on account config.
+// Priority: preferred_endpoint config > default (AWSQ first with CW fallback).
+// Note: CodeWhisperer has a lower context limit than AWSQ, so dynamic switching
+// based on context size is intentionally not done.
+func getKiroEndpoints(account *Account) []kiroEndpointConfig {
 	region := account.GetKiroRegion()
 
 	awsq := kiroEndpointConfig{
@@ -53,22 +51,13 @@ func getKiroEndpoints(account *Account, estimatedTokens int) []kiroEndpointConfi
 		Name:      "CodeWhisperer",
 	}
 
-	// Explicit preferred_endpoint overrides dynamic logic
+	// Explicit preferred_endpoint overrides default order
 	switch account.GetKiroPreferredEndpoint() {
-	case "awsq", "q", "cli":
-		return []kiroEndpointConfig{awsq, cw}
 	case "cw", "codewhisperer", "kiro":
 		return []kiroEndpointConfig{cw, awsq}
 	}
 
-	// Dynamic selection: large context → CodeWhisperer only (AWSQ doesn't handle >160K reliably),
-	// otherwise → AWSQ first (supports thinking)
-	if estimatedTokens > kiroAWSQContextLimit {
-		log.Printf("[kiro-endpoints] dynamic=CodeWhisperer_only reason=large_context tokens=%d limit=%d", estimatedTokens, kiroAWSQContextLimit)
-		return []kiroEndpointConfig{cw}
-	}
-
-	// Default: AWSQ first (supports thinking)
+	// Default: AWSQ first (supports thinking), CW as fallback
 	return []kiroEndpointConfig{awsq, cw}
 }
 
@@ -224,8 +213,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	log.Printf("%s request_size=%d model=%s mapped_model=%s", prefix, len(reqBody), originalModel, mappedModel)
 
-	// Build endpoint list (primary + fallback) with dynamic selection
-	endpoints := getKiroEndpoints(account, estimatedTokens)
+	// Build endpoint list (primary + fallback)
+	endpoints := getKiroEndpoints(account)
 
 	// Generate machine ID for User-Agent headers
 	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
@@ -1171,8 +1160,8 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		proxyURL = account.Proxy.URL()
 	}
 
-	// Build endpoint list (test connection: small request)
-	endpoints := getKiroEndpoints(account, 0)
+	// Build endpoint list
+	endpoints := getKiroEndpoints(account)
 
 	// Generate machine ID for User-Agent headers
 	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
