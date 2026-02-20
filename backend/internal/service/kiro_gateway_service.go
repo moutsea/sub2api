@@ -361,6 +361,16 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					strings.Contains(errorMsgLower, "exceeds") ||
 					strings.Contains(errorMsgLower, "maximum") {
 					log.Printf("%s status=context_error_detected error=%s", prefix, errorMsg)
+					setOpsUpstreamError(c, resp.StatusCode, errorMsg, "")
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:           account.Platform,
+						AccountID:          account.ID,
+						AccountName:        account.Name,
+						UpstreamStatusCode: resp.StatusCode,
+						UpstreamRequestID:  resp.Header.Get("x-amzn-requestid"),
+						Kind:               "context_too_long",
+						Message:            errorMsg,
+					})
 					return nil, &ContextTooLongError{
 						EstimatedTokens: estimatedTokens,
 						Limit:           kiro.KiroContextWindowLimit,
