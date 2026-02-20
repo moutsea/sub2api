@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/tidwall/gjson"
@@ -3770,6 +3771,18 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// Antigravity 账户不支持 count_tokens 转发，直接返回空值
 	if account.Platform == PlatformAntigravity {
 		c.JSON(http.StatusOK, gin.H{"input_tokens": 0})
+		return nil
+	}
+
+	// Kiro 账户使用本地 token 估算（Kiro 的 AWS token 无法调用 Anthropic count_tokens API）
+	if account.Platform == PlatformKiro {
+		claudeReq, err := kiro.ParseClaudeRequestFromJSON(body)
+		if err != nil {
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request")
+			return fmt.Errorf("parse claude request for count_tokens: %w", err)
+		}
+		estimatedTokens := kiro.EstimateInputTokens(claudeReq)
+		c.JSON(http.StatusOK, gin.H{"input_tokens": estimatedTokens})
 		return nil
 	}
 

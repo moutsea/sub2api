@@ -136,9 +136,33 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			cacheEstimation.MeetsCacheThreshold, cacheHit)
 	}
 
-	// Estimate input tokens for billing/logging (no pre-check gating here).
-	// The real upstream limit is body size (~810KB), enforced after serialization.
+	// Pre-check: Estimate input tokens and truncate if exceeding context limit.
+	// Upstream has two limits: token count (~200k) AND body size (~810KB).
+	// This handles the token limit; body size is checked after serialization.
+	// Unlike before, truncation failure does NOT reject the request — we let
+	// the body size check and upstream handle edge cases.
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
+	if estimatedTokens > kiro.KiroContextPreCheckLimit {
+		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
+			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+
+		truncatedReq, truncated := kiro.TruncateAndRetry(claudeReq)
+		if truncated {
+			newEstimate := kiro.EstimateInputTokens(truncatedReq)
+			log.Printf("%s status=messages_truncated original_messages=%d new_messages=%d tokens=%d->%d",
+				prefix, len(claudeReq.Messages), len(truncatedReq.Messages), estimatedTokens, newEstimate)
+			claudeReq = truncatedReq
+			estimatedTokens = newEstimate
+
+			// Re-serialize body for apikey passthrough path
+			if newBody, err := json.Marshal(claudeReq); err == nil {
+				body = newBody
+			}
+		} else {
+			log.Printf("%s status=truncation_not_possible estimated_tokens=%d limit=%d, proceeding anyway",
+				prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+		}
+	}
 
 	// Get access token
 	if s.tokenProvider == nil {
