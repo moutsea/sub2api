@@ -12,6 +12,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
+const (
+	// errorRecoveryInterval is how often we check error-state OAuth accounts
+	// and attempt to recover them by refreshing their tokens.
+	errorRecoveryInterval = 10 * time.Minute
+)
+
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
@@ -59,11 +65,12 @@ func (s *TokenRefreshService) Start() {
 		return
 	}
 
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.refreshLoop()
+	go s.errorRecoveryLoop()
 
-	log.Printf("[TokenRefresh] Service started (check every %d minutes, refresh %v hours before expiry)",
-		s.cfg.CheckIntervalMinutes, s.cfg.RefreshBeforeExpiryHours)
+	log.Printf("[TokenRefresh] Service started (check every %d minutes, refresh %v hours before expiry, error recovery every %v)",
+		s.cfg.CheckIntervalMinutes, s.cfg.RefreshBeforeExpiryHours, errorRecoveryInterval)
 }
 
 // Stop 停止刷新服务
@@ -242,4 +249,113 @@ func isNonRetryableRefreshError(err error) bool {
 		}
 	}
 	return false
+}
+
+// errorRecoveryLoop periodically checks error-state OAuth accounts and attempts
+// to recover them by refreshing their tokens. This prevents accounts from being
+// permanently stuck in error state due to transient 401 errors.
+// Modeled after Kiro's bannedRecoveryLoop.
+func (s *TokenRefreshService) errorRecoveryLoop() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(errorRecoveryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.recoverErrorAccounts()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+// recoverErrorAccounts queries error-state OAuth accounts from the database
+// and attempts to refresh their tokens. On success, restores the account to active.
+func (s *TokenRefreshService) recoverErrorAccounts() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Collect error accounts from all OAuth platforms
+	platforms := []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini}
+	var errorAccounts []Account
+
+	for _, platform := range platforms {
+		accounts, err := s.accountRepo.ListErrorByPlatform(ctx, platform)
+		if err != nil {
+			log.Printf("[TokenRefresh] Failed to query error accounts for %s: %v", platform, err)
+			continue
+		}
+		// Only include OAuth accounts (non-OAuth accounts can't be refreshed)
+		for _, a := range accounts {
+			if a.Type == AccountTypeOAuth {
+				errorAccounts = append(errorAccounts, a)
+			}
+		}
+	}
+
+	if len(errorAccounts) == 0 {
+		return
+	}
+
+	log.Printf("[TokenRefresh] Found %d error OAuth accounts, attempting recovery...", len(errorAccounts))
+	recovered, failed, skipped := 0, 0, 0
+
+	for i := range errorAccounts {
+		account := &errorAccounts[i]
+
+		// Find the matching refresher
+		var refresher TokenRefresher
+		for _, r := range s.refreshers {
+			if r.CanRefresh(account) {
+				refresher = r
+				break
+			}
+		}
+		if refresher == nil {
+			skipped++
+			continue
+		}
+
+		// Attempt refresh (single attempt, no retry — we'll try again next cycle)
+		newCredentials, err := refresher.Refresh(ctx, account)
+		if err != nil {
+			if isNonRetryableRefreshError(err) {
+				log.Printf("[TokenRefresh] Account %d (%s) recovery skipped (non-retryable): %v",
+					account.ID, account.Name, err)
+			} else {
+				log.Printf("[TokenRefresh] Account %d (%s) recovery failed: %v",
+					account.ID, account.Name, err)
+			}
+			failed++
+			continue
+		}
+
+		// Refresh succeeded — update credentials and restore to active
+		newCredentials[TokenVersionKey] = strconv.FormatInt(time.Now().UnixMilli(), 10)
+		account.Credentials = newCredentials
+		account.Status = StatusActive
+		account.ErrorMessage = ""
+
+		if err := s.accountRepo.Update(ctx, account); err != nil {
+			log.Printf("[TokenRefresh] Account %d (%s) recovery update failed: %v",
+				account.ID, account.Name, err)
+			failed++
+			continue
+		}
+
+		// Invalidate token cache so next request picks up the new token
+		if s.cacheInvalidator != nil {
+			if err := s.cacheInvalidator.InvalidateToken(ctx, account); err != nil {
+				log.Printf("[TokenRefresh] Account %d cache invalidation failed: %v", account.ID, err)
+			}
+		}
+
+		recovered++
+		log.Printf("[TokenRefresh] Account %d (%s) recovered from error state", account.ID, account.Name)
+	}
+
+	log.Printf("[TokenRefresh] Error recovery complete: recovered=%d, failed=%d, skipped=%d, total=%d",
+		recovered, failed, skipped, len(errorAccounts))
 }

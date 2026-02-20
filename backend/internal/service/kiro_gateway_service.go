@@ -138,11 +138,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Pre-check: Estimate input tokens and truncate messages if exceeding context limit
 	// This prevents 400 errors from Kiro upstream due to context length exceeding threshold
-	// Skip for opus-4-6 and sonnet-4-6 which may support up to 1M context window
-	is46Model := strings.Contains(originalModel, "opus-4-6") || strings.Contains(originalModel, "opus-4.6") ||
-		strings.Contains(originalModel, "sonnet-4-6") || strings.Contains(originalModel, "sonnet-4.6")
+	// All models share the same upstream limit (~200k tokens / ~810KB body)
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if !is46Model && estimatedTokens > kiro.KiroContextPreCheckLimit {
+	if estimatedTokens > kiro.KiroContextPreCheckLimit {
 		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
 			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
 
@@ -167,6 +165,11 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			// Use truncated request
 			claudeReq = truncatedReq
 			estimatedTokens = newEstimate
+
+			// Re-serialize body for apikey passthrough path
+			if newBody, err := json.Marshal(claudeReq); err == nil {
+				body = newBody
+			}
 		} else {
 			// Truncation not possible (too few messages or no safe truncation points)
 			log.Printf("%s status=truncation_not_possible estimated_tokens=%d limit=%d",
@@ -374,7 +377,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				break // try next endpoint
 			}
 
-			// Handle 400 bad request — try next endpoint (protocol differences between endpoints)
+			// Handle 400 bad request — return immediately (both endpoints share the same limits)
 			if resp.StatusCode == http.StatusBadRequest {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
@@ -405,8 +408,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					}
 				}
 
-				lastErr = fmt.Errorf("endpoint %s: 400 %s", ep.Name, errorMsg)
-				break // try next endpoint
+				// 400 errors are deterministic — no point trying the other endpoint
+				return nil, s.writeMappedClaudeError(c, account, resp.StatusCode, resp.Header.Get("x-amzn-requestid"), respBody)
 			}
 
 			// Handle retryable errors (5xx)
