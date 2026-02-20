@@ -16,9 +16,11 @@ const (
 // Format aligned with kiro.rs: use simplified model IDs
 var ModelMap = map[string]string{
 	// Opus 4.6 series
-	"claude-opus-4-6": "claude-opus-4.6",
+	"claude-opus-4-6":    "claude-opus-4.6",
+	"claude-opus-4-6-1m": "claude-opus-4.6",
 	// Sonnet 4.6 series
-	"claude-sonnet-4-6": "claude-sonnet-4.6",
+	"claude-sonnet-4-6":    "claude-sonnet-4.6",
+	"claude-sonnet-4-6-1m": "claude-sonnet-4.6",
 	// Opus 4.5 series
 	"claude-opus-4-5":          "claude-opus-4.5",
 	"claude-opus-4-5-20251101": "claude-opus-4.5",
