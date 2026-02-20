@@ -136,50 +136,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			cacheEstimation.MeetsCacheThreshold, cacheHit)
 	}
 
-	// Pre-check: Estimate input tokens and truncate messages if exceeding context limit
-	// This prevents 400 errors from Kiro upstream due to context length exceeding threshold
-	// All models share the same upstream limit (~200k tokens / ~810KB body)
+	// Estimate input tokens for billing/logging (no pre-check gating here).
+	// The real upstream limit is body size (~810KB), enforced after serialization.
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if estimatedTokens > kiro.KiroContextPreCheckLimit {
-		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
-			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
-
-		// Try to truncate messages
-		truncatedReq, truncated := kiro.TruncateAndRetry(claudeReq)
-		if truncated {
-			// Re-estimate after truncation
-			newEstimate := kiro.EstimateInputTokens(truncatedReq)
-			log.Printf("%s status=messages_truncated original_messages=%d new_messages=%d tokens=%d->%d",
-				prefix, len(claudeReq.Messages), len(truncatedReq.Messages), estimatedTokens, newEstimate)
-
-			// Check if still over limit after truncation
-			if newEstimate > kiro.KiroContextPreCheckLimit {
-				log.Printf("%s status=context_still_too_long after truncation, estimated_tokens=%d limit=%d",
-					prefix, newEstimate, kiro.KiroContextPreCheckLimit)
-				return nil, &ContextTooLongError{
-					EstimatedTokens: newEstimate,
-					Limit:           kiro.KiroContextWindowLimit,
-				}
-			}
-
-			// Use truncated request
-			claudeReq = truncatedReq
-			estimatedTokens = newEstimate
-
-			// Re-serialize body for apikey passthrough path
-			if newBody, err := json.Marshal(claudeReq); err == nil {
-				body = newBody
-			}
-		} else {
-			// Truncation not possible (too few messages or no safe truncation points)
-			log.Printf("%s status=truncation_not_possible estimated_tokens=%d limit=%d",
-				prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
-			return nil, &ContextTooLongError{
-				EstimatedTokens: estimatedTokens,
-				Limit:           kiro.KiroContextWindowLimit,
-			}
-		}
-	}
 
 	// Get access token
 	if s.tokenProvider == nil {
