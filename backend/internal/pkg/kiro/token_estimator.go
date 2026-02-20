@@ -32,11 +32,11 @@ const (
 
 	// Context window limits for Kiro
 	KiroContextWindowLimit = 200000
-	// Safety margin: trigger pre-check at 95% of the limit
-	// This is a last-resort check to provide a cleaner error message
-	// than the upstream API error. No compression is performed.
-	KiroContextSafetyMargin = 0.95
-	// Effective limit for pre-check (200k * 0.95 = 190k)
+	// Safety margin: trigger pre-check at 85% of the limit
+	// Token estimation has ±10-15% error, so we need a generous margin
+	// to prevent upstream CONTENT_LENGTH_EXCEEDS_THRESHOLD rejections.
+	KiroContextSafetyMargin = 0.85
+	// Effective limit for pre-check (200k * 0.85 = 170k)
 	KiroContextPreCheckLimit = int(float64(KiroContextWindowLimit) * KiroContextSafetyMargin)
 
 	// Input token inflation for client-side context compression trigger
@@ -48,8 +48,8 @@ const (
 )
 
 // EstimateInputTokens estimates the number of input tokens for a Claude request.
-// This is a fast estimation based on text length and structure overhead.
-// The estimation aims for ±10% accuracy compared to official tokenizers.
+// This accounts for CW format overhead: tool documentation injection into system prompt,
+// thinking prefix, tool_choice instruction, and system prompt wrapping.
 func EstimateInputTokens(req *ClaudeRequest) int {
 	if req == nil {
 		return 0
@@ -70,6 +70,52 @@ func EstimateInputTokens(req *ClaudeRequest) int {
 
 	// 4. Base request overhead
 	totalTokens += BaseRequestOverhead
+
+	// 5. CW format overhead: tool documentation injected into system prompt
+	// In CW format, tools with description > 500 chars get their full description
+	// duplicated into the first user message as part of the system prompt.
+	totalTokens += estimateToolDocTokens(req.Tools)
+
+	// 6. Thinking prefix (~20 tokens when enabled)
+	if req.Thinking != nil {
+		if thinkingType, _ := req.Thinking["type"].(string); thinkingType != "" {
+			totalTokens += 20
+		}
+	}
+
+	// 7. System prompt wrapping tags (~10 tokens)
+	if req.System != nil {
+		totalTokens += 10
+	}
+
+	return totalTokens
+}
+
+// estimateToolDocTokens estimates the extra tokens from tool documentation
+// that gets injected into the system prompt in CW format.
+// Tools with description > ToolDocThresholdLength (500 chars) have their
+// full description duplicated into the first user message.
+func estimateToolDocTokens(tools []ClaudeTool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+
+	totalTokens := 0
+	hasLongDesc := false
+
+	for _, tool := range tools {
+		if len(tool.Description) > 500 { // ToolDocThresholdLength
+			hasLongDesc = true
+			// "## Tool: {name}\n\n{description}" header + full description
+			totalTokens += estimateTextTokens(tool.Name) + 5 // header overhead
+			totalTokens += estimateTextTokens(tool.Description)
+		}
+	}
+
+	if hasLongDesc {
+		// Header: "---\n# Tool Documentation\nThe following tools have detailed documentation...\n\n"
+		totalTokens += 25
+	}
 
 	return totalTokens
 }
@@ -415,6 +461,57 @@ func EstimateCache(req *ClaudeRequest) CacheEstimation {
 	result.MeetsCacheThreshold = result.CacheableTokens >= MinCacheableTokens
 
 	return result
+}
+
+// estimateFixedTokens calculates the token count for parts of a request that
+// don't change during message truncation: system prompt + tools + CW overhead.
+// This avoids redundant recomputation when trying multiple truncation points.
+func estimateFixedTokens(req *ClaudeRequest) int {
+	if req == nil {
+		return 0
+	}
+	tokens := estimateSystemTokens(req.System) + estimateToolsTokens(req.Tools) + BaseRequestOverhead
+
+	// CW format overhead: tool documentation injection
+	tokens += estimateToolDocTokens(req.Tools)
+
+	// Thinking prefix
+	if req.Thinking != nil {
+		if thinkingType, _ := req.Thinking["type"].(string); thinkingType != "" {
+			tokens += 20
+		}
+	}
+
+	// System prompt wrapping tags
+	if req.System != nil {
+		tokens += 10
+	}
+
+	return tokens
+}
+
+// computeMessageTokens returns a slice where each element is the estimated
+// token count for the corresponding message. This enables O(1) range queries
+// via suffix sums instead of re-scanning all messages per truncation attempt.
+func computeMessageTokens(messages []ClaudeMessage) []int {
+	tokens := make([]int, len(messages))
+	for i := range messages {
+		tokens[i] = estimateMessageTokens(messages[i])
+	}
+	return tokens
+}
+
+// computeSuffixSum builds a suffix sum array from per-message token counts.
+// suffixSum[i] = sum of msgTokens[i:], so the total tokens for messages[point:]
+// is simply suffixSum[point]. suffixSum has len(msgTokens)+1 entries, where
+// suffixSum[len(msgTokens)] == 0.
+func computeSuffixSum(msgTokens []int) []int {
+	n := len(msgTokens)
+	ss := make([]int, n+1)
+	for i := n - 1; i >= 0; i-- {
+		ss[i] = ss[i+1] + msgTokens[i]
+	}
+	return ss
 }
 
 // ExtractSystemPromptText extracts system prompt as string for cache key generation.

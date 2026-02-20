@@ -313,8 +313,8 @@ func TestTruncateAndRetry(t *testing.T) {
 func TestDefaultTruncationConfig(t *testing.T) {
 	config := DefaultTruncationConfig()
 
-	// Verify target is 80% of limit
-	expectedTarget := int(float64(KiroContextWindowLimit) * 0.80)
+	// Verify target is 70% of limit
+	expectedTarget := int(float64(KiroContextWindowLimit) * 0.70)
 	if config.TargetTokens != expectedTarget {
 		t.Errorf("expected TargetTokens %d, got %d", expectedTarget, config.TargetTokens)
 	}
@@ -514,4 +514,474 @@ func TestTruncateToFitBodySize_ImpossibleLimit(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for impossibly small limit")
 	}
+}
+
+// ==================== Suffix Sum & Helper Tests ====================
+
+func TestComputeMessageTokens(t *testing.T) {
+	messages := []ClaudeMessage{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there!"},
+		{Role: "user", Content: "How are you?"},
+	}
+
+	tokens := computeMessageTokens(messages)
+	if len(tokens) != len(messages) {
+		t.Fatalf("expected %d token counts, got %d", len(messages), len(tokens))
+	}
+
+	// Each should be > 0 (at least MessageOverhead)
+	for i, tok := range tokens {
+		if tok <= 0 {
+			t.Errorf("message %d: expected positive token count, got %d", i, tok)
+		}
+	}
+
+	// Verify consistency with estimateMessageTokens
+	for i, msg := range messages {
+		expected := estimateMessageTokens(msg)
+		if tokens[i] != expected {
+			t.Errorf("message %d: computeMessageTokens=%d != estimateMessageTokens=%d", i, tokens[i], expected)
+		}
+	}
+}
+
+func TestComputeSuffixSum(t *testing.T) {
+	msgTokens := []int{100, 200, 300, 400, 50}
+	ss := computeSuffixSum(msgTokens)
+
+	// suffixSum should have len+1 entries
+	if len(ss) != len(msgTokens)+1 {
+		t.Fatalf("expected %d entries, got %d", len(msgTokens)+1, len(ss))
+	}
+
+	// ss[len] == 0
+	if ss[len(msgTokens)] != 0 {
+		t.Errorf("expected ss[%d]=0, got %d", len(msgTokens), ss[len(msgTokens)])
+	}
+
+	// ss[0] == total
+	expectedTotal := 100 + 200 + 300 + 400 + 50
+	if ss[0] != expectedTotal {
+		t.Errorf("expected ss[0]=%d, got %d", expectedTotal, ss[0])
+	}
+
+	// Verify each suffix sum
+	for i := 0; i < len(msgTokens); i++ {
+		expected := 0
+		for j := i; j < len(msgTokens); j++ {
+			expected += msgTokens[j]
+		}
+		if ss[i] != expected {
+			t.Errorf("suffixSum[%d]: expected %d, got %d", i, expected, ss[i])
+		}
+	}
+}
+
+func TestEstimateFixedTokens(t *testing.T) {
+	req := &ClaudeRequest{
+		Model:  "claude-sonnet-4-6",
+		System: "You are a helpful assistant.",
+		Tools: []ClaudeTool{
+			{Name: "read_file", Description: "Read a file", InputSchema: map[string]any{
+				"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
+			}},
+		},
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi!"},
+		},
+	}
+
+	fixed := estimateFixedTokens(req)
+	if fixed <= 0 {
+		t.Errorf("expected positive fixed tokens, got %d", fixed)
+	}
+
+	// fixed should equal system + tools + overhead, NOT include messages
+	total := EstimateInputTokens(req)
+	msgTokens := computeMessageTokens(req.Messages)
+	msgTotal := 0
+	for _, tok := range msgTokens {
+		msgTotal += tok
+	}
+
+	expectedFixed := total - msgTotal
+	if fixed != expectedFixed {
+		t.Errorf("fixed=%d != total(%d) - messages(%d) = %d", fixed, total, msgTotal, expectedFixed)
+	}
+}
+
+func TestSuffixSumConsistencyWithEstimateInputTokens(t *testing.T) {
+	// Verify that fixedTokens + suffixSum[0] == EstimateInputTokens for various requests
+	requests := []*ClaudeRequest{
+		buildTestClaudeRequest(5, 500),
+		buildTestClaudeRequest(10, 1000),
+		{
+			Model:  "claude-sonnet-4-6",
+			System: "System prompt here",
+			Messages: []ClaudeMessage{
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi!"},
+			},
+			Tools: []ClaudeTool{
+				{Name: "tool1", Description: "desc1", InputSchema: map[string]any{"type": "object"}},
+				{Name: "tool2", Description: "desc2", InputSchema: map[string]any{"type": "object"}},
+			},
+		},
+	}
+
+	for i, req := range requests {
+		expected := EstimateInputTokens(req)
+		msgTokens := computeMessageTokens(req.Messages)
+		ss := computeSuffixSum(msgTokens)
+		fixed := estimateFixedTokens(req)
+		actual := fixed + ss[0]
+
+		if actual != expected {
+			t.Errorf("request %d: fixedTokens(%d) + suffixSum[0](%d) = %d != EstimateInputTokens(%d)",
+				i, fixed, ss[0], actual, expected)
+		}
+	}
+}
+
+// TestTruncateMessagesIfNeeded_LargeConversation tests truncation with many messages
+// to verify the optimized implementation produces correct results.
+func TestTruncateMessagesIfNeeded_LargeConversation(t *testing.T) {
+	// Build a request large enough to exceed KiroContextPreCheckLimit (190k tokens).
+	// BPE tokenizer is ~4.5 chars/token for English, so we need ~855k chars total.
+	// 120 turns * 2 msgs * 4500 chars = 1,080,000 chars → ~240k tokens.
+	req := buildTestClaudeRequest(120, 4500)
+
+	tokens := EstimateInputTokens(req)
+	t.Logf("Messages: %d, Estimated tokens: %d, Limit: %d", len(req.Messages), tokens, KiroContextPreCheckLimit)
+
+	if tokens <= KiroContextPreCheckLimit {
+		t.Skipf("request only has %d tokens (limit %d), not enough to trigger truncation — adjust test parameters",
+			tokens, KiroContextPreCheckLimit)
+	}
+
+	config := TruncationConfig{
+		TargetTokens:      160000,
+		MinMessagesToKeep: 4,
+		EnableLogging:     false,
+	}
+
+	result, truncated := TruncateMessagesIfNeeded(req, config)
+	if !truncated {
+		t.Fatal("expected truncation for large conversation")
+	}
+
+	// Verify result has fewer messages
+	if len(result) >= len(req.Messages) {
+		t.Errorf("expected fewer messages: original=%d result=%d", len(req.Messages), len(result))
+	}
+
+	// Verify result still has at least MinMessagesToKeep messages
+	if len(result) < config.MinMessagesToKeep {
+		t.Errorf("result has %d messages, less than MinMessagesToKeep=%d", len(result), config.MinMessagesToKeep)
+	}
+
+	// Verify the last message is preserved (it's the final user message)
+	lastOriginal := req.Messages[len(req.Messages)-1]
+	lastResult := result[len(result)-1]
+	if lastOriginal.Content != lastResult.Content {
+		t.Error("last message was not preserved after truncation")
+	}
+
+	// Verify estimated tokens are within target
+	truncatedReq := &ClaudeRequest{
+		Model:    req.Model,
+		Messages: result,
+		System:   req.System,
+		Tools:    req.Tools,
+	}
+	truncatedTokens := EstimateInputTokens(truncatedReq)
+	t.Logf("After truncation: messages=%d, tokens=%d", len(result), truncatedTokens)
+	if truncatedTokens > config.TargetTokens {
+		// It's OK if it's under KiroContextPreCheckLimit (second pass)
+		if truncatedTokens > KiroContextPreCheckLimit {
+			t.Errorf("truncated tokens %d exceeds KiroContextPreCheckLimit %d", truncatedTokens, KiroContextPreCheckLimit)
+		}
+	}
+}
+
+// TestTruncateMessagesIfNeeded_AllToolChain tests with a conversation that is
+// entirely tool_use/tool_result pairs with no safe truncation points.
+func TestTruncateMessagesIfNeeded_AllToolChain(t *testing.T) {
+	// Build a long tool chain: assistant sends tool_use, user sends tool_result, repeat
+	// No clean break points because tool_use is always pending
+	messages := make([]ClaudeMessage, 0)
+	for i := 0; i < 50; i++ {
+		toolID := "tool_" + padString(5)
+		messages = append(messages, ClaudeMessage{
+			Role: "assistant",
+			Content: []any{
+				map[string]any{"type": "tool_use", "id": toolID, "name": "read_file",
+					"input": map[string]any{"path": padString(2000)}},
+			},
+		})
+		messages = append(messages, ClaudeMessage{
+			Role: "user",
+			Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": toolID, "content": padString(2000)},
+			},
+		})
+		// Immediately start next tool use without a clean assistant text response
+	}
+	// Prepend initial user message
+	messages = append([]ClaudeMessage{{Role: "user", Content: "Start"}}, messages...)
+
+	req := &ClaudeRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: messages,
+	}
+
+	config := TruncationConfig{
+		TargetTokens:      10000, // Very low target to force truncation attempt
+		MinMessagesToKeep: 4,
+		EnableLogging:     false,
+	}
+
+	// This should find truncation points where tool chains complete
+	result, truncated := TruncateMessagesIfNeeded(req, config)
+
+	// Whether truncation happens depends on whether safe points exist
+	// The key thing is it doesn't panic or hang
+	if truncated {
+		if len(result) < config.MinMessagesToKeep {
+			t.Errorf("result has %d messages, less than MinMessagesToKeep=%d", len(result), config.MinMessagesToKeep)
+		}
+	}
+}
+
+// ==================== Benchmarks ====================
+
+// BenchmarkTruncateMessagesIfNeeded_200Messages benchmarks truncation with ~240 messages
+func BenchmarkTruncateMessagesIfNeeded_200Messages(b *testing.B) {
+	// 120 turns * 2 messages + 1 final = 241 messages, ~4500 chars each → ~240k tokens
+	req := buildTestClaudeRequest(120, 4500)
+	config := TruncationConfig{
+		TargetTokens:      160000,
+		MinMessagesToKeep: 4,
+		EnableLogging:     false,
+	}
+
+	// Warm up tokenizer
+	_ = EstimateInputTokens(req)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		TruncateMessagesIfNeeded(req, config)
+	}
+}
+
+// BenchmarkTruncateMessagesIfNeeded_1000Messages benchmarks with 1000 messages
+func BenchmarkTruncateMessagesIfNeeded_1000Messages(b *testing.B) {
+	// 500 turns * 2 messages + 1 final = 1001 messages, ~2000 chars each
+	req := buildTestClaudeRequest(500, 2000)
+	config := TruncationConfig{
+		TargetTokens:      160000,
+		MinMessagesToKeep: 4,
+		EnableLogging:     false,
+	}
+
+	// Warm up tokenizer
+	_ = EstimateInputTokens(req)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		TruncateMessagesIfNeeded(req, config)
+	}
+}
+
+// BenchmarkEstimateInputTokens_1000Messages benchmarks token estimation alone
+func BenchmarkEstimateInputTokens_1000Messages(b *testing.B) {
+	req := buildTestClaudeRequest(500, 2000)
+
+	// Warm up tokenizer
+	_ = EstimateInputTokens(req)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		EstimateInputTokens(req)
+	}
+}
+
+// BenchmarkComputeMessageTokens_1000Messages benchmarks per-message token computation
+func BenchmarkComputeMessageTokens_1000Messages(b *testing.B) {
+	req := buildTestClaudeRequest(500, 2000)
+
+	// Warm up tokenizer
+	_ = computeMessageTokens(req.Messages)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		computeMessageTokens(req.Messages)
+	}
+}
+
+// ==================== CW Overhead & Tool Doc Tests ====================
+
+func TestEstimateToolDocTokens_NoTools(t *testing.T) {
+	tokens := estimateToolDocTokens(nil)
+	if tokens != 0 {
+		t.Errorf("expected 0 for nil tools, got %d", tokens)
+	}
+
+	tokens = estimateToolDocTokens([]ClaudeTool{})
+	if tokens != 0 {
+		t.Errorf("expected 0 for empty tools, got %d", tokens)
+	}
+}
+
+func TestEstimateToolDocTokens_ShortDescriptions(t *testing.T) {
+	// All descriptions <= 500 chars — no tool doc injection
+	tools := []ClaudeTool{
+		{Name: "tool1", Description: "Short description"},
+		{Name: "tool2", Description: padString(499)},
+	}
+
+	tokens := estimateToolDocTokens(tools)
+	if tokens != 0 {
+		t.Errorf("expected 0 for short descriptions, got %d", tokens)
+	}
+}
+
+func TestEstimateToolDocTokens_LongDescriptions(t *testing.T) {
+	// Mix of short and long descriptions
+	tools := []ClaudeTool{
+		{Name: "short_tool", Description: "Short"},
+		{Name: "long_tool_1", Description: padString(1000)},
+		{Name: "long_tool_2", Description: padString(2000)},
+	}
+
+	tokens := estimateToolDocTokens(tools)
+	if tokens <= 0 {
+		t.Fatal("expected positive tokens for long descriptions")
+	}
+
+	// Should include header (25 tokens) + 2 long tools' name+description
+	// Verify it's at least the header
+	if tokens < 25 {
+		t.Errorf("expected at least 25 tokens (header), got %d", tokens)
+	}
+
+	t.Logf("Tool doc tokens for 2 long tools: %d", tokens)
+}
+
+func TestEstimateToolDocTokens_MatchesBuildToolDocumentation(t *testing.T) {
+	// Verify estimateToolDocTokens roughly matches the actual buildToolDocumentation output
+	tools := []ClaudeTool{
+		{Name: "read_file", Description: padString(800)},
+		{Name: "write_file", Description: padString(1200)},
+		{Name: "search", Description: "Short desc"},
+		{Name: "execute_command", Description: padString(2000)},
+	}
+
+	// Build actual tool documentation string
+	actualDoc := buildToolDocumentation(tools)
+	actualTokens := CountTokens(actualDoc)
+
+	// Our estimate
+	estimatedTokens := estimateToolDocTokens(tools)
+
+	// Allow 20% margin
+	margin := float64(actualTokens) * 0.20
+	diff := float64(estimatedTokens) - float64(actualTokens)
+	if diff < -margin || diff > margin {
+		t.Errorf("estimate %d differs from actual %d by more than 20%% (diff=%.0f, margin=%.0f)",
+			estimatedTokens, actualTokens, diff, margin)
+	}
+
+	t.Logf("Tool doc: actual=%d tokens, estimated=%d tokens, diff=%.1f%%",
+		actualTokens, estimatedTokens, (diff/float64(actualTokens))*100)
+}
+
+func TestEstimateInputTokens_CWOverhead(t *testing.T) {
+	// Request with long tool descriptions + thinking — should include CW overhead
+	reqWithOverhead := &ClaudeRequest{
+		Model:  "claude-sonnet-4-6",
+		System: "You are a helpful assistant.",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi!"},
+		},
+		Tools: []ClaudeTool{
+			{Name: "read_file", Description: padString(1000), InputSchema: map[string]any{"type": "object"}},
+			{Name: "write_file", Description: padString(1500), InputSchema: map[string]any{"type": "object"}},
+		},
+		Thinking: map[string]any{"type": "enabled", "budget_tokens": float64(10000)},
+	}
+
+	// Same request without long tools and thinking
+	reqWithoutOverhead := &ClaudeRequest{
+		Model:  "claude-sonnet-4-6",
+		System: "You are a helpful assistant.",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi!"},
+		},
+		Tools: []ClaudeTool{
+			{Name: "read_file", Description: "Short", InputSchema: map[string]any{"type": "object"}},
+		},
+	}
+
+	tokensWithOverhead := EstimateInputTokens(reqWithOverhead)
+	tokensWithoutOverhead := EstimateInputTokens(reqWithoutOverhead)
+
+	// The overhead version should be significantly larger due to:
+	// - tool doc injection (~500+ tokens for 2 long descriptions)
+	// - thinking prefix (20 tokens)
+	// - system wrapping (10 tokens)
+	diff := tokensWithOverhead - tokensWithoutOverhead
+	t.Logf("With CW overhead: %d tokens, without: %d tokens, diff: %d", tokensWithOverhead, tokensWithoutOverhead, diff)
+
+	// Tool doc alone should add at least 200 tokens (2 tools * ~1000-1500 chars / 4.5)
+	if diff < 200 {
+		t.Errorf("CW overhead too small: expected at least 200 token difference, got %d", diff)
+	}
+}
+
+func TestEstimateFixedTokens_IncludesCWOverhead(t *testing.T) {
+	req := &ClaudeRequest{
+		Model:  "claude-sonnet-4-6",
+		System: "System prompt",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "Hello"},
+		},
+		Tools: []ClaudeTool{
+			{Name: "tool1", Description: padString(1000), InputSchema: map[string]any{"type": "object"}},
+		},
+		Thinking: map[string]any{"type": "enabled", "budget_tokens": float64(10000)},
+	}
+
+	fixed := estimateFixedTokens(req)
+	total := EstimateInputTokens(req)
+	msgTokens := computeMessageTokens(req.Messages)
+	msgTotal := 0
+	for _, tok := range msgTokens {
+		msgTotal += tok
+	}
+
+	// fixed + messages should equal total
+	expectedFixed := total - msgTotal
+	if fixed != expectedFixed {
+		t.Errorf("fixed=%d != total(%d) - messages(%d) = %d", fixed, total, msgTotal, expectedFixed)
+	}
+
+	// fixed should include tool doc tokens
+	toolDocTokens := estimateToolDocTokens(req.Tools)
+	if toolDocTokens <= 0 {
+		t.Fatal("expected positive tool doc tokens")
+	}
+
+	// Verify fixed is larger than just system+tools+overhead (i.e. CW overhead is included)
+	baseFixed := estimateSystemTokens(req.System) + estimateToolsTokens(req.Tools) + BaseRequestOverhead
+	if fixed <= baseFixed {
+		t.Errorf("fixed(%d) should be larger than base(%d) due to CW overhead", fixed, baseFixed)
+	}
+
+	t.Logf("fixed=%d, base=%d, CW overhead=%d (toolDoc=%d, thinking=20, wrapping=10)",
+		fixed, baseFixed, fixed-baseFixed, toolDocTokens)
 }

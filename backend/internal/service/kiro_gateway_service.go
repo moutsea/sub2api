@@ -373,9 +373,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				if cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext != nil {
 					cwToolCount = len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools)
 				}
-				log.Printf("%s endpoint=%s status=400 debug: request_body_size=%d model=%s messages=%d tools=%d history_entries=%d cw_tools=%d",
+				log.Printf("%s endpoint=%s status=400 debug: request_body_size=%d model=%s messages=%d tools=%d history_entries=%d cw_tools=%d estimated_tokens=%d",
 					prefix, ep.Name, len(reqBody), originalModel, len(claudeReq.Messages), len(claudeReq.Tools),
-					len(cwReq.ConversationState.History), cwToolCount)
+					len(cwReq.ConversationState.History), cwToolCount, estimatedTokens)
 
 				// Check if error is context/input size related
 				errorMsgLower := strings.ToLower(errorMsg)

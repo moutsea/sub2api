@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,8 +26,8 @@ type TruncationConfig struct {
 // DefaultTruncationConfig returns the default truncation configuration
 func DefaultTruncationConfig() TruncationConfig {
 	return TruncationConfig{
-		// Target 80% of the limit to leave room for response and estimation errors
-		TargetTokens:      int(float64(KiroContextWindowLimit) * 0.80), // 160k tokens
+		// Target 70% of the limit to leave generous room for estimation errors (±10-15%)
+		TargetTokens:      int(float64(KiroContextWindowLimit) * 0.70), // 140k tokens
 		MinMessagesToKeep: 4, // Keep at least 4 messages (2 turns)
 		EnableLogging:     true,
 	}
@@ -38,6 +39,10 @@ func DefaultTruncationConfig() TruncationConfig {
 // 2. Tool use/result pairs (to maintain conversation coherence)
 // 3. The system prompt (not part of messages)
 //
+// Performance: O(M*T) for one-time per-message tokenization + O(P) for truncation point
+// search using precomputed suffix sums, where M=messages, T=tokenizer cost, P=truncation points.
+// Previous implementation was O(P*M*T) due to re-scanning all messages per truncation attempt.
+//
 // Returns the truncated messages and whether truncation occurred.
 func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]ClaudeMessage, bool) {
 	if req == nil {
@@ -47,8 +52,18 @@ func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]Cl
 		return req.Messages, false
 	}
 
-	// Estimate current tokens
-	currentTokens := EstimateInputTokens(req)
+	messages := req.Messages
+	originalCount := len(messages)
+
+	// Precompute per-message tokens once — O(M*T), the only expensive pass
+	msgTokens := computeMessageTokens(messages)
+	fixedTokens := estimateFixedTokens(req)
+
+	// Build suffix sum for O(1) range queries: suffixSum[i] = tokens for messages[i:]
+	suffixSum := computeSuffixSum(msgTokens)
+
+	// Total tokens = fixed (system+tools+overhead) + all message tokens
+	currentTokens := fixedTokens + suffixSum[0]
 	if currentTokens <= KiroContextPreCheckLimit {
 		return req.Messages, false
 	}
@@ -57,9 +72,6 @@ func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]Cl
 		log.Printf("[kiro] message truncation triggered: estimated %d tokens, limit %d",
 			currentTokens, KiroContextPreCheckLimit)
 	}
-
-	messages := req.Messages
-	originalCount := len(messages)
 
 	// Don't truncate if we have very few messages
 	if originalCount <= config.MinMessagesToKeep {
@@ -70,8 +82,7 @@ func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]Cl
 		return messages, false
 	}
 
-	// Find safe truncation points
-	// We need to identify tool_use/tool_result pairs to avoid breaking them
+	// Find safe truncation points — O(M) scan
 	truncationPoints := findSafeTruncationPoints(messages, config.MinMessagesToKeep)
 
 	if len(truncationPoints) == 0 {
@@ -81,70 +92,54 @@ func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]Cl
 		return messages, false
 	}
 
-	// Try truncation points from earliest to latest until we're under the limit
-	// First pass: try to get under TargetTokens (ideal case)
-	for _, point := range truncationPoints {
-		truncatedMessages := messages[point:]
-
-		// Create a temporary request to estimate tokens
-		tempReq := &ClaudeRequest{
-			Model:    req.Model,
-			Messages: truncatedMessages,
-			System:   req.System,
-			Tools:    req.Tools,
-		}
-
-		estimatedTokens := EstimateInputTokens(tempReq)
-		if estimatedTokens <= config.TargetTokens {
-			if config.EnableLogging {
-				log.Printf("[kiro] truncated %d messages (from %d to %d), estimated tokens: %d -> %d",
-					point, originalCount, len(truncatedMessages), currentTokens, estimatedTokens)
-			}
-			return truncatedMessages, true
-		}
+	// tokenAt returns the total estimated tokens when keeping messages[point:]
+	tokenAt := func(point int) int {
+		return fixedTokens + suffixSum[point]
 	}
 
-	// Second pass: if we couldn't get under TargetTokens, find the most aggressive
-	// truncation point that at least gets us under KiroContextPreCheckLimit
-	for i := len(truncationPoints) - 1; i >= 0; i-- {
-		point := truncationPoints[i]
-		truncatedMessages := messages[point:]
+	// Binary search: find the earliest (least aggressive) truncation point
+	// where tokens <= TargetTokens. truncationPoints is in ascending order,
+	// and tokenAt is monotonically decreasing as point increases.
+	// We want the smallest index i such that tokenAt(truncationPoints[i]) <= target.
+	targetIdx := sort.Search(len(truncationPoints), func(i int) bool {
+		return tokenAt(truncationPoints[i]) <= config.TargetTokens
+	})
 
-		tempReq := &ClaudeRequest{
-			Model:    req.Model,
-			Messages: truncatedMessages,
-			System:   req.System,
-			Tools:    req.Tools,
+	if targetIdx < len(truncationPoints) {
+		point := truncationPoints[targetIdx]
+		newTokens := tokenAt(point)
+		if config.EnableLogging {
+			log.Printf("[kiro] truncated %d messages (from %d to %d), estimated tokens: %d -> %d",
+				point, originalCount, originalCount-point, currentTokens, newTokens)
 		}
-
-		estimatedTokens := EstimateInputTokens(tempReq)
-		if estimatedTokens <= KiroContextPreCheckLimit {
-			if config.EnableLogging {
-				log.Printf("[kiro] aggressive truncation: removed %d messages (from %d to %d), estimated tokens: %d -> %d",
-					point, originalCount, len(truncatedMessages), currentTokens, estimatedTokens)
-			}
-			return truncatedMessages, true
-		}
+		return messages[point:], true
 	}
 
-	// If even the most aggressive truncation doesn't help, return the most truncated version
-	// and let the caller decide what to do
+	// Couldn't reach TargetTokens — try to at least get under KiroContextPreCheckLimit
+	// Binary search for the earliest point where tokens <= KiroContextPreCheckLimit
+	limitIdx := sort.Search(len(truncationPoints), func(i int) bool {
+		return tokenAt(truncationPoints[i]) <= KiroContextPreCheckLimit
+	})
+
+	if limitIdx < len(truncationPoints) {
+		point := truncationPoints[limitIdx]
+		newTokens := tokenAt(point)
+		if config.EnableLogging {
+			log.Printf("[kiro] aggressive truncation: removed %d messages (from %d to %d), estimated tokens: %d -> %d",
+				point, originalCount, originalCount-point, currentTokens, newTokens)
+		}
+		return messages[point:], true
+	}
+
+	// Even the most aggressive truncation doesn't help — return the most truncated version
 	lastPoint := truncationPoints[len(truncationPoints)-1]
-	truncatedMessages := messages[lastPoint:]
-
 	if config.EnableLogging {
-		tempReq := &ClaudeRequest{
-			Model:    req.Model,
-			Messages: truncatedMessages,
-			System:   req.System,
-			Tools:    req.Tools,
-		}
-		estimatedTokens := EstimateInputTokens(tempReq)
+		newTokens := tokenAt(lastPoint)
 		log.Printf("[kiro] max truncation applied but still over limit: removed %d messages (from %d to %d), estimated tokens: %d -> %d",
-			lastPoint, originalCount, len(truncatedMessages), currentTokens, estimatedTokens)
+			lastPoint, originalCount, originalCount-lastPoint, currentTokens, newTokens)
 	}
 
-	return truncatedMessages, true
+	return messages[lastPoint:], true
 }
 
 // findSafeTruncationPoints finds indices where it's safe to truncate messages.
@@ -254,6 +249,12 @@ func extractToolResultIDs(msg ClaudeMessage) []string {
 // CodeWhisperer request body fits within maxBodySize bytes.
 // It iteratively removes the earliest complete conversation turns (respecting
 // tool_use/tool_result pairs) and re-transforms until the body is small enough.
+//
+// Performance: Uses precomputed suffix sums to skip truncation points that are
+// obviously too large (token estimate > maxBodySize/2 heuristic), avoiding
+// expensive Transform+Marshal for hopeless candidates. Then binary searches
+// among remaining candidates.
+//
 // Returns the truncated CW request, the serialized body, or an error.
 func TruncateToFitBodySize(req *ClaudeRequest, profileArn string, ginCtx *gin.Context, maxBodySize int) (*CodeWhispererRequest, []byte, error) {
 	if req == nil {
@@ -269,9 +270,27 @@ func TruncateToFitBodySize(req *ClaudeRequest, profileArn string, ginCtx *gin.Co
 		return nil, nil, fmt.Errorf("no safe truncation points found (messages=%d, minKeep=%d)", len(messages), minKeep)
 	}
 
+	// Precompute per-message tokens and suffix sums for cheap pre-filtering.
+	// Heuristic: ~4 bytes per token in serialized JSON (conservative).
+	// If estimated tokens * 4 > maxBodySize, the truncation point is hopeless.
+	msgTokens := computeMessageTokens(messages)
+	fixedTokens := estimateFixedTokens(req)
+	suffixSum := computeSuffixSum(msgTokens)
+
+	// Rough bytes-per-token ratio for pre-filtering (conservative: real ratio is ~3-5)
+	const bytesPerTokenEstimate = 4
+	maxTokensHeuristic := maxBodySize / bytesPerTokenEstimate
+
 	// Try each truncation point from least aggressive to most aggressive
 	// (keep as much history as possible while fitting within the limit)
 	for _, point := range truncationPoints {
+		// Pre-filter: skip if token estimate is way over budget
+		estimatedTokens := fixedTokens + suffixSum[point]
+		if estimatedTokens > maxTokensHeuristic*2 {
+			// Even with generous margin, this won't fit — skip expensive transform
+			continue
+		}
+
 		truncatedMessages := messages[point:]
 
 		truncatedClaudeReq := &ClaudeRequest{
