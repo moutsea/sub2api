@@ -2016,9 +2016,9 @@ const kiroApiKeyValue = ref('') // For apikey auth
 const kiroBaseUrl = ref('') // For apikey auth
 const kiroBatchJson = ref('') // For batch import
 const kiroIsDragging = ref(false) // For drag-drop
-const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }>>([])
+const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }>>([])
 const kiroParseError = ref('')
-const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }> }>>([])
+const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> }>>([])
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
@@ -2501,7 +2501,7 @@ const parseKiroJsonFileContent = (fileName: string, jsonText: string) => {
   try {
     const data = JSON.parse(jsonText)
     const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
-    const tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }> = []
+    const tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> = []
 
     // Get existing refresh tokens for deduplication
     const existingTokens = new Set(kiroParsedTokens.value.map(t => t.refreshToken))
@@ -2519,7 +2519,8 @@ const parseKiroJsonFileContent = (fileName: string, jsonText: string) => {
           refreshToken: rt,
           clientId: item?.clientId || item?.client_id,
           clientSecret: item?.clientSecret || item?.client_secret,
-          name: item?.name
+          name: item?.name,
+          region: item?.region
         })
       }
     }
@@ -2570,7 +2571,7 @@ const parseKiroBatchJson = () => {
   try {
     const data = JSON.parse(jsonText)
     const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
-    const newTokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string }> = []
+    const newTokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> = []
 
     // Get existing refresh tokens from uploaded files for deduplication
     const fileTokens = kiroUploadedFiles.value.flatMap(file => file.tokens)
@@ -2589,7 +2590,8 @@ const parseKiroBatchJson = () => {
           refreshToken: rt,
           clientId: item?.clientId || item?.client_id,
           clientSecret: item?.clientSecret || item?.client_secret,
-          name: item?.name
+          name: item?.name,
+          region: item?.region
         })
       }
     }
@@ -2711,6 +2713,11 @@ const handleSubmit = async () => {
           if (kiroAuthType.value === 'idc') {
             credentials.client_id = token.clientId || kiroClientId.value.trim()
             credentials.client_secret = token.clientSecret || kiroClientSecret.value.trim()
+          }
+
+          // Add region if specified in token data
+          if (token.region) {
+            credentials.region = token.region
           }
 
           // Generate account name: batchPrefix_1, batchPrefix_2, ...

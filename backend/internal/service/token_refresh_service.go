@@ -287,9 +287,9 @@ func (s *TokenRefreshService) recoverErrorAccounts() {
 			log.Printf("[TokenRefresh] Failed to query error accounts for %s: %v", platform, err)
 			continue
 		}
-		// Only include OAuth accounts (non-OAuth accounts can't be refreshed)
+		// Include OAuth and setup-token accounts (both use refresh_token for recovery)
 		for _, a := range accounts {
-			if a.Type == AccountTypeOAuth {
+			if a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken {
 				errorAccounts = append(errorAccounts, a)
 			}
 		}

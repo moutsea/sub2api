@@ -451,14 +451,13 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("marshal cw request: %w", err)
 	}
 
-	// Build endpoint
-	region := account.GetKiroRegion()
-	endpoint := fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region)
+	// Request routing always uses us-east-1 regardless of account's token region
+	endpoint := "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
 
 	// Generate machine ID for User-Agent headers
 	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
 	kiroVersion := "1.6.0"
-	awsHost := fmt.Sprintf("q.%s.amazonaws.com", region)
+	awsHost := "q.us-east-1.amazonaws.com"
 
 	// Create HTTP request
 	upstreamReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(cwReqBody))

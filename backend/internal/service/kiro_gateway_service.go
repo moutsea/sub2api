@@ -37,11 +37,11 @@ type kiroEndpointConfig struct {
 // so there is no benefit to token-based dynamic routing.
 // Priority: preferred_endpoint config > default (AWSQ first, CW fallback).
 func getKiroEndpoints(account *Account) []kiroEndpointConfig {
-	region := account.GetKiroRegion()
-
+	// Request routing always uses us-east-1 regardless of account's token region.
+	// Verified: EU accounts (e.g. eu-north-1 IdC) can send requests to us-east-1 endpoints.
 	awsq := kiroEndpointConfig{
-		URL:  fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
-		Host: fmt.Sprintf("q.%s.amazonaws.com", region),
+		URL:  "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
+		Host: "q.us-east-1.amazonaws.com",
 		Name: "AWSQ",
 	}
 	cw := kiroEndpointConfig{

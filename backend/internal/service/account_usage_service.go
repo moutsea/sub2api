@@ -496,10 +496,9 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 		proxyURL = account.Proxy.URL()
 	}
 
-	// 4. 调用 API 获取积分信息
-	region := account.GetKiroRegion()
+	// 4. 调用 API 获取积分信息（usage API 固定使用 us-east-1）
 	fetcher := kiro.NewUsageLimitsFetcher(nil) // Use default HTTP client
-	limits, err := fetcher.FetchUsageLimits(ctx, accessToken, region, proxyURL)
+	limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL)
 	if err != nil {
 		log.Printf("[AccountUsage] Failed to fetch Kiro usage limits for account %d: %v", account.ID, err)
 		// Return empty on error (don't fail the whole request)

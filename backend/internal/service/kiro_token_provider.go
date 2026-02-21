@@ -1151,13 +1151,12 @@ func (p *KiroTokenProvider) recoverDBDeletedAccounts() {
 		}
 
 		// Verify usage limits before restoring — only revive accounts that have valid credits
-		region := account.GetKiroRegion()
 		proxyURL := ""
 		if account.ProxyID != nil && account.Proxy != nil {
 			proxyURL = account.Proxy.URL()
 		}
 		fetcher := kiro.NewUsageLimitsFetcher(nil)
-		limits, err := fetcher.FetchUsageLimits(ctx, tokenInfo.AccessToken, region, proxyURL)
+		limits, err := fetcher.FetchUsageLimits(ctx, tokenInfo.AccessToken, "us-east-1", proxyURL)
 		if err != nil {
 			log.Printf("[KiroToken] Deleted account %d (%s) usage fetch failed, skipping restore: %v", account.ID, account.Name, err)
 			failed++

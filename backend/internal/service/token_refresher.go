@@ -33,11 +33,12 @@ func NewClaudeTokenRefresher(oauthService *OAuthService) *ClaudeTokenRefresher {
 }
 
 // CanRefresh 检查是否能处理此账号
-// 只处理 anthropic 平台的 oauth 类型账号
-// setup-token 虽然也是OAuth，但有效期1年，不需要频繁刷新
+// 处理 anthropic 平台的 oauth 和 setup-token 类型账号
+// setup-token 有效期1年，常规刷新循环中 NeedsRefresh 会跳过它；
+// 但错误恢复循环需要通过此方法找到对应 refresher 来恢复账号
 func (r *ClaudeTokenRefresher) CanRefresh(account *Account) bool {
 	return account.Platform == PlatformAnthropic &&
-		account.Type == AccountTypeOAuth
+		(account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken)
 }
 
 // NeedsRefresh 检查token是否需要刷新
