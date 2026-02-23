@@ -544,6 +544,17 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		body := w.buf.Bytes()
 		parsed := parseOpsErrorResponse(body)
 
+		// Skip client authentication errors — these are not platform issues
+		// and should not pollute ops error monitoring
+		switch parsed.Code {
+		case "INVALID_API_KEY", "API_KEY_REQUIRED", "API_KEY_DISABLED",
+			"USER_NOT_FOUND", "USER_INACTIVE",
+			"TEMP_API_KEY_EXPIRED", "TEMP_API_KEY_INACTIVE",
+			"GROUP_NOT_FOUND", "GROUP_INACTIVE",
+			"CREATOR_NOT_FOUND", "CREATOR_INACTIVE":
+			return
+		}
+
 		// Skip logging if the error should be filtered based on settings
 		if shouldSkipOpsErrorLog(c.Request.Context(), ops, parsed.Message, string(body), c.Request.URL.Path) {
 			return
