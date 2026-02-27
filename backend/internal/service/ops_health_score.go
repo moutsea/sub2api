@@ -48,14 +48,14 @@ func computeBusinessHealth(overview *OpsDashboardOverview) float64 {
 		}
 	}
 
-	// TTFT score: 1s → 100, 3s → 0 (linear)
-	// Time to first token is critical for user experience
+	// TTFT score: 10s → 100, 20s → 0 (linear)
+	// Time to first token — lenient threshold for LLM upstream latency
 	ttftScore := 100.0
 	if overview.TTFT.P99 != nil {
 		p99 := float64(*overview.TTFT.P99)
-		if p99 > 1000 {
-			if p99 <= 3000 {
-				ttftScore = (3000 - p99) / 2000 * 100
+		if p99 > 10000 {
+			if p99 <= 20000 {
+				ttftScore = (20000 - p99) / 10000 * 100
 			} else {
 				ttftScore = 0
 			}

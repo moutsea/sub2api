@@ -726,6 +726,12 @@ func (p *KiroTokenProvider) updateAccountStatus(accountID int64, status KiroToke
 		return
 	}
 
+	// apikey accounts: status is always active, never update to error
+	if account.IsKiroApiKey() {
+		log.Printf("[KiroToken] Account %d is apikey type, skipping status update (status=%s)", accountID, status)
+		return
+	}
+
 	// Map internal status to database status
 	switch status {
 	case KiroTokenStatusBanned:
@@ -839,7 +845,22 @@ func (p *KiroTokenProvider) ForceRefreshToken(ctx context.Context, account *Acco
 	}
 
 	// apikey accounts use static key, no refresh needed
+	// But if account is in error state, recover it to active
 	if account.IsKiroApiKey() {
+		if account.Status == StatusError {
+			account.Status = StatusActive
+			account.ErrorMessage = ""
+			if err := p.accountRepo.Update(ctx, account); err != nil {
+				return fmt.Errorf("failed to recover apikey account status: %w", err)
+			}
+			// Update in-memory cache
+			state := p.getOrCreateState(account.ID)
+			state.mu.Lock()
+			state.Status = KiroTokenStatusActive
+			state.ErrorMsg = ""
+			state.mu.Unlock()
+			log.Printf("[KiroToken] API Key account %d manually recovered from error state", account.ID)
+		}
 		return nil
 	}
 
@@ -972,7 +993,26 @@ func (p *KiroTokenProvider) recoverDBErrorAccounts() {
 
 	for i := range errorAccounts {
 		account := &errorAccounts[i]
+
+		// apikey accounts: directly recover to active (no token refresh needed)
 		if account.IsKiroApiKey() {
+			account.Status = StatusActive
+			account.ErrorMessage = ""
+			if err := p.accountRepo.Update(ctx, account); err != nil {
+				log.Printf("[KiroToken] Failed to recover apikey account %d (%s): %v", account.ID, account.Name, err)
+				failed++
+				continue
+			}
+			// Update in-memory cache
+			if state, ok := p.cache.Load(account.ID); ok {
+				s := state.(*KiroTokenState)
+				s.mu.Lock()
+				s.Status = KiroTokenStatusActive
+				s.ErrorMsg = ""
+				s.mu.Unlock()
+			}
+			recovered++
+			log.Printf("[KiroToken] API Key account %d (%s) recovered successfully from error state", account.ID, account.Name)
 			continue
 		}
 

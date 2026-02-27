@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -169,6 +170,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 计算粘性会话hash（优先使用 X-Conversation-ID header）
 	conversationID := c.GetHeader("X-Conversation-ID")
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq, conversationID)
+	// 兜底：当请求中无任何可识别的会话标识时，基于客户端特征生成稳定 ID
+	if sessionHash == "" {
+		sessionHash = h.gatewayService.HashContent(kiro.GenerateStableConversationID(c))
+	}
 
 	// 获取平台：优先使用强制平台（/antigravity 路由，中间件已设置 request.Context），否则使用分组平台
 	platform := ""

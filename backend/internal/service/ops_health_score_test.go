@@ -303,12 +303,12 @@ func TestComputeBusinessHealth(t *testing.T) {
 			wantMax: 78,
 		},
 		{
-			name: "TTFT boundary 2s",
+			name: "TTFT boundary 15s",
 			overview: &OpsDashboardOverview{
 				SLA:               0.99,
 				ErrorRate:         0,
 				UpstreamErrorRate: 0,
-				TTFT:              OpsPercentiles{P99: intPtr(2000)},
+				TTFT:              OpsPercentiles{P99: intPtr(15000)},
 			},
 			wantMin: 75,
 			wantMax: 75,

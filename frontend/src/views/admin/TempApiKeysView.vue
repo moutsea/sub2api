@@ -326,14 +326,22 @@
             :options="statusOptions"
           />
         </div>
-        <div>
-          <label class="label">{{ t('admin.tempApiKeys.validDays') }}</label>
-          <input v-model.number="editForm.valid_days" type="number" min="1" class="input" />
-        </div>
-        <div>
-          <label class="label">{{ t('admin.tempApiKeys.dailyLimit') }}</label>
-          <input v-model.number="editForm.daily_limit" type="number" min="1" class="input" />
-        </div>
+        <template v-if="editingKey?.key_type === 'quota_only'">
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.totalQuota') }}</label>
+            <input v-model.number="editForm.total_quota" type="number" min="0" step="0.01" class="input" :placeholder="t('admin.tempApiKeys.totalQuotaPlaceholder')" />
+          </div>
+        </template>
+        <template v-else>
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.validDays') }}</label>
+            <input v-model.number="editForm.valid_days" type="number" min="1" class="input" />
+          </div>
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.dailyLimit') }}</label>
+            <input v-model.number="editForm.daily_limit" type="number" min="1" class="input" />
+          </div>
+        </template>
       </form>
       <template #footer>
         <div class="flex justify-end gap-2">
@@ -621,7 +629,17 @@ const handleUpdate = async () => {
   if (!editingKey.value) return
   updating.value = true
   try {
-    await tempApiKeysAPI.update(editingKey.value.id, editForm.value)
+    const payload: Record<string, unknown> = {
+      name: editForm.value.name,
+      status: editForm.value.status,
+    }
+    if (editingKey.value.key_type === 'quota_only') {
+      payload.total_quota = editForm.value.total_quota
+    } else {
+      payload.valid_days = editForm.value.valid_days
+      payload.daily_limit = editForm.value.daily_limit
+    }
+    await tempApiKeysAPI.update(editingKey.value.id, payload)
     appStore.showSuccess(t('admin.tempApiKeys.updateSuccess'))
     showEditDialog.value = false
     loadKeys()

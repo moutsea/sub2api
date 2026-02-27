@@ -234,14 +234,27 @@ func (h *TempAPIKeyHandler) Update(c *gin.Context) {
 	if req.Status != "" {
 		key.Status = req.Status
 	}
-	if req.ValidDays != nil {
-		key.ValidDays = *req.ValidDays
-	}
-	if req.DailyLimit != nil {
-		key.DailyLimit = *req.DailyLimit
-	}
-	if req.TotalQuota != nil {
-		key.TotalQuotaUSD = *req.TotalQuota
+	if key.KeyType == service.TempAPIKeyTypeQuotaOnly {
+		// quota_only: 只允许修改 total_quota，valid_days/daily_limit 不生效
+		if req.ValidDays != nil || req.DailyLimit != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "valid_days and daily_limit cannot be modified for quota_only keys"})
+			return
+		}
+		if req.TotalQuota != nil {
+			key.TotalQuotaUSD = *req.TotalQuota
+		}
+	} else {
+		// time_limited: 只允许修改 valid_days/daily_limit，total_quota 不适用
+		if req.TotalQuota != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "total_quota can only be modified for quota_only keys"})
+			return
+		}
+		if req.ValidDays != nil {
+			key.ValidDays = *req.ValidDays
+		}
+		if req.DailyLimit != nil {
+			key.DailyLimit = *req.DailyLimit
+		}
 	}
 
 	if err := h.repo.Update(c.Request.Context(), key); err != nil {

@@ -261,7 +261,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest, conversation
 
 	// 0. 最高优先级：使用请求 header 中的 X-Conversation-ID
 	if conversationID != "" {
-		return s.hashContent(conversationID)
+		return s.HashContent(conversationID)
 	}
 
 	// 1. 次高优先级：从 metadata.user_id 提取 session_xxx
@@ -274,14 +274,14 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest, conversation
 	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
 	cacheableContent := s.extractCacheableContent(parsed)
 	if cacheableContent != "" {
-		return s.hashContent(cacheableContent)
+		return s.HashContent(cacheableContent)
 	}
 
 	// 3. Fallback: 使用 system 内容
 	if parsed.System != nil {
 		systemText := s.extractTextFromSystem(parsed.System)
 		if systemText != "" {
-			return s.hashContent(systemText)
+			return s.HashContent(systemText)
 		}
 	}
 
@@ -290,7 +290,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest, conversation
 		if firstMsg, ok := parsed.Messages[0].(map[string]any); ok {
 			msgText := s.extractTextFromContent(firstMsg["content"])
 			if msgText != "" {
-				return s.hashContent(msgText)
+				return s.HashContent(msgText)
 			}
 		}
 	}
@@ -387,7 +387,8 @@ func (s *GatewayService) extractTextFromContent(content any) string {
 	return ""
 }
 
-func (s *GatewayService) hashContent(content string) string {
+// HashContent computes a truncated SHA256 hash (32 hex chars) for session affinity keys.
+func (s *GatewayService) HashContent(content string) string {
 	hash := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(hash[:16]) // 32字符
 }

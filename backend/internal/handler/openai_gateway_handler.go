@@ -23,6 +23,7 @@ import (
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
 	gatewayService      *service.OpenAIGatewayService
+	kiroGatewayService  *service.KiroGatewayService
 	billingCacheService *service.BillingCacheService
 	concurrencyHelper   *ConcurrencyHelper
 }
@@ -30,6 +31,7 @@ type OpenAIGatewayHandler struct {
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
 func NewOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
+	kiroGatewayService *service.KiroGatewayService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
 	cfg *config.Config,
@@ -40,6 +42,7 @@ func NewOpenAIGatewayHandler(
 	}
 	return &OpenAIGatewayHandler{
 		gatewayService:      gatewayService,
+		kiroGatewayService:  kiroGatewayService,
 		billingCacheService: billingCacheService,
 		concurrencyHelper:   NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 	}
@@ -211,6 +214,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		log.Printf("[OpenAI Handler] Selected account: id=%d name=%s", account.ID, account.Name)
 		setOpsSelectedAccount(c, account.ID)
 
+		// Skip Kiro accounts — Responses API is not supported for Kiro platform
+		if account.Platform == service.PlatformKiro {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			log.Printf("[OpenAI Handler] Account %d is Kiro platform, skipping (Responses API unsupported)", account.ID)
+			continue
+		}
+
 		// 3. Acquire account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc
 		if !selection.Acquired {
@@ -288,13 +301,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		var tempAPIKeyID *int64
+		var tempAPIKey *service.TempAPIKey
 		if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
 			tempAPIKeyID = new(int64)
 			*tempAPIKeyID = tempKey.ID
+			tempAPIKey = tempKey
 		}
 
 		// Async record usage
-		go func(result *service.OpenAIForwardResult, usedAccount *service.Account, ua, ip string, tempKeyID *int64) {
+		go func(result *service.OpenAIForwardResult, usedAccount *service.Account, ua, ip string, tempKeyID *int64, tempKey *service.TempAPIKey) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
@@ -306,10 +321,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				UserAgent:    ua,
 				IPAddress:    ip,
 				TempAPIKeyID: tempKeyID,
+				TempAPIKey:   tempKey,
 			}); err != nil {
 				log.Printf("Record usage failed: %v", err)
 			}
-		}(result, account, userAgent, clientIP, tempAPIKeyID)
+		}(result, account, userAgent, clientIP, tempAPIKeyID, tempAPIKey)
 		return
 	}
 }
@@ -437,13 +453,14 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		log.Printf("[OpenAI CC Handler] Selected account: id=%d name=%s type=%s", account.ID, account.Name, account.Type)
 		setOpsSelectedAccount(c, account.ID)
 
-		// Dispatch based on account type
-		if account.Type != service.AccountTypeAPIKey && account.Type != service.AccountTypeOAuth {
+		// Dispatch based on account platform/type
+		if account.Platform != service.PlatformKiro &&
+			account.Type != service.AccountTypeAPIKey && account.Type != service.AccountTypeOAuth {
 			if selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()
 			}
 			failedAccountIDs[account.ID] = struct{}{}
-			log.Printf("[OpenAI CC Handler] Account %d is %s type, skipping (unsupported)", account.ID, account.Type)
+			log.Printf("[OpenAI CC Handler] Account %d is %s/%s, skipping (unsupported)", account.ID, account.Platform, account.Type)
 			continue
 		}
 
@@ -495,9 +512,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
-		// Forward request: dispatch based on account type
+		// Forward request: dispatch based on account platform/type
 		var result *service.OpenAIForwardResult
-		if account.Type == service.AccountTypeOAuth {
+		if account.Platform == service.PlatformKiro {
+			result, err = h.kiroGatewayService.ForwardChatCompletions(c.Request.Context(), c, account, body)
+		} else if account.Type == service.AccountTypeOAuth {
 			result, err = h.gatewayService.ForwardChatCompletionsViaResponses(c.Request.Context(), c, account, body, reqStream)
 		} else {
 			result, err = h.gatewayService.ForwardChatCompletions(c.Request.Context(), c, account, body)
@@ -520,18 +539,21 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				continue
 			}
 			log.Printf("Account %d: ForwardChatCompletions failed: %v", account.ID, err)
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		var tempAPIKeyID *int64
+		var tempAPIKey *service.TempAPIKey
 		if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
 			tempAPIKeyID = new(int64)
 			*tempAPIKeyID = tempKey.ID
+			tempAPIKey = tempKey
 		}
 
-		go func(result *service.OpenAIForwardResult, usedAccount *service.Account, ua, cip string, tempKeyID *int64) {
+		go func(result *service.OpenAIForwardResult, usedAccount *service.Account, ua, cip string, tempKeyID *int64, tempKey *service.TempAPIKey) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
@@ -543,10 +565,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				UserAgent:    ua,
 				IPAddress:    cip,
 				TempAPIKeyID: tempKeyID,
+				TempAPIKey:   tempKey,
 			}); err != nil {
 				log.Printf("Record usage failed: %v", err)
 			}
-		}(result, account, userAgent, clientIP, tempAPIKeyID)
+		}(result, account, userAgent, clientIP, tempAPIKeyID, tempAPIKey)
 		return
 	}
 }

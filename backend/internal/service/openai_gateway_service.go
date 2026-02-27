@@ -95,6 +95,7 @@ type OpenAIGatewayService struct {
 	deferredService     *DeferredService
 	openAITokenProvider *OpenAITokenProvider
 	toolCorrector       *CodexToolCorrector
+	tempAPIKeyRepo      TempAPIKeyRepository
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -113,6 +114,7 @@ func NewOpenAIGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
+	tempAPIKeyRepo TempAPIKeyRepository,
 ) *OpenAIGatewayService {
 	return &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -130,6 +132,7 @@ func NewOpenAIGatewayService(
 		deferredService:     deferredService,
 		openAITokenProvider: openAITokenProvider,
 		toolCorrector:       NewCodexToolCorrector(),
+		tempAPIKeyRepo:      tempAPIKeyRepo,
 	}
 }
 
@@ -187,7 +190,7 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
-				if err == nil && account.IsSchedulable() && account.IsOpenAI() && (requestedModel == "" || account.IsModelSupported(requestedModel)) {
+				if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) && (requestedModel == "" || account.IsModelSupported(requestedModel)) {
 					// Refresh sticky session TTL
 					_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
 					return account, nil
@@ -472,23 +475,29 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
-	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
-		return accounts, err
+	// Query both OpenAI and Kiro platform accounts.
+	// Kiro accounts support OpenAI-compatible Chat Completions via format conversion.
+	platforms := []string{PlatformOpenAI, PlatformKiro}
+
+	var allAccounts []Account
+	for _, platform := range platforms {
+		var accounts []Account
+		var err error
+		if s.schedulerSnapshot != nil {
+			accounts, _, err = s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
+		} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+			accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
+		} else if groupID != nil {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("query %s accounts failed: %w", platform, err)
+		}
+		allAccounts = append(allAccounts, accounts...)
 	}
-	var accounts []Account
-	var err error
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
-	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
-	} else {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("query accounts failed: %w", err)
-	}
-	return accounts, nil
+	return allAccounts, nil
 }
 
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
@@ -1465,6 +1474,7 @@ type OpenAIRecordUsageInput struct {
 	UserAgent    string // 请求的 User-Agent
 	IPAddress    string // 请求的客户端 IP 地址
 	TempAPIKeyID *int64 // 临时 API Key ID
+	TempAPIKey   *TempAPIKey
 }
 
 // RecordUsage records usage and deducts balance
@@ -1579,6 +1589,22 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		if shouldBill && cost.ActualCost > 0 {
 			_ = s.userRepo.DeductBalance(ctx, user.ID, cost.ActualCost)
 			s.billingCacheService.QueueDeductBalance(user.ID, cost.ActualCost)
+		}
+	}
+
+	// 更新 quota_only 临时 API Key 的消费金额
+	if input.TempAPIKey != nil && input.TempAPIKey.KeyType == TempAPIKeyTypeQuotaOnly && cost.ActualCost > 0 {
+		if s.tempAPIKeyRepo != nil {
+			if _, _, err := s.tempAPIKeyRepo.AddCostUSD(ctx, input.TempAPIKey.ID, cost.ActualCost); err != nil {
+				log.Printf("Update temp API key cost failed: %v", err)
+			}
+		}
+	}
+
+	// 递增临时 API Key 的请求计数（current_period_count + total_requests）
+	if input.TempAPIKey != nil && s.tempAPIKeyRepo != nil {
+		if err := s.tempAPIKeyRepo.IncrementUsageCounters(ctx, input.TempAPIKey.ID); err != nil {
+			log.Printf("Increment temp API key usage counters failed: %v", err)
 		}
 	}
 

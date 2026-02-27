@@ -181,7 +181,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// apikey accounts: direct Claude API passthrough (no CodeWhisperer transform)
 	if account.IsKiroApiKey() {
-		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime)
+		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheHit)
 	}
 
 	// Get profile ARN
@@ -1003,8 +1003,8 @@ func (s *KiroGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 func (s *KiroGatewayService) handleUpstreamError(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte) {
 	switch statusCode {
 	case 429:
-		// Rate limited - mark cooldown
-		if s.tokenProvider != nil {
+		// Rate limited - mark cooldown (skip for apikey accounts)
+		if s.tokenProvider != nil && !account.IsKiroApiKey() {
 			s.tokenProvider.MarkCooldown(account.ID, 30*time.Second)
 		}
 		log.Printf("%s status=429 rate_limited", prefix)
@@ -1021,12 +1021,12 @@ func (s *KiroGatewayService) handleUpstreamError(ctx context.Context, prefix str
 		return
 
 	case 403:
-		// Permission error — mark banned
+		// Permission error — mark banned (skip for apikey accounts)
 		errMsg := extractKiroErrorMessage(body)
 		if strings.Contains(strings.ToLower(errMsg), "expired") ||
 			strings.Contains(strings.ToLower(errMsg), "invalid") ||
 			strings.Contains(strings.ToLower(errMsg), "forbidden") {
-			if s.tokenProvider != nil {
+			if s.tokenProvider != nil && !account.IsKiroApiKey() {
 				s.tokenProvider.MarkBanned(account.ID, errMsg)
 			}
 		}
@@ -1038,8 +1038,8 @@ func (s *KiroGatewayService) handleUpstreamError(ctx context.Context, prefix str
 		log.Printf("%s status=400 bad_request msg=%s body=%s", prefix, errMsg, truncateForLog(body, 1000))
 
 	case 529:
-		// Overloaded - mark cooldown
-		if s.tokenProvider != nil {
+		// Overloaded - mark cooldown (skip for apikey accounts)
+		if s.tokenProvider != nil && !account.IsKiroApiKey() {
 			s.tokenProvider.MarkCooldown(account.ID, 60*time.Second)
 		}
 		log.Printf("%s status=529 overloaded", prefix)
@@ -1285,6 +1285,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	claudeReq *kiro.ClaudeRequest, body []byte,
 	apiKey, proxyURL, originalModel string,
 	startTime time.Time,
+	cacheEstimation kiro.CacheEstimation, cacheHit bool,
 ) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-apikey-Forward] account=%s", account.Name)
 
@@ -1344,7 +1345,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			return nil, errors.New("streaming not supported")
 		}
 
-		var usage ClaudeUsage
+		var outputTokens int
 		var firstTokenMs *int
 		buf := make([]byte, 4096)
 
@@ -1357,8 +1358,8 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 				}
 
 				chunk := buf[:n]
-				// Extract usage from SSE data lines
-				s.extractClaudeSSEUsage(chunk, &usage)
+				// Count output tokens from text deltas for estimation
+				outputTokens += s.countClaudeSSEOutputTokens(chunk)
 
 				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
 					break
@@ -1370,13 +1371,28 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			}
 		}
 
-		if usage.InputTokens == 0 {
-			usage.InputTokens = inputTokens
+		// Build usage with local estimation (consistent with OAuth path)
+		usage := &ClaudeUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		}
+
+		// Apply cache estimation (consistent with OAuth path)
+		if cacheEstimation.MeetsCacheThreshold {
+			if cacheHit {
+				usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
+				usage.InputTokens -= cacheEstimation.CacheableTokens
+				if usage.InputTokens < 0 {
+					usage.InputTokens = 0
+				}
+			} else {
+				usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
+			}
 		}
 
 		return &ForwardResult{
 			RequestID:    requestID,
-			Usage:        usage,
+			Usage:        *usage,
 			Model:        originalModel,
 			Stream:       true,
 			Duration:     time.Since(startTime),
@@ -1394,12 +1410,30 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 
 	c.Data(http.StatusOK, "application/json", respBody)
 
-	// Extract usage from response
-	usage := s.extractClaudeJSONUsage(respBody, inputTokens)
+	// Estimate output tokens from response text (consistent with OAuth path)
+	outputTokens := s.estimateClaudeJSONOutputTokens(respBody)
+
+	usage := &ClaudeUsage{
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+	}
+
+	// Apply cache estimation (consistent with OAuth path)
+	if cacheEstimation.MeetsCacheThreshold {
+		if cacheHit {
+			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
+			usage.InputTokens -= cacheEstimation.CacheableTokens
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
+			}
+		} else {
+			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
+		}
+	}
 
 	return &ForwardResult{
 		RequestID:    requestID,
-		Usage:        usage,
+		Usage:        *usage,
 		Model:        originalModel,
 		Stream:       false,
 		Duration:     time.Since(startTime),
@@ -1407,10 +1441,11 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}, nil
 }
 
-// extractClaudeSSEUsage extracts usage info from Claude SSE stream chunks.
-// message_start: usage is at message.usage.input_tokens
-// message_delta: usage is at usage.output_tokens
-func (s *KiroGatewayService) extractClaudeSSEUsage(chunk []byte, usage *ClaudeUsage) {
+// countClaudeSSEOutputTokens estimates output tokens from Claude SSE stream chunks
+// by extracting text deltas and tool input deltas, using (len+3)/4 estimation
+// consistent with the OAuth/CW path.
+func (s *KiroGatewayService) countClaudeSSEOutputTokens(chunk []byte) int {
+	tokens := 0
 	lines := bytes.Split(chunk, []byte("\n"))
 	for _, line := range lines {
 		if !bytes.HasPrefix(line, []byte("data: ")) {
@@ -1426,45 +1461,52 @@ func (s *KiroGatewayService) extractClaudeSSEUsage(chunk []byte, usage *ClaudeUs
 			continue
 		}
 		switch eventType {
-		case "message_start":
-			var msg struct {
-				Usage struct {
-					InputTokens int `json:"input_tokens"`
-				} `json:"usage"`
+		case "content_block_delta":
+			var delta struct {
+				Delta struct {
+					Type        string `json:"type"`
+					Text        string `json:"text"`
+					PartialJSON string `json:"partial_json"`
+				} `json:"delta"`
 			}
-			if json.Unmarshal(raw["message"], &msg) == nil && msg.Usage.InputTokens > 0 {
-				usage.InputTokens = msg.Usage.InputTokens
-			}
-		case "message_delta":
-			var u struct {
-				OutputTokens int `json:"output_tokens"`
-			}
-			if json.Unmarshal(raw["usage"], &u) == nil && u.OutputTokens > 0 {
-				usage.OutputTokens = u.OutputTokens
+			if json.Unmarshal(data, &delta) == nil {
+				switch delta.Delta.Type {
+				case "text_delta":
+					tokens += (len(delta.Delta.Text) + 3) / 4
+				case "input_json_delta":
+					tokens += (len(delta.Delta.PartialJSON) + 3) / 4
+				}
 			}
 		}
 	}
+	return tokens
 }
 
-// extractClaudeJSONUsage extracts usage from a Claude API JSON response.
-func (s *KiroGatewayService) extractClaudeJSONUsage(body []byte, fallbackInput int) ClaudeUsage {
+// estimateClaudeJSONOutputTokens estimates output tokens from a Claude API JSON response
+// using (len+3)/4 estimation consistent with the OAuth/CW path.
+func (s *KiroGatewayService) estimateClaudeJSONOutputTokens(body []byte) int {
 	var resp struct {
-		Usage struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
+		Content []struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Input any    `json:"input"`
+		} `json:"content"`
 	}
-	if json.Unmarshal(body, &resp) == nil && resp.Usage.InputTokens > 0 {
-		return ClaudeUsage{
-			InputTokens:              resp.Usage.InputTokens,
-			OutputTokens:             resp.Usage.OutputTokens,
-			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+	if json.Unmarshal(body, &resp) != nil {
+		return 0
+	}
+	tokens := 0
+	for _, block := range resp.Content {
+		switch block.Type {
+		case "text":
+			tokens += (len(block.Text) + 3) / 4
+		case "tool_use":
+			if inputBytes, err := json.Marshal(block.Input); err == nil {
+				tokens += (len(inputBytes) + 3) / 4
+			}
 		}
 	}
-	return ClaudeUsage{InputTokens: fallbackInput}
+	return tokens
 }
 
 // testClaudeAPIConnection tests connection for apikey accounts by sending a minimal request to base_url.
