@@ -19,7 +19,7 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: cfjwlchangji/sub2api:latest
+    image: sub2api:debug-local
     container_name: sub2api
     restart: unless-stopped
     ulimits:
