@@ -471,7 +471,11 @@ func generateShortID() string {
 	n := time.Now().UnixNano()
 	for i := range b {
 		n = n*6364136223846793005 + 1442695040888963407 // LCG
-		b[i] = charset[int(n>>33)%len(charset)]
+		idx := (n >> 33) % int64(len(charset))
+		if idx < 0 {
+			idx = -idx
+		}
+		b[i] = charset[idx]
 	}
 	return string(b)
 }
