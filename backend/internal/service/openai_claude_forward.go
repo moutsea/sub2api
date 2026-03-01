@@ -20,6 +20,7 @@ import (
 // For APIKey accounts: Claude → Chat Completions → upstream → Claude
 // For OAuth accounts: Claude → Responses API → upstream (chatgpt.com) → Claude
 func (s *OpenAIGatewayService) ForwardAsClaudeMessages(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	log.Printf("[openai-claude-compat] account=%s(%d) type=%s platform=%s", account.Name, account.ID, account.Type, account.Platform)
 	if account.Type == AccountTypeOAuth {
 		return s.forwardClaudeViaResponsesAPI(ctx, c, account, body)
 	}
@@ -60,14 +61,18 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 	prefix := fmt.Sprintf("[openai-claude-compat] account=%s(%d) type=oauth", account.Name, account.ID)
 
 	// 1. Convert Claude request → OpenAI Responses API format
+	log.Printf("%s converting claude request to responses API format", prefix)
 	responsesBody, originalModel, err := kiro.ConvertClaudeToResponses(body)
 	if err != nil {
+		log.Printf("%s conversion error: %v", prefix, err)
 		return nil, fmt.Errorf("convert claude to responses: %w", err)
 	}
+	log.Printf("%s converted successfully, model=%s", prefix, originalModel)
 
 	// 2. Apply codex OAuth transform (model normalization, instructions, etc.)
 	var reqBody map[string]any
 	if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
+		log.Printf("%s unmarshal error: %v", prefix, err)
 		return nil, fmt.Errorf("parse responses body: %w", err)
 	}
 	codexResult := applyCodexOAuthTransform(reqBody)
@@ -78,25 +83,33 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 	// Re-serialize after transform
 	responsesBody, err = json.Marshal(reqBody)
 	if err != nil {
+		log.Printf("%s marshal error: %v", prefix, err)
 		return nil, fmt.Errorf("serialize responses body: %w", err)
 	}
 
-	log.Printf("%s model=%s→%s (responses API)", prefix, originalModel, mappedModel)
+	log.Printf("%s model=%s→%s (responses API), request body: %s", prefix, originalModel, mappedModel, string(responsesBody))
 
 	// 3. Get access token
+	log.Printf("%s getting access token", prefix)
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
+		log.Printf("%s get access token error: %v", prefix, err)
 		return nil, err
 	}
+	log.Printf("%s got access token", prefix)
 
 	// 4. Build upstream request using standard OAuth path (chatgpt.com)
 	promptCacheKey := codexResult.PromptCacheKey
+	log.Printf("%s building upstream request", prefix)
 	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
 	if err != nil {
+		log.Printf("%s build upstream request error: %v", prefix, err)
 		return nil, err
 	}
+	log.Printf("%s upstream request built, url=%s", prefix, upstreamReq.URL.String())
 
 	// 5. Send request and handle response (Responses API SSE → Claude SSE)
+	log.Printf("%s sending upstream request", prefix)
 	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, responsesBody, originalModel, true, startTime, prefix, true)
 }
 
