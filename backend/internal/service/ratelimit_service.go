@@ -360,69 +360,58 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 // handle429 处理429限流错误
 // 解析响应头获取重置时间，标记账号为限流状态
 func (s *RateLimitService) handle429(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
-	// 解析重置时间戳
-	resetTimestamp := headers.Get("anthropic-ratelimit-unified-reset")
-	if resetTimestamp == "" {
-		// 没有重置时间，使用默认5分钟
-		resetAt := time.Now().Add(5 * time.Minute)
-		if s.shouldScopeClaudeSonnetRateLimit(account, responseBody) {
-			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelRateLimitScopeClaudeSonnet, resetAt); err != nil {
-				slog.Warn("model_rate_limit_set_failed", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "error", err)
-			} else {
-				slog.Info("account_model_rate_limited", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "reset_at", resetAt)
-			}
-			return
-		}
-		if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
-			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
-		}
+	// 1. 验证是否真的是 rate limit 错误
+	upstreamMsg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	if upstreamMsg == "" || (!strings.Contains(upstreamMsg, "rate") && !strings.Contains(upstreamMsg, "limit") && !strings.Contains(upstreamMsg, "quota")) {
+		slog.Warn("429_without_rate_limit_message", "account_id", account.ID, "msg", upstreamMsg)
+		// 不标记限流，可能是误报
 		return
 	}
 
-	// 解析Unix时间戳
-	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
-	if err != nil {
-		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
-		resetAt := time.Now().Add(5 * time.Minute)
-		if s.shouldScopeClaudeSonnetRateLimit(account, responseBody) {
-			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelRateLimitScopeClaudeSonnet, resetAt); err != nil {
-				slog.Warn("model_rate_limit_set_failed", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "error", err)
-			} else {
-				slog.Info("account_model_rate_limited", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "reset_at", resetAt)
-			}
-			return
-		}
-		if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
-			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
-		}
-		return
+	// 2. 解析重置时间
+	resetAt := s.parseResetTime(headers)
+
+	// 3. 检查 header 是否存在（记录警告但仍然标记）
+	if headers.Get("anthropic-ratelimit-unified-reset") == "" {
+		slog.Warn("429_without_reset_header", "account_id", account.ID, "using_default", "5m", "msg", upstreamMsg)
 	}
 
-	resetAt := time.Unix(ts, 0)
-
+	// 4. 如果是 Sonnet 模型限流，只设置模型级限流（不影响其他模型）
 	if s.shouldScopeClaudeSonnetRateLimit(account, responseBody) {
 		if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelRateLimitScopeClaudeSonnet, resetAt); err != nil {
 			slog.Warn("model_rate_limit_set_failed", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "error", err)
-			return
+		} else {
+			slog.Info("account_model_rate_limited", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "reset_at", resetAt, "msg", upstreamMsg)
 		}
-		slog.Info("account_model_rate_limited", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "reset_at", resetAt)
 		return
 	}
 
-	// 标记限流状态
+	// 5. 非 Sonnet 限流，设置全局限流
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 		return
 	}
 
-	// 根据重置时间反推5h窗口
-	windowEnd := resetAt
-	windowStart := resetAt.Add(-5 * time.Hour)
-	if err := s.accountRepo.UpdateSessionWindow(ctx, account.ID, &windowStart, &windowEnd, "rejected"); err != nil {
-		slog.Warn("rate_limit_update_session_window_failed", "account_id", account.ID, "error", err)
+	slog.Info("account_rate_limited", "account_id", account.ID, "reset_at", resetAt, "msg", upstreamMsg)
+}
+
+// parseResetTime 解析重置时间，失败时返回默认5分钟
+func (s *RateLimitService) parseResetTime(headers http.Header) time.Time {
+	resetTimestamp := headers.Get("anthropic-ratelimit-unified-reset")
+	if resetTimestamp == "" {
+		slog.Warn("rate_limit_reset_header_missing", "using_default", "5m", "available_headers", headers)
+		return time.Now().Add(5 * time.Minute)
 	}
 
-	slog.Info("account_rate_limited", "account_id", account.ID, "reset_at", resetAt)
+	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
+	if err != nil {
+		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err, "using_default", "5m")
+		return time.Now().Add(5 * time.Minute)
+	}
+
+	resetTime := time.Unix(ts, 0)
+	slog.Info("rate_limit_reset_parsed", "reset_timestamp", resetTimestamp, "reset_at", resetTime, "duration", time.Until(resetTime))
+	return resetTime
 }
 
 func (s *RateLimitService) shouldScopeClaudeSonnetRateLimit(account *Account, responseBody []byte) bool {

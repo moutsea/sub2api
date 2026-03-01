@@ -33,6 +33,10 @@ const (
 	FieldTotalQuotaUsd = "total_quota_usd"
 	// FieldTotalCostUsd holds the string denoting the total_cost_usd field in the database.
 	FieldTotalCostUsd = "total_cost_usd"
+	// FieldDailyQuotaUsd holds the string denoting the daily_quota_usd field in the database.
+	FieldDailyQuotaUsd = "daily_quota_usd"
+	// FieldCurrentPeriodCostUsd holds the string denoting the current_period_cost_usd field in the database.
+	FieldCurrentPeriodCostUsd = "current_period_cost_usd"
 	// FieldValidDays holds the string denoting the valid_days field in the database.
 	FieldValidDays = "valid_days"
 	// FieldActivatedAt holds the string denoting the activated_at field in the database.
@@ -94,6 +98,8 @@ var Columns = []string{
 	FieldKeyType,
 	FieldTotalQuotaUsd,
 	FieldTotalCostUsd,
+	FieldDailyQuotaUsd,
+	FieldCurrentPeriodCostUsd,
 	FieldValidDays,
 	FieldActivatedAt,
 	FieldExpiresAt,
@@ -139,6 +145,10 @@ var (
 	DefaultTotalQuotaUsd float64
 	// DefaultTotalCostUsd holds the default value on creation for the "total_cost_usd" field.
 	DefaultTotalCostUsd float64
+	// DefaultDailyQuotaUsd holds the default value on creation for the "daily_quota_usd" field.
+	DefaultDailyQuotaUsd float64
+	// DefaultCurrentPeriodCostUsd holds the default value on creation for the "current_period_cost_usd" field.
+	DefaultCurrentPeriodCostUsd float64
 	// DefaultValidDays holds the default value on creation for the "valid_days" field.
 	DefaultValidDays int
 	// DefaultDailyLimit holds the default value on creation for the "daily_limit" field.
@@ -202,6 +212,16 @@ func ByTotalQuotaUsd(opts ...sql.OrderTermOption) OrderOption {
 // ByTotalCostUsd orders the results by the total_cost_usd field.
 func ByTotalCostUsd(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldTotalCostUsd, opts...).ToFunc()
+}
+
+// ByDailyQuotaUsd orders the results by the daily_quota_usd field.
+func ByDailyQuotaUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldDailyQuotaUsd, opts...).ToFunc()
+}
+
+// ByCurrentPeriodCostUsd orders the results by the current_period_cost_usd field.
+func ByCurrentPeriodCostUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldCurrentPeriodCostUsd, opts...).ToFunc()
 }
 
 // ByValidDays orders the results by the valid_days field.

@@ -30,6 +30,7 @@ type GatewayHandler struct {
 	geminiCompatService       *service.GeminiMessagesCompatService
 	antigravityGatewayService *service.AntigravityGatewayService
 	kiroGatewayService        *service.KiroGatewayService
+	openAIGatewayService      *service.OpenAIGatewayService
 	userService               *service.UserService
 	billingCacheService       *service.BillingCacheService
 	concurrencyHelper         *ConcurrencyHelper
@@ -41,6 +42,7 @@ func NewGatewayHandler(
 	geminiCompatService *service.GeminiMessagesCompatService,
 	antigravityGatewayService *service.AntigravityGatewayService,
 	kiroGatewayService *service.KiroGatewayService,
+	openAIGatewayService *service.OpenAIGatewayService,
 	userService *service.UserService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
@@ -55,6 +57,7 @@ func NewGatewayHandler(
 		geminiCompatService:       geminiCompatService,
 		antigravityGatewayService: antigravityGatewayService,
 		kiroGatewayService:        kiroGatewayService,
+		openAIGatewayService:      openAIGatewayService,
 		userService:               userService,
 		billingCacheService:       billingCacheService,
 		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
@@ -426,6 +429,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				// Use ForwardWithWebSearch for web_search agentic loop support
 				result, err = h.kiroGatewayService.ForwardWithWebSearch(c.Request.Context(), c, account, body, claudeReq)
 			}
+		case service.PlatformOpenAI:
+			result, err = h.openAIGatewayService.ForwardAsClaudeMessages(c.Request.Context(), c, account, body)
 		default:
 			result, err = h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
 		}

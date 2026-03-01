@@ -48,6 +48,10 @@ interface KeyInfo {
   total_cost_usd?: number
   remaining_quota_usd?: number
   is_exhausted?: boolean
+  // time_quota 类型专用字段
+  daily_quota_usd?: number
+  current_period_cost_usd?: number
+  remaining_daily_quota_usd?: number
   usage_logs?: UsageLogEntry[]
   pagination?: PaginationInfo
 }
@@ -141,12 +145,22 @@ const isQuotaOnly = computed(() => {
   return keyInfo.value?.key_type === 'quota_only'
 })
 
+// 判断是否为 time_quota 类型
+const isTimeQuota = computed(() => {
+  return keyInfo.value?.key_type === 'time_quota'
+})
+
 const usagePercent = computed(() => {
   if (!keyInfo.value) return 0
   // quota_only 类型：基于美元消费计算
   if (keyInfo.value.key_type === 'quota_only') {
     if (!keyInfo.value.total_quota_usd || keyInfo.value.total_quota_usd <= 0) return 0
     return Math.min(100, ((keyInfo.value.total_cost_usd || 0) / keyInfo.value.total_quota_usd) * 100)
+  }
+  // time_quota 类型：基于每日 USD 消费计算
+  if (keyInfo.value.key_type === 'time_quota') {
+    if (!keyInfo.value.daily_quota_usd || keyInfo.value.daily_quota_usd <= 0) return 0
+    return Math.min(100, ((keyInfo.value.current_period_cost_usd || 0) / keyInfo.value.daily_quota_usd) * 100)
   }
   // time_limited 类型：基于请求次数计算
   return Math.min(100, (keyInfo.value.current_period_count / keyInfo.value.daily_limit) * 100)
@@ -243,6 +257,12 @@ onMounted(() => {
                 <div class="stat-value text-xl text-primary">${{ keyInfo.total_quota_usd?.toFixed(2) || '0.00' }}</div>
                 <div class="stat-desc">USD</div>
               </div>
+              <!-- time_quota 类型：显示每日额度 + 有效天数 -->
+              <div v-else-if="isTimeQuota" class="stat bg-base-200/30 rounded-xl p-4">
+                <div class="stat-title text-xs">{{ t('keyQuery.validDays') }}</div>
+                <div class="stat-value text-xl text-primary">{{ keyInfo.valid_days }}</div>
+                <div class="stat-desc">{{ t('keyQuery.days') }}</div>
+              </div>
               <!-- time_limited 类型：显示有效天数 -->
               <div v-else class="stat bg-base-200/30 rounded-xl p-4">
                 <div class="stat-title text-xs">{{ t('keyQuery.validDays') }}</div>
@@ -260,7 +280,7 @@ onMounted(() => {
                 <span class="text-base-content/60">{{ t('keyQuery.activatedAt') }}</span>
                 <span class="font-mono">{{ formatDate(keyInfo.activated_at) }}</span>
               </div>
-              <!-- time_limited 类型才显示过期时间 -->
+              <!-- time_limited / time_quota 类型才显示过期时间 -->
               <div v-if="!isQuotaOnly" class="flex items-center justify-between text-sm">
                 <span class="text-base-content/60">{{ t('keyQuery.expiresAt') }}</span>
                 <span class="font-mono" :class="keyInfo.is_expired ? 'text-error' : ''">{{ formatDate(keyInfo.expires_at) }}</span>
@@ -289,6 +309,28 @@ onMounted(() => {
                     :class="(keyInfo.remaining_quota_usd || 0) > 0 ? 'text-success' : 'text-error'"
                   >
                     ${{ (keyInfo.remaining_quota_usd || 0).toFixed(4) }}
+                  </span>
+                </div>
+              </template>
+              <!-- time_quota 类型：显示每日 USD 消费 -->
+              <template v-else-if="isTimeQuota">
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">{{ t('keyQuery.costUsed') }} / {{ t('keyQuery.dailyLimit') }}</span>
+                  <span class="font-semibold">${{ (keyInfo.current_period_cost_usd || 0).toFixed(4) }} / ${{ (keyInfo.daily_quota_usd || 0).toFixed(2) }}</span>
+                </div>
+                <progress
+                  class="progress w-full h-3"
+                  :class="progressColor"
+                  :value="keyInfo.current_period_cost_usd || 0"
+                  :max="keyInfo.daily_quota_usd || 1"
+                ></progress>
+                <div class="flex items-center justify-between">
+                  <span class="text-base-content/60 text-sm">{{ t('keyQuery.remaining') }}</span>
+                  <span
+                    class="text-2xl font-bold"
+                    :class="(keyInfo.remaining_daily_quota_usd || 0) > 0 ? 'text-success' : 'text-error'"
+                  >
+                    ${{ (keyInfo.remaining_daily_quota_usd || 0).toFixed(4) }}
                   </span>
                 </div>
               </template>

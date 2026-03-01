@@ -1301,6 +1301,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	log.Printf("%s url=%s model=%s stream=%v body_size=%d", prefix, targetURL, originalModel, claudeReq.Stream, len(body))
@@ -1552,6 +1553,7 @@ func (s *KiroGatewayService) testClaudeAPIConnection(ctx context.Context, accoun
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)

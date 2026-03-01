@@ -31,12 +31,16 @@ type TempAPIKey struct {
 	Name string `json:"name,omitempty"`
 	// 关联分组 ID
 	GroupID int64 `json:"group_id,omitempty"`
-	// 类型：time_limited（限时限额）、quota_only（仅限额不限时）
+	// 类型：time_limited（限时限请求数）、quota_only（仅限总额不限时）、time_quota（限时+限每日USD额度）
 	KeyType string `json:"key_type,omitempty"`
 	// 总额度限制（美元），0 表示不限制，仅 quota_only 类型使用
 	TotalQuotaUsd float64 `json:"total_quota_usd,omitempty"`
 	// 已消费金额（美元），仅 quota_only 类型使用
 	TotalCostUsd float64 `json:"total_cost_usd,omitempty"`
+	// 每日 USD 额度上限，仅 time_quota 类型使用
+	DailyQuotaUsd float64 `json:"daily_quota_usd,omitempty"`
+	// 当前周期已消费 USD，仅 time_quota 类型使用
+	CurrentPeriodCostUsd float64 `json:"current_period_cost_usd,omitempty"`
 	// 有效天数，从首次使用开始计算
 	ValidDays int `json:"valid_days,omitempty"`
 	// 首次激活时间
@@ -110,7 +114,7 @@ func (*TempAPIKey) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case tempapikey.FieldTotalQuotaUsd, tempapikey.FieldTotalCostUsd:
+		case tempapikey.FieldTotalQuotaUsd, tempapikey.FieldTotalCostUsd, tempapikey.FieldDailyQuotaUsd, tempapikey.FieldCurrentPeriodCostUsd:
 			values[i] = new(sql.NullFloat64)
 		case tempapikey.FieldID, tempapikey.FieldGroupID, tempapikey.FieldValidDays, tempapikey.FieldDailyLimit, tempapikey.FieldCurrentPeriodCount, tempapikey.FieldTotalRequests, tempapikey.FieldCreatedBy:
 			values[i] = new(sql.NullInt64)
@@ -193,6 +197,18 @@ func (_m *TempAPIKey) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field total_cost_usd", values[i])
 			} else if value.Valid {
 				_m.TotalCostUsd = value.Float64
+			}
+		case tempapikey.FieldDailyQuotaUsd:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field daily_quota_usd", values[i])
+			} else if value.Valid {
+				_m.DailyQuotaUsd = value.Float64
+			}
+		case tempapikey.FieldCurrentPeriodCostUsd:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field current_period_cost_usd", values[i])
+			} else if value.Valid {
+				_m.CurrentPeriodCostUsd = value.Float64
 			}
 		case tempapikey.FieldValidDays:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -330,6 +346,12 @@ func (_m *TempAPIKey) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("total_cost_usd=")
 	builder.WriteString(fmt.Sprintf("%v", _m.TotalCostUsd))
+	builder.WriteString(", ")
+	builder.WriteString("daily_quota_usd=")
+	builder.WriteString(fmt.Sprintf("%v", _m.DailyQuotaUsd))
+	builder.WriteString(", ")
+	builder.WriteString("current_period_cost_usd=")
+	builder.WriteString(fmt.Sprintf("%v", _m.CurrentPeriodCostUsd))
 	builder.WriteString(", ")
 	builder.WriteString("valid_days=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ValidDays))

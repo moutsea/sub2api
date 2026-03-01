@@ -524,10 +524,9 @@ func (s *AccountTestService) testKiroAccountConnection(c *gin.Context, account *
 	ctx := c.Request.Context()
 
 	// Default model for Kiro testing
+	// Note: for apikey accounts, let testClaudeAPIConnection pick its own default
+	// (claude-sonnet-4-20250514) which has broader upstream compatibility.
 	testModelID := modelID
-	if testModelID == "" {
-		testModelID = "claude-3-5-sonnet-20241022"
-	}
 
 	if s.kiroGatewayService == nil {
 		return s.sendErrorAndEnd(c, "Kiro gateway service not configured")

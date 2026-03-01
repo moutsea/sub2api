@@ -535,24 +535,32 @@ func init() {
 	tempapikeyDescTotalCostUsd := tempapikeyFields[5].Descriptor()
 	// tempapikey.DefaultTotalCostUsd holds the default value on creation for the total_cost_usd field.
 	tempapikey.DefaultTotalCostUsd = tempapikeyDescTotalCostUsd.Default.(float64)
+	// tempapikeyDescDailyQuotaUsd is the schema descriptor for daily_quota_usd field.
+	tempapikeyDescDailyQuotaUsd := tempapikeyFields[6].Descriptor()
+	// tempapikey.DefaultDailyQuotaUsd holds the default value on creation for the daily_quota_usd field.
+	tempapikey.DefaultDailyQuotaUsd = tempapikeyDescDailyQuotaUsd.Default.(float64)
+	// tempapikeyDescCurrentPeriodCostUsd is the schema descriptor for current_period_cost_usd field.
+	tempapikeyDescCurrentPeriodCostUsd := tempapikeyFields[7].Descriptor()
+	// tempapikey.DefaultCurrentPeriodCostUsd holds the default value on creation for the current_period_cost_usd field.
+	tempapikey.DefaultCurrentPeriodCostUsd = tempapikeyDescCurrentPeriodCostUsd.Default.(float64)
 	// tempapikeyDescValidDays is the schema descriptor for valid_days field.
-	tempapikeyDescValidDays := tempapikeyFields[6].Descriptor()
+	tempapikeyDescValidDays := tempapikeyFields[8].Descriptor()
 	// tempapikey.DefaultValidDays holds the default value on creation for the valid_days field.
 	tempapikey.DefaultValidDays = tempapikeyDescValidDays.Default.(int)
 	// tempapikeyDescDailyLimit is the schema descriptor for daily_limit field.
-	tempapikeyDescDailyLimit := tempapikeyFields[9].Descriptor()
+	tempapikeyDescDailyLimit := tempapikeyFields[11].Descriptor()
 	// tempapikey.DefaultDailyLimit holds the default value on creation for the daily_limit field.
 	tempapikey.DefaultDailyLimit = tempapikeyDescDailyLimit.Default.(int)
 	// tempapikeyDescCurrentPeriodCount is the schema descriptor for current_period_count field.
-	tempapikeyDescCurrentPeriodCount := tempapikeyFields[11].Descriptor()
+	tempapikeyDescCurrentPeriodCount := tempapikeyFields[13].Descriptor()
 	// tempapikey.DefaultCurrentPeriodCount holds the default value on creation for the current_period_count field.
 	tempapikey.DefaultCurrentPeriodCount = tempapikeyDescCurrentPeriodCount.Default.(int)
 	// tempapikeyDescTotalRequests is the schema descriptor for total_requests field.
-	tempapikeyDescTotalRequests := tempapikeyFields[12].Descriptor()
+	tempapikeyDescTotalRequests := tempapikeyFields[14].Descriptor()
 	// tempapikey.DefaultTotalRequests holds the default value on creation for the total_requests field.
 	tempapikey.DefaultTotalRequests = tempapikeyDescTotalRequests.Default.(int64)
 	// tempapikeyDescStatus is the schema descriptor for status field.
-	tempapikeyDescStatus := tempapikeyFields[13].Descriptor()
+	tempapikeyDescStatus := tempapikeyFields[15].Descriptor()
 	// tempapikey.DefaultStatus holds the default value on creation for the status field.
 	tempapikey.DefaultStatus = tempapikeyDescStatus.Default.(string)
 	usagelogFields := schema.UsageLog{}.Fields()

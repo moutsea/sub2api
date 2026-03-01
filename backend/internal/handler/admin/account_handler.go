@@ -723,11 +723,50 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 		return
 	}
 
-	// Return mock data for now
+	ctx := c.Request.Context()
+	success := 0
+	failed := 0
+	results := []gin.H{}
+
+	for _, acct := range req.Accounts {
+		if acct.RateMultiplier != nil && *acct.RateMultiplier < 0 {
+			failed++
+			results = append(results, gin.H{"success": false, "error": "rate_multiplier must be >= 0", "name": acct.Name})
+			continue
+		}
+
+		skipCheck := acct.ConfirmMixedChannelRisk != nil && *acct.ConfirmMixedChannelRisk
+
+		account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
+			Name:                  acct.Name,
+			Notes:                 acct.Notes,
+			Platform:              acct.Platform,
+			Type:                  acct.Type,
+			Credentials:           acct.Credentials,
+			Extra:                 acct.Extra,
+			ProxyID:               acct.ProxyID,
+			Concurrency:           acct.Concurrency,
+			Priority:              acct.Priority,
+			RateMultiplier:        acct.RateMultiplier,
+			GroupIDs:              acct.GroupIDs,
+			ExpiresAt:             acct.ExpiresAt,
+			AutoPauseOnExpired:    acct.AutoPauseOnExpired,
+			SkipMixedChannelCheck: skipCheck,
+		})
+		if err != nil {
+			failed++
+			results = append(results, gin.H{"success": false, "error": err.Error(), "name": acct.Name})
+			continue
+		}
+
+		success++
+		results = append(results, gin.H{"success": true, "account": dto.AccountFromService(account)})
+	}
+
 	response.Success(c, gin.H{
-		"success": len(req.Accounts),
-		"failed":  0,
-		"results": []gin.H{},
+		"success": success,
+		"failed":  failed,
+		"results": results,
 	})
 }
 

@@ -1983,16 +1983,24 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 }
 
 func (s *OpenAIGatewayService) buildChatCompletionsRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string) (*http.Request, error) {
-	baseURL := account.GetOpenAIBaseURL()
 	var targetURL string
-	if baseURL == "" {
-		targetURL = "https://api.openai.com/v1/chat/completions"
-	} else {
-		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
-		if err != nil {
-			return nil, err
+	switch account.Type {
+	case AccountTypeOAuth:
+		// OAuth accounts use ChatGPT internal API (same as native path)
+		targetURL = chatgptCodexURL
+	case AccountTypeAPIKey:
+		baseURL := account.GetCredential("base_url")
+		if baseURL == "" {
+			targetURL = "https://api.openai.com/v1/chat/completions"
+		} else {
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return nil, err
+			}
+			targetURL = validatedURL + "/chat/completions"
 		}
-		targetURL = validatedURL + "/chat/completions"
+	default:
+		targetURL = "https://api.openai.com/v1/chat/completions"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))

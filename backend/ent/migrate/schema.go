@@ -445,6 +445,8 @@ var (
 		{Name: "key_type", Type: field.TypeString, Default: "time_limited"},
 		{Name: "total_quota_usd", Type: field.TypeFloat64, Default: 0},
 		{Name: "total_cost_usd", Type: field.TypeFloat64, Default: 0},
+		{Name: "daily_quota_usd", Type: field.TypeFloat64, Default: 0},
+		{Name: "current_period_cost_usd", Type: field.TypeFloat64, Default: 0},
 		{Name: "valid_days", Type: field.TypeInt, Default: 7},
 		{Name: "activated_at", Type: field.TypeTime, Nullable: true},
 		{Name: "expires_at", Type: field.TypeTime, Nullable: true},
@@ -464,13 +466,13 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "temp_api_keys_groups_temp_api_keys",
-				Columns:    []*schema.Column{TempAPIKeysColumns[17]},
+				Columns:    []*schema.Column{TempAPIKeysColumns[19]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "temp_api_keys_users_created_temp_api_keys",
-				Columns:    []*schema.Column{TempAPIKeysColumns[18]},
+				Columns:    []*schema.Column{TempAPIKeysColumns[20]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -484,22 +486,22 @@ var (
 			{
 				Name:    "tempapikey_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{TempAPIKeysColumns[17]},
+				Columns: []*schema.Column{TempAPIKeysColumns[19]},
 			},
 			{
 				Name:    "tempapikey_status",
 				Unique:  false,
-				Columns: []*schema.Column{TempAPIKeysColumns[16]},
+				Columns: []*schema.Column{TempAPIKeysColumns[18]},
 			},
 			{
 				Name:    "tempapikey_created_by",
 				Unique:  false,
-				Columns: []*schema.Column{TempAPIKeysColumns[18]},
+				Columns: []*schema.Column{TempAPIKeysColumns[20]},
 			},
 			{
 				Name:    "tempapikey_expires_at",
 				Unique:  false,
-				Columns: []*schema.Column{TempAPIKeysColumns[11]},
+				Columns: []*schema.Column{TempAPIKeysColumns[13]},
 			},
 		},
 	}

@@ -11,9 +11,13 @@ type TempAPIKey struct {
 	Group     *Group
 
 	// Key 类型
-	KeyType       string  // time_limited（限时限额）、quota_only（仅限额不限时）
+	KeyType       string  // time_limited（限时限请求数）、quota_only（仅限总额不限时）、time_quota（限时+限每日USD额度）
 	TotalQuotaUSD float64 // 总额度限制（美元），仅 quota_only 类型使用
 	TotalCostUSD  float64 // 已消费金额（美元），仅 quota_only 类型使用
+
+	// 每日 USD 额度（仅 time_quota 类型使用）
+	DailyQuotaUSD       float64 // 每日 USD 额度上限
+	CurrentPeriodCostUSD float64 // 当前周期已消费 USD
 
 	// 有效期设置
 	ValidDays   int        // 有效天数
@@ -50,12 +54,13 @@ const (
 
 // TempAPIKeyType constants
 const (
-	TempAPIKeyTypeLimited   = "time_limited" // 限时限额（默认）
-	TempAPIKeyTypeQuotaOnly = "quota_only"   // 仅限额不限时
+	TempAPIKeyTypeLimited   = "time_limited" // 限时限请求数（默认）
+	TempAPIKeyTypeQuotaOnly = "quota_only"   // 仅限总额不限时
+	TempAPIKeyTypeTimeQuota = "time_quota"   // 限时+限每日USD额度
 )
 
 // IsExpired checks if the temp API key is expired
-// quota_only 类型永不过期
+// quota_only 类型永不过期，time_limited 和 time_quota 类型检查 expires_at
 func (k *TempAPIKey) IsExpired() bool {
 	if k.KeyType == TempAPIKeyTypeQuotaOnly {
 		return false // quota_only 类型不限时间
@@ -91,6 +96,14 @@ func (k *TempAPIKey) IsRateLimited() bool {
 	if time.Since(*k.CurrentPeriodStart) >= 24*time.Hour {
 		return false // Period expired, will be reset on next use
 	}
+	// time_quota: check daily USD quota
+	if k.KeyType == TempAPIKeyTypeTimeQuota {
+		if k.DailyQuotaUSD > 0 {
+			return k.CurrentPeriodCostUSD >= k.DailyQuotaUSD
+		}
+		return false
+	}
+	// time_limited: check daily request count
 	return k.CurrentPeriodCount >= k.DailyLimit
 }
 
@@ -108,10 +121,10 @@ func (k *TempAPIKey) CurrentPeriodUsed() int {
 
 // RemainingRequests returns the number of remaining requests in current period
 // 对于 time_limited 类型，返回当前周期剩余请求次数
-// 对于 quota_only 类型，此方法不适用，请使用 RemainingQuotaUSD
+// 对于 quota_only / time_quota 类型，此方法不适用，请使用 RemainingQuotaUSD / RemainingDailyQuotaUSD
 func (k *TempAPIKey) RemainingRequests() int {
-	if k.KeyType == TempAPIKeyTypeQuotaOnly {
-		return -1 // quota_only 类型不按请求次数限制
+	if k.KeyType == TempAPIKeyTypeQuotaOnly || k.KeyType == TempAPIKeyTypeTimeQuota {
+		return -1 // 非按请求次数限制
 	}
 	if k.CurrentPeriodStart == nil {
 		return k.DailyLimit
@@ -137,6 +150,26 @@ func (k *TempAPIKey) RemainingQuotaUSD() float64 {
 		return -1 // 不限制，返回 -1 表示无限
 	}
 	remaining := k.TotalQuotaUSD - k.TotalCostUSD
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// RemainingDailyQuotaUSD returns the remaining daily quota in USD for time_quota type
+// 返回 -1 表示不限制或不适用
+func (k *TempAPIKey) RemainingDailyQuotaUSD() float64 {
+	if k.KeyType != TempAPIKeyTypeTimeQuota {
+		return -1
+	}
+	if k.DailyQuotaUSD <= 0 {
+		return -1
+	}
+	// 如果周期已过期，返回完整额度
+	if k.CurrentPeriodStart == nil || time.Since(*k.CurrentPeriodStart) >= 24*time.Hour {
+		return k.DailyQuotaUSD
+	}
+	remaining := k.DailyQuotaUSD - k.CurrentPeriodCostUSD
 	if remaining < 0 {
 		return 0
 	}

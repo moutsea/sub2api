@@ -46,10 +46,10 @@ func (TempAPIKey) Fields() []ent.Field {
 		field.Int64("group_id").
 			Comment("关联分组 ID"),
 
-		// Key 类型：time_limited（限时+限额）、quota_only（仅限额不限时）
+		// Key 类型：time_limited（限时+限请求数）、quota_only（仅限总额不限时）、time_quota（限时+限每日USD额度）
 		field.String("key_type").
 			Default("time_limited").
-			Comment("类型：time_limited（限时限额）、quota_only（仅限额不限时）"),
+			Comment("类型：time_limited（限时限请求数）、quota_only（仅限总额不限时）、time_quota（限时+限每日USD额度）"),
 
 		// 总额度限制（仅 quota_only 类型使用，单位：美元）
 		field.Float("total_quota_usd").
@@ -60,6 +60,16 @@ func (TempAPIKey) Fields() []ent.Field {
 		field.Float("total_cost_usd").
 			Default(0).
 			Comment("已消费金额（美元），仅 quota_only 类型使用"),
+
+		// 每日 USD 额度限制（仅 time_quota 类型使用）
+		field.Float("daily_quota_usd").
+			Default(0).
+			Comment("每日 USD 额度上限，仅 time_quota 类型使用"),
+
+		// 当前周期已消费 USD（仅 time_quota 类型使用，周期重置时归零）
+		field.Float("current_period_cost_usd").
+			Default(0).
+			Comment("当前周期已消费 USD，仅 time_quota 类型使用"),
 
 		// 有效期设置
 		field.Int("valid_days").

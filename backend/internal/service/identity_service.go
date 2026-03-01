@@ -24,7 +24,7 @@ var (
 
 // 默认指纹值（当客户端未提供时使用）
 var defaultFingerprint = Fingerprint{
-	UserAgent:               "claude-cli/2.0.62 (external, cli)",
+	UserAgent:               "claude-cli/2.1.45 (external, cli)",  // ← 更新到最新版本
 	StainlessLang:           "js",
 	StainlessPackageVersion: "0.52.0",
 	StainlessOS:             "Linux",

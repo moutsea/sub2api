@@ -319,7 +319,7 @@ export interface UpdateApiKeyRequest {
 
 // ==================== Temp API Key Types ====================
 
-export type TempApiKeyType = 'time_limited' | 'quota_only'
+export type TempApiKeyType = 'time_limited' | 'quota_only' | 'time_quota'
 
 export interface TempApiKey {
   id: number
@@ -329,6 +329,9 @@ export interface TempApiKey {
   group_name?: string
   key_type: TempApiKeyType
   total_quota: number
+  total_cost: number
+  daily_quota: number
+  current_period_cost: number
   valid_days: number
   activated_at: string | null
   expires_at: string | null
@@ -354,6 +357,7 @@ export interface CreateTempApiKeyRequest {
   valid_days?: number
   daily_limit?: number
   total_quota?: number
+  daily_quota?: number
 }
 
 export interface UpdateTempApiKeyRequest {
@@ -362,6 +366,7 @@ export interface UpdateTempApiKeyRequest {
   valid_days?: number
   daily_limit?: number
   total_quota?: number
+  daily_quota?: number
 }
 
 export interface BatchUpdateTempApiKeyRequest {
@@ -369,6 +374,7 @@ export interface BatchUpdateTempApiKeyRequest {
   status?: 'active' | 'inactive'
   valid_days?: number
   daily_limit?: number
+  daily_quota?: number
   name_prefix?: string
 }
 

@@ -245,17 +245,6 @@ func (s *BillingService) CalculateCost(model string, tokens UsageTokens, rateMul
 		return nil, err
 	}
 
-	// Opus 4.6 1M context pricing: if total input tokens > 200K, use higher price tier
-	modelLower := strings.ToLower(model)
-	if strings.Contains(modelLower, "opus-4-6") || strings.Contains(modelLower, "opus-4.6") {
-		totalInput := tokens.InputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
-		if totalInput > opus46LargeContextThreshold {
-			if p1m := s.fallbackPrices["claude-opus-4-6-1m"]; p1m != nil {
-				pricing = p1m
-			}
-		}
-	}
-
 	breakdown := &CostBreakdown{}
 
 	// 计算输入token费用（使用per-token价格）

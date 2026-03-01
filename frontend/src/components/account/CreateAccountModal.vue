@@ -49,22 +49,29 @@
         <label class="input-label">{{
           form.platform === 'kiro' && kiroInputMode === 'batch'
             ? t('admin.accounts.kiro.batchNamePrefix')
-            : t('admin.accounts.accountName')
+            : form.platform === 'openai' && openaiInputMode === 'batch'
+              ? t('admin.accounts.openaiImport.batchNamePrefix')
+              : t('admin.accounts.accountName')
         }}</label>
         <input
           v-model="form.name"
           type="text"
-          :required="!(form.platform === 'kiro' && kiroInputMode === 'batch')"
+          :required="!(form.platform === 'kiro' && kiroInputMode === 'batch') && !(form.platform === 'openai' && openaiInputMode === 'batch')"
           class="input"
           :placeholder="
             form.platform === 'kiro' && kiroInputMode === 'batch'
               ? t('admin.accounts.kiro.batchNamePrefixPlaceholder')
-              : t('admin.accounts.enterAccountName')
+              : form.platform === 'openai' && openaiInputMode === 'batch'
+                ? t('admin.accounts.openaiImport.batchNamePrefixPlaceholder')
+                : t('admin.accounts.enterAccountName')
           "
           data-tour="account-form-name"
         />
         <p v-if="form.platform === 'kiro' && kiroInputMode === 'batch'" class="input-hint">
           {{ t('admin.accounts.kiro.batchNamePrefixHint') }}
+        </p>
+        <p v-if="form.platform === 'openai' && openaiInputMode === 'batch'" class="input-hint">
+          {{ t('admin.accounts.openaiImport.batchNamePrefixHint') }}
         </p>
       </div>
       <div>
@@ -209,6 +216,129 @@
               <span class="block text-sm font-medium text-gray-900 dark:text-white">API Key</span>
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.responsesApi') }}</span>
             </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- OpenAI OAuth: Single/Batch Mode Selection -->
+      <div v-if="form.platform === 'openai' && accountCategory === 'oauth-based'">
+        <div class="mt-4">
+          <div class="flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              @click.stop="openaiInputMode = 'single'"
+              :class="[
+                'flex-1 rounded-md px-4 py-2 text-sm font-medium transition-all',
+                openaiInputMode === 'single'
+                  ? 'bg-white text-green-600 shadow-sm dark:bg-dark-600 dark:text-green-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              ]"
+            >
+              {{ t('admin.accounts.openaiImport.singleAdd') }}
+            </button>
+            <button
+              type="button"
+              @click.stop="openaiInputMode = 'batch'"
+              :class="[
+                'flex-1 rounded-md px-4 py-2 text-sm font-medium transition-all',
+                openaiInputMode === 'batch'
+                  ? 'bg-white text-green-600 shadow-sm dark:bg-dark-600 dark:text-green-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              ]"
+            >
+              {{ t('admin.accounts.openaiImport.batchImport') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Batch Import UI -->
+        <div v-if="openaiInputMode === 'batch'" class="mt-4 space-y-4">
+          <!-- File Upload Area -->
+          <div
+            class="relative rounded-lg border-2 border-dashed p-6 text-center transition-colors"
+            :class="[
+              openaiIsDragging
+                ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
+                : 'border-gray-300 hover:border-green-400 dark:border-dark-600'
+            ]"
+            @dragover.prevent="openaiIsDragging = true"
+            @dragleave.prevent="openaiIsDragging = false"
+            @drop.prevent="handleOpenaiFileDrop"
+          >
+            <Icon name="upload" size="lg" class="mx-auto mb-2 text-gray-400" />
+            <p class="text-sm text-gray-600 dark:text-gray-400">
+              {{ t('admin.accounts.openaiImport.dragDropJson') }}
+            </p>
+            <p class="text-xs text-gray-500 dark:text-gray-500">
+              {{ t('admin.accounts.openaiImport.multipleFilesSupported') }}
+            </p>
+            <label class="mt-2 inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-green-500/10 px-3 py-1.5 text-xs font-medium text-green-600 transition-colors hover:bg-green-500/20 dark:text-green-400">
+              <Icon name="document" size="xs" />
+              {{ t('admin.accounts.openaiImport.selectFiles') }}
+              <input type="file" accept=".json,.jsonl" multiple class="hidden" @change="handleOpenaiFileSelect" />
+            </label>
+          </div>
+
+          <!-- Uploaded Files List -->
+          <div v-if="openaiUploadedFiles.length > 0" class="space-y-2">
+            <label class="input-label">{{ t('admin.accounts.openaiImport.uploadedFiles') }}</label>
+            <div class="max-h-32 overflow-y-auto rounded-lg border border-gray-200 dark:border-dark-600">
+              <div
+                v-for="(file, index) in openaiUploadedFiles"
+                :key="index"
+                class="flex items-center justify-between border-b border-gray-100 px-3 py-2 last:border-b-0 dark:border-dark-700"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <Icon name="document" size="sm" class="flex-shrink-0 text-green-500" />
+                  <span class="truncate text-sm text-gray-700 dark:text-gray-300">{{ file.name }}</span>
+                  <span class="flex-shrink-0 text-xs text-gray-500 dark:text-gray-400">({{ file.accountCount }} accounts)</span>
+                </div>
+                <button
+                  type="button"
+                  @click="removeOpenaiUploadedFile(index)"
+                  class="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-red-500 dark:hover:bg-dark-600"
+                >
+                  <Icon name="x" size="sm" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Or paste JSON -->
+          <div>
+            <label class="input-label">{{ t('admin.accounts.openaiImport.orPasteJson') }}</label>
+            <textarea
+              v-model="openaiBatchJson"
+              rows="4"
+              class="input font-mono text-xs"
+              :placeholder="t('admin.accounts.openaiImport.batchJsonPlaceholder')"
+            ></textarea>
+          </div>
+
+          <!-- Parsed accounts count -->
+          <div v-if="openaiParsedAccounts.length > 0" class="rounded-lg bg-green-50 p-3 dark:bg-green-900/20">
+            <div class="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
+              <Icon name="check" size="sm" />
+              <span>{{ t('admin.accounts.openaiImport.parsedAccounts', { count: openaiParsedAccounts.length }) }}</span>
+            </div>
+          </div>
+
+          <!-- Parse error -->
+          <div v-if="openaiParseError" class="rounded-lg bg-red-50 p-3 dark:bg-red-900/20">
+            <div class="flex items-center gap-2 text-sm text-red-700 dark:text-red-400">
+              <Icon name="exclamationTriangle" size="sm" />
+              <span>{{ openaiParseError }}</span>
+            </div>
+          </div>
+
+          <!-- Parse button -->
+          <button
+            type="button"
+            class="btn btn-secondary w-full"
+            :disabled="!openaiBatchJson.trim() && openaiUploadedFiles.length === 0"
+            @click="parseOpenaiBatchJson"
+          >
+            {{ t('admin.accounts.openaiImport.parseJson') }}
           </button>
         </div>
       </div>
@@ -2020,6 +2150,13 @@ const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; cl
 const kiroParseError = ref('')
 const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> }>>([])
 const tempUnschedEnabled = ref(false)
+// OpenAI batch import
+const openaiInputMode = ref<'single' | 'batch'>('single')
+const openaiBatchJson = ref('')
+const openaiIsDragging = ref(false)
+const openaiParsedAccounts = ref<Array<{ email?: string; password?: string; accessToken: string; refreshToken: string }>>([])
+const openaiParseError = ref('')
+const openaiUploadedFiles = ref<Array<{ name: string; accountCount: number; accounts: Array<{ email?: string; password?: string; accessToken: string; refreshToken: string }> }>>([])
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
 const geminiAIStudioOAuthEnabled = ref(false)
@@ -2105,8 +2242,8 @@ const form = reactive({
   expires_at: null as number | null
 })
 
-// Helper to check if current type needs OAuth flow (Kiro uses direct refresh token, not OAuth flow)
-const isOAuthFlow = computed(() => accountCategory.value === 'oauth-based' && form.platform !== 'kiro')
+// Helper to check if current type needs OAuth flow (Kiro uses direct refresh token, not OAuth flow; OpenAI batch mode skips OAuth)
+const isOAuthFlow = computed(() => accountCategory.value === 'oauth-based' && form.platform !== 'kiro' && !(form.platform === 'openai' && openaiInputMode.value === 'batch'))
 
 const isManualInputMethod = computed(() => {
   return oauthFlowRef.value?.inputMethod === 'manual'
@@ -2202,6 +2339,14 @@ watch(
       kiroParsedTokens.value = []
       kiroParseError.value = ''
       kiroUploadedFiles.value = []
+    }
+    // Reset OpenAI batch import when switching platforms
+    if (newPlatform !== 'openai') {
+      openaiInputMode.value = 'single'
+      openaiBatchJson.value = ''
+      openaiParsedAccounts.value = []
+      openaiParseError.value = ''
+      openaiUploadedFiles.value = []
     }
     // Reset OAuth states
     oauth.resetState()
@@ -2436,6 +2581,11 @@ const resetForm = () => {
   kiroParsedTokens.value = []
   kiroParseError.value = ''
   kiroUploadedFiles.value = []
+  openaiInputMode.value = 'single'
+  openaiBatchJson.value = ''
+  openaiParsedAccounts.value = []
+  openaiParseError.value = ''
+  openaiUploadedFiles.value = []
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -2617,6 +2767,156 @@ const parseKiroBatchJson = () => {
   }
 }
 
+// ===== OpenAI Batch Import Functions =====
+
+const handleOpenaiFileDrop = (e: DragEvent) => {
+  openaiIsDragging.value = false
+  const files = e.dataTransfer?.files
+  if (files) {
+    for (const file of Array.from(files)) {
+      if (file.name.endsWith('.json') || file.name.endsWith('.jsonl')) {
+        readOpenaiJsonFile(file)
+      }
+    }
+  }
+}
+
+const handleOpenaiFileSelect = (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (input.files) {
+    for (const file of Array.from(input.files)) {
+      readOpenaiJsonFile(file)
+    }
+    input.value = '' // Reset for re-selection
+  }
+}
+
+const readOpenaiJsonFile = (file: File) => {
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const content = e.target?.result as string
+    parseOpenaiJsonFileContent(file.name, content)
+  }
+  reader.onerror = () => {
+    openaiParseError.value = t('admin.accounts.openaiImport.fileReadError')
+  }
+  reader.readAsText(file)
+}
+
+const parseOpenaiJsonFileContent = (fileName: string, jsonText: string) => {
+  openaiParseError.value = ''
+  if (!jsonText.trim()) {
+    openaiParseError.value = t('admin.accounts.openaiImport.jsonParseError')
+    return
+  }
+
+  // Try JSON array first, then JSONL (one JSON object per line)
+  let items: any[]
+  try {
+    const data = JSON.parse(jsonText)
+    items = Array.isArray(data) ? data : [data]
+  } catch {
+    // Try JSONL: each line is a separate JSON object
+    items = []
+    for (const line of jsonText.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        items.push(JSON.parse(trimmed))
+      } catch {
+        // skip invalid lines
+      }
+    }
+    if (items.length === 0) {
+      openaiParseError.value = t('admin.accounts.openaiImport.jsonParseError')
+      return
+    }
+  }
+
+  const newAccounts: Array<{ email?: string; password?: string; accessToken: string; refreshToken: string }> = []
+
+  // Dedup against existing parsed accounts and uploaded files
+  const fileAccounts = openaiUploadedFiles.value.flatMap(f => f.accounts)
+  const existingTokens = new Set([
+    ...fileAccounts.map(a => a.refreshToken),
+    ...openaiParsedAccounts.value.map(a => a.refreshToken)
+  ])
+  let skippedCount = 0
+
+  for (const item of items) {
+    const at = item?.access_token || item?.accessToken
+    const rt = item?.refresh_token || item?.refreshToken
+    if (at && rt && typeof at === 'string' && typeof rt === 'string') {
+      if (existingTokens.has(rt)) {
+        skippedCount++
+        continue
+      }
+      existingTokens.add(rt)
+      newAccounts.push({
+        email: item?.email,
+        password: item?.password,
+        accessToken: at,
+        refreshToken: rt,
+      })
+    }
+  }
+
+  if (newAccounts.length === 0 && skippedCount === 0) {
+    openaiParseError.value = t('admin.accounts.openaiImport.noValidAccounts')
+    return
+  }
+
+  if (newAccounts.length > 0) {
+    openaiUploadedFiles.value.push({
+      name: fileName,
+      accountCount: newAccounts.length,
+      accounts: newAccounts,
+    })
+  }
+
+  if (skippedCount > 0 && newAccounts.length > 0) {
+    openaiParseError.value = t('admin.accounts.openaiImport.someAccountsDuplicate', { added: newAccounts.length, skipped: skippedCount })
+  } else if (skippedCount > 0 && newAccounts.length === 0) {
+    openaiParseError.value = t('admin.accounts.openaiImport.allAccountsDuplicate', { count: skippedCount })
+  }
+
+  // Update combined parsed accounts
+  refreshOpenaiParsedAccounts()
+}
+
+const removeOpenaiUploadedFile = (index: number) => {
+  openaiUploadedFiles.value.splice(index, 1)
+  refreshOpenaiParsedAccounts()
+}
+
+const refreshOpenaiParsedAccounts = () => {
+  const all = openaiUploadedFiles.value.flatMap(f => f.accounts)
+  // Dedup by refresh_token
+  const seen = new Set<string>()
+  openaiParsedAccounts.value = all.filter(a => {
+    if (seen.has(a.refreshToken)) return false
+    seen.add(a.refreshToken)
+    return true
+  })
+}
+
+const parseOpenaiBatchJson = () => {
+  openaiParseError.value = ''
+
+  const jsonText = openaiBatchJson.value.trim()
+  if (!jsonText && openaiUploadedFiles.value.length > 0) {
+    // Already have uploaded files, just refresh
+    refreshOpenaiParsedAccounts()
+    return
+  }
+  if (!jsonText) {
+    openaiParseError.value = t('admin.accounts.openaiImport.jsonParseError')
+    return
+  }
+
+  parseOpenaiJsonFileContent('pasted-json', jsonText)
+}
+
 const handleSubmit = async () => {
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
@@ -2625,6 +2925,79 @@ const handleSubmit = async () => {
       return
     }
     step.value = 2
+    return
+  }
+
+  // For OpenAI platform batch import
+  if (form.platform === 'openai' && accountCategory.value === 'oauth-based' && openaiInputMode.value === 'batch') {
+    if (openaiParsedAccounts.value.length === 0) {
+      appStore.showError(t('admin.accounts.openaiImport.pleaseParseFirst'))
+      return
+    }
+
+    const getDefaultBatchPrefix = () => {
+      const now = new Date()
+      const year = now.getFullYear()
+      const month = String(now.getMonth() + 1).padStart(2, '0')
+      const day = String(now.getDate()).padStart(2, '0')
+      return `openai_${year}${month}${day}`
+    }
+    const batchPrefix = form.name.trim() || getDefaultBatchPrefix()
+    const totalCount = openaiParsedAccounts.value.length
+
+    submitting.value = true
+    let successCount = 0
+    let failCount = 0
+
+    try {
+      for (let i = 0; i < totalCount; i++) {
+        const acct = openaiParsedAccounts.value[i]
+        const credentials: Record<string, unknown> = {
+          access_token: acct.accessToken,
+          refresh_token: acct.refreshToken,
+        }
+        if (acct.email) {
+          credentials.email = acct.email
+        }
+        if (acct.password) {
+          credentials.password = acct.password
+        }
+
+        const accountName = acct.email
+          ? `${batchPrefix}_${acct.email}`
+          : `${batchPrefix}_${i + 1}`
+
+        try {
+          await adminAPI.accounts.create({
+            name: accountName,
+            notes: form.notes,
+            platform: 'openai',
+            type: 'oauth',
+            credentials,
+            proxy_id: form.proxy_id,
+            concurrency: form.concurrency,
+            priority: form.priority,
+            rate_multiplier: form.rate_multiplier,
+            group_ids: form.group_ids,
+            expires_at: form.expires_at,
+            auto_pause_on_expired: autoPauseOnExpired.value
+          })
+          successCount++
+        } catch {
+          failCount++
+        }
+      }
+
+      if (failCount === 0) {
+        appStore.showSuccess(t('admin.accounts.openaiImport.batchImportSuccess', { count: successCount }))
+      } else {
+        appStore.showWarning(t('admin.accounts.openaiImport.batchImportPartial', { success: successCount, fail: failCount }))
+      }
+      emit('created')
+      handleClose()
+    } finally {
+      submitting.value = false
+    }
     return
   }
 

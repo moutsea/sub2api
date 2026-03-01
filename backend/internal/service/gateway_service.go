@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mathrand "math/rand"
 	"net/http"
 	"os"
-	mathrand "math/rand"
 	"regexp"
 	"sort"
 	"strings"
@@ -44,6 +44,21 @@ const (
 func (s *GatewayService) debugModelRoutingEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
 	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+// accountTypePriority 返回账号类型的优先级（数值越小优先级越高）
+// OAuth = SetupToken > API Key
+func accountTypePriority(accountType string) int {
+	switch accountType {
+	case AccountTypeOAuth:
+		return 1
+	case AccountTypeSetupToken:
+		return 1 // 与 OAuth 平级
+	case AccountTypeAPIKey:
+		return 2
+	default:
+		return 999 // 未知类型最低优先级
+	}
 }
 
 func shortSessionHash(sessionHash string) string {
@@ -130,10 +145,10 @@ type AccountSelectionResult struct {
 
 // ClaudeUsage 表示Claude API返回的usage信息
 type ClaudeUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	ContextUsagePercent      float64 `json:"context_usage_percent,omitempty"`
 }
 
@@ -190,11 +205,11 @@ type GatewayService struct {
 	deferredService     *DeferredService
 	concurrencyService  *ConcurrencyService
 	claudeTokenProvider *ClaudeTokenProvider
-	kiroTokenProvider   *KiroTokenProvider    // Kiro token provider for checking runtime status
-	sessionLimitCache   SessionLimitCache     // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	usageCache          *UsageCache           // 用量缓存，用于账号选择时检查配额
-	accountUsageService *AccountUsageService  // 账号用量服务，用于主动刷新配额
-	tempAPIKeyRepo      TempAPIKeyRepository  // 临时 API Key 仓库，用于更新 quota_only 消费金额
+	kiroTokenProvider   *KiroTokenProvider   // Kiro token provider for checking runtime status
+	sessionLimitCache   SessionLimitCache    // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	usageCache          *UsageCache          // 用量缓存，用于账号选择时检查配额
+	accountUsageService *AccountUsageService // 账号用量服务，用于主动刷新配额
+	tempAPIKeyRepo      TempAPIKeyRepository // 临时 API Key 仓库，用于更新 quota_only 消费金额
 }
 
 // NewGatewayService creates a new GatewayService
@@ -1203,6 +1218,9 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {
 		platforms := []string{platform, PlatformAntigravity}
+		if platform == PlatformAnthropic {
+			platforms = append(platforms, PlatformOpenAI)
+		}
 		var accounts []Account
 		var err error
 		if groupID != nil {
@@ -1246,6 +1264,9 @@ func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform 
 	if useMixed {
 		if account.Platform == platform {
 			return true
+		}
+		if account.Platform == PlatformOpenAI {
+			return platform == PlatformAnthropic
 		}
 		return account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()
 	}
@@ -1491,7 +1512,8 @@ func sameLastUsedAt(a, b *time.Time) bool {
 
 // selectAccountForModelWithPlatform 选择单平台账户（完全隔离）
 func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string) (*Account, error) {
-	preferOAuth := platform == PlatformGemini
+	// Anthropic 和 Gemini 平台都支持账号类型优先级选择
+	preferAccountType := platform == PlatformGemini || platform == PlatformAnthropic
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
 	var accounts []Account
@@ -1581,8 +1603,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
 					// keep selected (never used is preferred)
 				case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-					if preferOAuth && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-						selected = acc
+					// 账号类型优先级：OAuth = SetupToken > API Key
+					if preferAccountType && acc.Type != selected.Type {
+						if accountTypePriority(acc.Type) < accountTypePriority(selected.Type) {
+							selected = acc
+						}
 					}
 				default:
 					if acc.LastUsedAt.Before(*selected.LastUsedAt) {
@@ -1684,8 +1709,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
 				// keep selected (never used is preferred)
 			case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-				if preferOAuth && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-					selected = acc
+				// 账号类型优先级：OAuth = SetupToken > API Key
+				if preferAccountType && acc.Type != selected.Type {
+					if accountTypePriority(acc.Type) < accountTypePriority(selected.Type) {
+						selected = acc
+					}
 				}
 			default:
 				if acc.LastUsedAt.Before(*selected.LastUsedAt) {
@@ -1720,8 +1748,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 // selectAccountWithMixedScheduling 选择账户（支持混合调度）
 // 查询原生平台账户 + 启用 mixed_scheduling 的 antigravity 账户
+// anthropic 混合调度额外包含 openai 账户
 func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string) (*Account, error) {
-	preferOAuth := nativePlatform == PlatformGemini
+	// Anthropic 和 Gemini 平台都支持账号类型优先级选择
+	preferAccountType := nativePlatform == PlatformGemini || nativePlatform == PlatformAnthropic
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
 	var accounts []Account
@@ -1739,9 +1769,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
-					// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
+					// 检查账号分组归属和有效性：原生平台直接匹配，openai（仅 anthropic 混合）直接匹配，antigravity 需要启用混合调度
 					if err == nil && s.isAccountInGroup(account, groupID) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
-						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+						if account.Platform == nativePlatform ||
+							(nativePlatform == PlatformAnthropic && account.Platform == PlatformOpenAI) ||
+							(account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 							if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 								log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
 							}
@@ -1811,8 +1843,12 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
 					// keep selected (never used is preferred)
 				case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-					if preferOAuth && acc.Platform == PlatformGemini && selected.Platform == PlatformGemini && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-						selected = acc
+					// 账号类型优先级：OAuth = SetupToken > API Key
+					// 仅对同平台账号进行类型优先级比较
+					if preferAccountType && acc.Platform == nativePlatform && selected.Platform == nativePlatform && acc.Type != selected.Type {
+						if accountTypePriority(acc.Type) < accountTypePriority(selected.Type) {
+							selected = acc
+						}
 					}
 				default:
 					if acc.LastUsedAt.Before(*selected.LastUsedAt) {
@@ -1842,9 +1878,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
-				// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
+				// 检查账号分组归属和有效性：原生平台直接匹配，openai（仅 anthropic 混合）直接匹配，antigravity 需要启用混合调度
 				if err == nil && s.isAccountInGroup(account, groupID) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
-					if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+					if account.Platform == nativePlatform ||
+						(nativePlatform == PlatformAnthropic && account.Platform == PlatformOpenAI) ||
+						(account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 						if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 							log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
 						}
@@ -1916,8 +1954,12 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
 				// keep selected (never used is preferred)
 			case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-				if preferOAuth && acc.Platform == PlatformGemini && selected.Platform == PlatformGemini && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-					selected = acc
+				// 账号类型优先级：OAuth = SetupToken > API Key
+				// 仅对同平台账号进行类型优先级比较
+				if preferAccountType && acc.Platform == nativePlatform && selected.Platform == nativePlatform && acc.Type != selected.Type {
+					if accountTypePriority(acc.Type) < accountTypePriority(selected.Type) {
+						selected = acc
+					}
 				}
 			default:
 				if acc.LastUsedAt.Before(*selected.LastUsedAt) {
@@ -1959,6 +2001,11 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	if account.Platform == PlatformKiro {
 		// Kiro 平台支持 Claude 模型
 		return IsKiroModelSupported(requestedModel)
+	}
+	if account.Platform == PlatformOpenAI {
+		// OpenAI 平台在混合调度中接收 claude-* 请求，通过协议转换支持
+		// 所有 claude- 前缀的模型都能通过 ConvertClaudeToOpenAI 映射
+		return strings.HasPrefix(requestedModel, "claude-") || account.IsModelSupported(requestedModel)
 	}
 	// 其他平台使用账户的模型支持检查
 	return account.IsModelSupported(requestedModel)
@@ -2530,6 +2577,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					}
 					log.Printf("Account %d: detected thinking block signature error, retrying with filtered thinking blocks", account.ID)
 
+					// 🔥 新增：重试前等待 500ms，避免触发 rate limit
+					time.Sleep(500 * time.Millisecond)
+
 					// Conservative two-stage fallback:
 					// 1) Disable thinking + thinking->text (preserve content)
 					// 2) Only if upstream still errors AND error message points to tool/function signature issues:
@@ -2567,6 +2617,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 								msg2 := extractUpstreamErrorMessage(retryRespBody)
 								if looksLikeToolSignatureError(msg2) && time.Since(retryStart) < maxRetryElapsed {
 									log.Printf("Account %d: signature retry still failing and looks tool-related, retrying with tool blocks downgraded", account.ID)
+
+									// 🔥 新增：第二次重试前再等待 500ms
+									time.Sleep(500 * time.Millisecond)
+
 									filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body)
 									retryReq2, buildErr2 := s.buildUpstreamRequest(ctx, c, account, filteredBody2, token, tokenType, reqModel)
 									if buildErr2 == nil {
@@ -2815,6 +2869,32 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}, nil
 }
 
+// normalizeThinkingParam 将 thinking 参数中的 adaptive 类型转换为 Anthropic API 支持的 enabled 类型
+// Claude Code V2.1.63 发送 thinking: {type: "adaptive"}
+// Anthropic API 仅支持 thinking: {type: "enabled", budget_tokens: N}
+func normalizeThinkingParam(body []byte) []byte {
+	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingType != "adaptive" {
+		return body
+	}
+
+	// adaptive → enabled + budget_tokens
+	budgetTokens := gjson.GetBytes(body, "thinking.budget_tokens").Int()
+	if budgetTokens <= 0 {
+		budgetTokens = 10000
+	}
+
+	result, err := sjson.SetBytes(body, "thinking", map[string]any{
+		"type":          "enabled",
+		"budget_tokens": budgetTokens,
+	})
+	if err != nil {
+		return body
+	}
+
+	return result
+}
+
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string) (*http.Request, error) {
 	// 确定目标URL
 	targetURL := claudeAPIURL
@@ -2827,6 +2907,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			}
 			targetURL = validatedURL + "/v1/messages"
 		}
+	}
+
+	// Anthropic 平台：将 thinking.type=adaptive 转换为 enabled + budget_tokens
+	if account.Platform == PlatformAnthropic {
+		body = normalizeThinkingParam(body)
 	}
 
 	// OAuth账号：应用统一指纹
@@ -2952,7 +3037,8 @@ func requestNeedsBetaFeatures(body []byte) bool {
 	if tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
 		return true
 	}
-	if strings.EqualFold(gjson.GetBytes(body, "thinking.type").String(), "enabled") {
+	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	if strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive") {
 		return true
 	}
 	return false
@@ -3257,6 +3343,16 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
+	// 成功响应：异步清除限流状态（如果之前被限流）
+	if account.IsRateLimited() {
+		go func(accountID int64) {
+			clearCtx := context.Background()
+			if err := s.rateLimitService.ClearRateLimit(clearCtx, accountID); err != nil {
+				log.Printf("[RateLimit] Failed to clear rate limit for account %d: %v", accountID, err)
+			}
+		}(account.ID)
+	}
+
 	if s.cfg != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
 	}
@@ -3519,6 +3615,16 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
+	// 成功响应：异步清除限流状态（如果之前被限流）
+	if account.IsRateLimited() {
+		go func(accountID int64) {
+			clearCtx := context.Background()
+			if err := s.rateLimitService.ClearRateLimit(clearCtx, accountID); err != nil {
+				log.Printf("[RateLimit] Failed to clear rate limit for account %d: %v", accountID, err)
+			}
+		}(account.ID)
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -3741,6 +3847,15 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		if s.tempAPIKeyRepo != nil {
 			if _, _, err := s.tempAPIKeyRepo.AddCostUSD(ctx, input.TempAPIKey.ID, cost.ActualCost); err != nil {
 				log.Printf("Update temp API key cost failed: %v", err)
+			}
+		}
+	}
+
+	// 更新 time_quota 临时 API Key 的每日消费金额
+	if input.TempAPIKey != nil && input.TempAPIKey.KeyType == TempAPIKeyTypeTimeQuota && cost.ActualCost > 0 {
+		if s.tempAPIKeyRepo != nil {
+			if _, _, err := s.tempAPIKeyRepo.AddDailyCostUSD(ctx, input.TempAPIKey.ID, cost.ActualCost); err != nil {
+				log.Printf("Update temp API key daily cost failed: %v", err)
 			}
 		}
 	}

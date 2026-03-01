@@ -155,6 +155,48 @@ func (_u *TempAPIKeyUpdate) AddTotalCostUsd(v float64) *TempAPIKeyUpdate {
 	return _u
 }
 
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (_u *TempAPIKeyUpdate) SetDailyQuotaUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.ResetDailyQuotaUsd()
+	_u.mutation.SetDailyQuotaUsd(v)
+	return _u
+}
+
+// SetNillableDailyQuotaUsd sets the "daily_quota_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdate) SetNillableDailyQuotaUsd(v *float64) *TempAPIKeyUpdate {
+	if v != nil {
+		_u.SetDailyQuotaUsd(*v)
+	}
+	return _u
+}
+
+// AddDailyQuotaUsd adds value to the "daily_quota_usd" field.
+func (_u *TempAPIKeyUpdate) AddDailyQuotaUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.AddDailyQuotaUsd(v)
+	return _u
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (_u *TempAPIKeyUpdate) SetCurrentPeriodCostUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.ResetCurrentPeriodCostUsd()
+	_u.mutation.SetCurrentPeriodCostUsd(v)
+	return _u
+}
+
+// SetNillableCurrentPeriodCostUsd sets the "current_period_cost_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdate) SetNillableCurrentPeriodCostUsd(v *float64) *TempAPIKeyUpdate {
+	if v != nil {
+		_u.SetCurrentPeriodCostUsd(*v)
+	}
+	return _u
+}
+
+// AddCurrentPeriodCostUsd adds value to the "current_period_cost_usd" field.
+func (_u *TempAPIKeyUpdate) AddCurrentPeriodCostUsd(v float64) *TempAPIKeyUpdate {
+	_u.mutation.AddCurrentPeriodCostUsd(v)
+	return _u
+}
+
 // SetValidDays sets the "valid_days" field.
 func (_u *TempAPIKeyUpdate) SetValidDays(v int) *TempAPIKeyUpdate {
 	_u.mutation.ResetValidDays()
@@ -501,6 +543,18 @@ func (_u *TempAPIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) 
 	if value, ok := _u.mutation.AddedTotalCostUsd(); ok {
 		_spec.AddField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
 	}
+	if value, ok := _u.mutation.DailyQuotaUsd(); ok {
+		_spec.SetField(tempapikey.FieldDailyQuotaUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedDailyQuotaUsd(); ok {
+		_spec.AddField(tempapikey.FieldDailyQuotaUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.CurrentPeriodCostUsd(); ok {
+		_spec.SetField(tempapikey.FieldCurrentPeriodCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedCurrentPeriodCostUsd(); ok {
+		_spec.AddField(tempapikey.FieldCurrentPeriodCostUsd, field.TypeFloat64, value)
+	}
 	if value, ok := _u.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)
 	}
@@ -790,6 +844,48 @@ func (_u *TempAPIKeyUpdateOne) SetNillableTotalCostUsd(v *float64) *TempAPIKeyUp
 // AddTotalCostUsd adds value to the "total_cost_usd" field.
 func (_u *TempAPIKeyUpdateOne) AddTotalCostUsd(v float64) *TempAPIKeyUpdateOne {
 	_u.mutation.AddTotalCostUsd(v)
+	return _u
+}
+
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (_u *TempAPIKeyUpdateOne) SetDailyQuotaUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.ResetDailyQuotaUsd()
+	_u.mutation.SetDailyQuotaUsd(v)
+	return _u
+}
+
+// SetNillableDailyQuotaUsd sets the "daily_quota_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdateOne) SetNillableDailyQuotaUsd(v *float64) *TempAPIKeyUpdateOne {
+	if v != nil {
+		_u.SetDailyQuotaUsd(*v)
+	}
+	return _u
+}
+
+// AddDailyQuotaUsd adds value to the "daily_quota_usd" field.
+func (_u *TempAPIKeyUpdateOne) AddDailyQuotaUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.AddDailyQuotaUsd(v)
+	return _u
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (_u *TempAPIKeyUpdateOne) SetCurrentPeriodCostUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.ResetCurrentPeriodCostUsd()
+	_u.mutation.SetCurrentPeriodCostUsd(v)
+	return _u
+}
+
+// SetNillableCurrentPeriodCostUsd sets the "current_period_cost_usd" field if the given value is not nil.
+func (_u *TempAPIKeyUpdateOne) SetNillableCurrentPeriodCostUsd(v *float64) *TempAPIKeyUpdateOne {
+	if v != nil {
+		_u.SetCurrentPeriodCostUsd(*v)
+	}
+	return _u
+}
+
+// AddCurrentPeriodCostUsd adds value to the "current_period_cost_usd" field.
+func (_u *TempAPIKeyUpdateOne) AddCurrentPeriodCostUsd(v float64) *TempAPIKeyUpdateOne {
+	_u.mutation.AddCurrentPeriodCostUsd(v)
 	return _u
 }
 
@@ -1168,6 +1264,18 @@ func (_u *TempAPIKeyUpdateOne) sqlSave(ctx context.Context) (_node *TempAPIKey, 
 	}
 	if value, ok := _u.mutation.AddedTotalCostUsd(); ok {
 		_spec.AddField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.DailyQuotaUsd(); ok {
+		_spec.SetField(tempapikey.FieldDailyQuotaUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedDailyQuotaUsd(); ok {
+		_spec.AddField(tempapikey.FieldDailyQuotaUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.CurrentPeriodCostUsd(); ok {
+		_spec.SetField(tempapikey.FieldCurrentPeriodCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedCurrentPeriodCostUsd(); ok {
+		_spec.AddField(tempapikey.FieldCurrentPeriodCostUsd, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)

@@ -42,8 +42,12 @@ type TempAPIKeyQueryResponse struct {
 	TotalCostUSD      float64 `json:"total_cost_usd,omitempty"`
 	RemainingQuotaUSD float64 `json:"remaining_quota_usd,omitempty"`
 	IsExhausted       bool    `json:"is_exhausted,omitempty"`
-	UsageLogs         []UsageLogEntry `json:"usage_logs,omitempty"`
-	Pagination        *PaginationInfo `json:"pagination,omitempty"`
+	// time_quota 类型专用字段
+	DailyQuotaUSD          float64 `json:"daily_quota_usd,omitempty"`
+	CurrentPeriodCostUSD   float64 `json:"current_period_cost_usd,omitempty"`
+	RemainingDailyQuotaUSD float64 `json:"remaining_daily_quota_usd,omitempty"`
+	UsageLogs              []UsageLogEntry `json:"usage_logs,omitempty"`
+	Pagination             *PaginationInfo `json:"pagination,omitempty"`
 }
 
 // UsageLogEntry represents a single usage log entry for public display
@@ -101,6 +105,13 @@ func (h *TempAPIKeyQueryHandler) Query(c *gin.Context) {
 		resp.TotalCostUSD = key.TotalCostUSD
 		resp.RemainingQuotaUSD = key.RemainingQuotaUSD()
 		resp.IsExhausted = key.IsExhausted()
+	}
+
+	// time_quota 类型：填充每日额度相关字段
+	if key.KeyType == service.TempAPIKeyTypeTimeQuota {
+		resp.DailyQuotaUSD = key.DailyQuotaUSD
+		resp.CurrentPeriodCostUSD = key.CurrentPeriodCostUSD
+		resp.RemainingDailyQuotaUSD = key.RemainingDailyQuotaUSD()
 	}
 
 	if key.ActivatedAt != nil {

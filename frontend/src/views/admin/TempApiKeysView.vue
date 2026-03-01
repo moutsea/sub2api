@@ -145,6 +145,18 @@
                   {{ t('admin.tempApiKeys.quota') }}: ${{ (row.total_cost || 0).toFixed(2) }} / ${{ (row.total_quota || 0).toFixed(2) }}
                 </div>
               </template>
+              <template v-else-if="row.key_type === 'time_quota'">
+                <span class="badge badge-accent">{{ t('admin.tempApiKeys.timeQuota') }}</span>
+                <div class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ row.valid_days }}{{ t('admin.tempApiKeys.days') }}
+                  <template v-if="row.is_activated">
+                    · {{ t('admin.tempApiKeys.expiresAt') }}: {{ formatDate(row.expires_at) }}
+                  </template>
+                  <template v-else>
+                    ({{ t('admin.tempApiKeys.notActivated') }})
+                  </template>
+                </div>
+              </template>
               <template v-else-if="row.is_activated">
                 <span>{{ row.valid_days }}{{ t('admin.tempApiKeys.days') }}</span>
                 <div class="text-xs text-gray-500 dark:text-gray-400">
@@ -163,6 +175,11 @@
             <template v-if="row.key_type === 'quota_only'">
               <span :class="row.is_exhausted ? 'text-red-500' : ''">
                 ${{ ((row.total_quota || 0) - (row.total_cost || 0) > 0 ? (row.total_quota - row.total_cost).toFixed(2) : '0.00') }}
+              </span>
+            </template>
+            <template v-else-if="row.key_type === 'time_quota'">
+              <span :class="row.daily_quota > 0 && row.current_period_cost >= row.daily_quota ? 'text-red-500' : ''">
+                ${{ (row.current_period_cost || 0).toFixed(2) }} / ${{ (row.daily_quota || 0).toFixed(2) }}
               </span>
             </template>
             <template v-else>
@@ -283,6 +300,28 @@
             />
           </div>
         </template>
+        <template v-else-if="createForm.key_type === 'time_quota'">
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.validDays') }} *</label>
+            <input
+              v-model.number="createForm.valid_days"
+              type="number"
+              min="1"
+              class="input"
+            />
+          </div>
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.dailyQuota') }} *</label>
+            <input
+              v-model.number="createForm.daily_quota"
+              type="number"
+              min="0.01"
+              step="0.01"
+              class="input"
+              :placeholder="t('admin.tempApiKeys.dailyQuotaPlaceholder')"
+            />
+          </div>
+        </template>
         <template v-else>
           <div>
             <label class="label">{{ t('admin.tempApiKeys.totalQuota') }} *</label>
@@ -330,6 +369,16 @@
           <div>
             <label class="label">{{ t('admin.tempApiKeys.totalQuota') }}</label>
             <input v-model.number="editForm.total_quota" type="number" min="0" step="0.01" class="input" :placeholder="t('admin.tempApiKeys.totalQuotaPlaceholder')" />
+          </div>
+        </template>
+        <template v-else-if="editingKey?.key_type === 'time_quota'">
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.validDays') }}</label>
+            <input v-model.number="editForm.valid_days" type="number" min="1" class="input" />
+          </div>
+          <div>
+            <label class="label">{{ t('admin.tempApiKeys.dailyQuota') }}</label>
+            <input v-model.number="editForm.daily_quota" type="number" min="0.01" step="0.01" class="input" :placeholder="t('admin.tempApiKeys.dailyQuotaPlaceholder')" />
           </div>
         </template>
         <template v-else>
@@ -401,6 +450,17 @@
             :placeholder="t('admin.tempApiKeys.noChange')"
           />
         </div>
+        <div>
+          <label class="label">{{ t('admin.tempApiKeys.dailyQuota') }}</label>
+          <input
+            v-model.number="batchForm.daily_quota"
+            type="number"
+            min="0.01"
+            step="0.01"
+            class="input"
+            :placeholder="t('admin.tempApiKeys.noChange')"
+          />
+        </div>
       </form>
       <template #footer>
         <div class="flex justify-end gap-2">
@@ -455,10 +515,11 @@ const createForm = ref({
   count: 1,
   name_prefix: '',
   group_id: 0,
-  key_type: 'time_limited' as 'time_limited' | 'quota_only',
+  key_type: 'time_limited' as 'time_limited' | 'quota_only' | 'time_quota',
   valid_days: 7,
   daily_limit: 1000,
   total_quota: 1000,
+  daily_quota: 10,
 })
 
 const editingKey = ref<TempApiKey | null>(null)
@@ -468,12 +529,14 @@ const editForm = ref({
   valid_days: 7,
   daily_limit: 1000,
   total_quota: 0,
+  daily_quota: 0,
 })
 
 const batchForm = ref({
   status: '' as '' | 'active' | 'inactive',
   valid_days: null as number | null,
   daily_limit: null as number | null,
+  daily_quota: null as number | null,
   name_prefix: '' as string,
 })
 
@@ -491,6 +554,7 @@ const filterKeyTypeOptions = computed(() => [
   { value: '', label: t('common.all') },
   { value: 'time_limited', label: t('admin.tempApiKeys.timeLimited') },
   { value: 'quota_only', label: t('admin.tempApiKeys.quotaOnly') },
+  { value: 'time_quota', label: t('admin.tempApiKeys.timeQuota') },
 ])
 
 const filterStatusOptions = computed(() => [
@@ -516,10 +580,11 @@ const groupOptions = computed(() =>
   groups.value.map((g) => ({ value: g.id, label: g.name }))
 )
 
-const keyTypeOptions = [
-  { value: 'time_limited', label: 'Time Limited' },
-  { value: 'quota_only', label: 'Quota Only' },
-]
+const keyTypeOptions = computed(() => [
+  { value: 'time_limited', label: t('admin.tempApiKeys.timeLimited') },
+  { value: 'quota_only', label: t('admin.tempApiKeys.quotaOnly') },
+  { value: 'time_quota', label: t('admin.tempApiKeys.timeQuota') },
+])
 
 const statusOptions = [
   { value: 'active', label: 'Active' },
@@ -604,7 +669,7 @@ const handleCreate = async () => {
       appStore.showSuccess(t('admin.tempApiKeys.createSuccess', { count: res.created }))
     }
     showCreateDialog.value = false
-    createForm.value = { count: 1, name_prefix: '', group_id: 0, key_type: 'time_limited', valid_days: 7, daily_limit: 1000, total_quota: 1000 }
+    createForm.value = { count: 1, name_prefix: '', group_id: 0, key_type: 'time_limited', valid_days: 7, daily_limit: 1000, total_quota: 1000, daily_quota: 10 }
     loadKeys()
   } catch (e: unknown) {
     appStore.showError((e as Error).message || t('admin.tempApiKeys.createFailed'))
@@ -621,6 +686,7 @@ const handleEdit = (key: TempApiKey) => {
     valid_days: key.valid_days,
     daily_limit: key.daily_limit,
     total_quota: key.total_quota || 0,
+    daily_quota: key.daily_quota || 0,
   }
   showEditDialog.value = true
 }
@@ -635,6 +701,9 @@ const handleUpdate = async () => {
     }
     if (editingKey.value.key_type === 'quota_only') {
       payload.total_quota = editForm.value.total_quota
+    } else if (editingKey.value.key_type === 'time_quota') {
+      payload.valid_days = editForm.value.valid_days
+      payload.daily_quota = editForm.value.daily_quota
     } else {
       payload.valid_days = editForm.value.valid_days
       payload.daily_limit = editForm.value.daily_limit
@@ -716,7 +785,7 @@ const handleBatchDelete = async () => {
 
 const handleBatchUpdate = async () => {
   if (selectedIds.value.length === 0) return
-  const data: { ids: number[]; status?: 'active' | 'inactive'; valid_days?: number; daily_limit?: number; name_prefix?: string } = {
+  const data: { ids: number[]; status?: 'active' | 'inactive'; valid_days?: number; daily_limit?: number; daily_quota?: number; name_prefix?: string } = {
     ids: selectedIds.value,
   }
   if (batchForm.value.status === 'active' || batchForm.value.status === 'inactive') {
@@ -724,6 +793,7 @@ const handleBatchUpdate = async () => {
   }
   if (batchForm.value.valid_days !== null) data.valid_days = batchForm.value.valid_days
   if (batchForm.value.daily_limit !== null) data.daily_limit = batchForm.value.daily_limit
+  if (batchForm.value.daily_quota !== null) data.daily_quota = batchForm.value.daily_quota
   if (batchForm.value.name_prefix.trim()) data.name_prefix = batchForm.value.name_prefix.trim()
 
   updating.value = true
@@ -731,7 +801,7 @@ const handleBatchUpdate = async () => {
     const res = await tempApiKeysAPI.batchUpdate(data)
     appStore.showSuccess(t('admin.tempApiKeys.batchUpdateSuccess', { count: res.updated }))
     showBatchDialog.value = false
-    batchForm.value = { status: '', valid_days: null, daily_limit: null, name_prefix: '' }
+    batchForm.value = { status: '', valid_days: null, daily_limit: null, daily_quota: null, name_prefix: '' }
     selectedIds.value = []
     loadKeys()
   } catch (e: unknown) {

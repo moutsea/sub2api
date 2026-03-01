@@ -297,6 +297,97 @@ func TestGatewayService_SelectAccountForModelWithPlatform_Anthropic(t *testing.T
 	require.Equal(t, PlatformAnthropic, acc.Platform, "应只返回 anthropic 平台账户")
 }
 
+// TestGatewayService_SelectAccountForModelWithPlatform_AnthropicAccountTypePriority 测试 Anthropic 账号类型优先级
+func TestGatewayService_SelectAccountForModelWithPlatform_AnthropicAccountTypePriority(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		accounts     []Account
+		expectedID   int64
+		expectedType string
+		description  string
+	}{
+		{
+			name: "OAuth和SetupToken平级_选择第一个",
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true},
+			},
+			expectedID:   1,
+			expectedType: AccountTypeSetupToken,
+			description:  "OAuth 和 SetupToken 平级时，选择第一个遇到的账号",
+		},
+		{
+			name: "OAuth优先于APIKey",
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true},
+			},
+			expectedID:   2,
+			expectedType: AccountTypeOAuth,
+			description:  "相同优先级时，OAuth 应优先于 APIKey",
+		},
+		{
+			name: "SetupToken优先于APIKey",
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Priority: 1, Status: StatusActive, Schedulable: true},
+			},
+			expectedID:   2,
+			expectedType: AccountTypeSetupToken,
+			description:  "相同优先级时，SetupToken 应优先于 APIKey",
+		},
+		{
+			name: "三种类型混合_OAuth或SetupToken",
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true},
+			},
+			expectedID:   2,
+			expectedType: AccountTypeSetupToken,
+			description:  "三种类型同时存在时，OAuth 和 SetupToken 平级，选择先遇到的",
+		},
+		{
+			name: "Priority优先于Type",
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Priority: 2, Status: StatusActive, Schedulable: true},
+			},
+			expectedID:   1,
+			expectedType: AccountTypeAPIKey,
+			description:  "Priority 优先级高于账号类型，应选择 Priority=1 的 APIKey",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockAccountRepoForPlatform{
+				accounts:     tt.accounts,
+				accountsByID: map[int64]*Account{},
+			}
+			for i := range repo.accounts {
+				repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+			}
+
+			cache := &mockGatewayCacheForPlatform{}
+
+			svc := &GatewayService{
+				accountRepo: repo,
+				cache:       cache,
+				cfg:         testConfig(),
+			}
+
+			acc, err := svc.selectAccountForModelWithPlatform(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, PlatformAnthropic)
+			require.NoError(t, err, tt.description)
+			require.NotNil(t, acc, tt.description)
+			require.Equal(t, tt.expectedID, acc.ID, tt.description)
+			require.Equal(t, tt.expectedType, acc.Type, tt.description)
+		})
+	}
+}
+
 // TestGatewayService_SelectAccountForModelWithPlatform_Antigravity 测试 antigravity 单平台选择
 func TestGatewayService_SelectAccountForModelWithPlatform_Antigravity(t *testing.T) {
 	ctx := context.Background()
@@ -726,6 +817,32 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		require.Equal(t, int64(2), acc.ID, "同优先级且未使用时应优先选择OAuth账户")
 	})
 
+	t.Run("混合调度-anthropic分组包含openai账户", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformOpenAI, Priority: 1, Status: StatusActive, Schedulable: true},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cache := &mockGatewayCacheForPlatform{}
+
+		svc := &GatewayService{
+			accountRepo: repo,
+			cache:       cache,
+			cfg:         testConfig(),
+		}
+
+		acc, err := svc.selectAccountWithMixedScheduling(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, PlatformAnthropic)
+		require.NoError(t, err)
+		require.NotNil(t, acc)
+		require.Equal(t, int64(2), acc.ID, "anthropic 混合调度应可选择 openai 账户")
+		require.Equal(t, PlatformOpenAI, acc.Platform)
+	})
 	t.Run("混合调度-包含启用mixed_scheduling的antigravity账户", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{

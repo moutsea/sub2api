@@ -16,6 +16,7 @@ type TempAPIKeyRepository interface {
 	GetByKey(ctx context.Context, key string) (*TempAPIKey, error)
 	ActivateAndIncrement(ctx context.Context, id int64) (*TempAPIKey, bool, error)
 	AddCostUSD(ctx context.Context, id int64, costUSD float64) (*TempAPIKey, bool, error)
+	AddDailyCostUSD(ctx context.Context, id int64, costUSD float64) (*TempAPIKey, bool, error)
 	IncrementUsageCounters(ctx context.Context, id int64) error
 }
 
@@ -57,7 +58,7 @@ func (s *TempAPIKeyService) ValidateAndIncrement(ctx context.Context, key *TempA
 			return nil, ErrTempAPIKeyExhausted
 		}
 	} else {
-		// For time_limited type, check if already expired (for activated keys)
+		// For time_limited / time_quota type, check if already expired (for activated keys)
 		if key.ExpiresAt != nil && time.Now().After(*key.ExpiresAt) {
 			return nil, ErrTempAPIKeyExpired
 		}

@@ -100,6 +100,16 @@ func TotalCostUsd(v float64) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldEQ(FieldTotalCostUsd, v))
 }
 
+// DailyQuotaUsd applies equality check predicate on the "daily_quota_usd" field. It's identical to DailyQuotaUsdEQ.
+func DailyQuotaUsd(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldDailyQuotaUsd, v))
+}
+
+// CurrentPeriodCostUsd applies equality check predicate on the "current_period_cost_usd" field. It's identical to CurrentPeriodCostUsdEQ.
+func CurrentPeriodCostUsd(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldCurrentPeriodCostUsd, v))
+}
+
 // ValidDays applies equality check predicate on the "valid_days" field. It's identical to ValidDaysEQ.
 func ValidDays(v int) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldEQ(FieldValidDays, v))
@@ -568,6 +578,86 @@ func TotalCostUsdLT(v float64) predicate.TempAPIKey {
 // TotalCostUsdLTE applies the LTE predicate on the "total_cost_usd" field.
 func TotalCostUsdLTE(v float64) predicate.TempAPIKey {
 	return predicate.TempAPIKey(sql.FieldLTE(FieldTotalCostUsd, v))
+}
+
+// DailyQuotaUsdEQ applies the EQ predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldDailyQuotaUsd, v))
+}
+
+// DailyQuotaUsdNEQ applies the NEQ predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdNEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNEQ(FieldDailyQuotaUsd, v))
+}
+
+// DailyQuotaUsdIn applies the In predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldIn(FieldDailyQuotaUsd, vs...))
+}
+
+// DailyQuotaUsdNotIn applies the NotIn predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdNotIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNotIn(FieldDailyQuotaUsd, vs...))
+}
+
+// DailyQuotaUsdGT applies the GT predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdGT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGT(FieldDailyQuotaUsd, v))
+}
+
+// DailyQuotaUsdGTE applies the GTE predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdGTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGTE(FieldDailyQuotaUsd, v))
+}
+
+// DailyQuotaUsdLT applies the LT predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdLT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLT(FieldDailyQuotaUsd, v))
+}
+
+// DailyQuotaUsdLTE applies the LTE predicate on the "daily_quota_usd" field.
+func DailyQuotaUsdLTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLTE(FieldDailyQuotaUsd, v))
+}
+
+// CurrentPeriodCostUsdEQ applies the EQ predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldEQ(FieldCurrentPeriodCostUsd, v))
+}
+
+// CurrentPeriodCostUsdNEQ applies the NEQ predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdNEQ(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNEQ(FieldCurrentPeriodCostUsd, v))
+}
+
+// CurrentPeriodCostUsdIn applies the In predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldIn(FieldCurrentPeriodCostUsd, vs...))
+}
+
+// CurrentPeriodCostUsdNotIn applies the NotIn predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdNotIn(vs ...float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldNotIn(FieldCurrentPeriodCostUsd, vs...))
+}
+
+// CurrentPeriodCostUsdGT applies the GT predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdGT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGT(FieldCurrentPeriodCostUsd, v))
+}
+
+// CurrentPeriodCostUsdGTE applies the GTE predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdGTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldGTE(FieldCurrentPeriodCostUsd, v))
+}
+
+// CurrentPeriodCostUsdLT applies the LT predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdLT(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLT(FieldCurrentPeriodCostUsd, v))
+}
+
+// CurrentPeriodCostUsdLTE applies the LTE predicate on the "current_period_cost_usd" field.
+func CurrentPeriodCostUsdLTE(v float64) predicate.TempAPIKey {
+	return predicate.TempAPIKey(sql.FieldLTE(FieldCurrentPeriodCostUsd, v))
 }
 
 // ValidDaysEQ applies the EQ predicate on the "valid_days" field.

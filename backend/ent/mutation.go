@@ -10458,42 +10458,46 @@ func (m *SettingMutation) ResetEdge(name string) error {
 // TempAPIKeyMutation represents an operation that mutates the TempAPIKey nodes in the graph.
 type TempAPIKeyMutation struct {
 	config
-	op                      Op
-	typ                     string
-	id                      *int64
-	created_at              *time.Time
-	updated_at              *time.Time
-	deleted_at              *time.Time
-	key                     *string
-	name                    *string
-	key_type                *string
-	total_quota_usd         *float64
-	addtotal_quota_usd      *float64
-	total_cost_usd          *float64
-	addtotal_cost_usd       *float64
-	valid_days              *int
-	addvalid_days           *int
-	activated_at            *time.Time
-	expires_at              *time.Time
-	daily_limit             *int
-	adddaily_limit          *int
-	current_period_start    *time.Time
-	current_period_count    *int
-	addcurrent_period_count *int
-	total_requests          *int64
-	addtotal_requests       *int64
-	status                  *string
-	clearedFields           map[string]struct{}
-	group                   *int64
-	clearedgroup            bool
-	creator                 *int64
-	clearedcreator          bool
-	usage_logs              map[int64]struct{}
-	removedusage_logs       map[int64]struct{}
-	clearedusage_logs       bool
-	done                    bool
-	oldValue                func(context.Context) (*TempAPIKey, error)
-	predicates              []predicate.TempAPIKey
+	op                         Op
+	typ                        string
+	id                         *int64
+	created_at                 *time.Time
+	updated_at                 *time.Time
+	deleted_at                 *time.Time
+	key                        *string
+	name                       *string
+	key_type                   *string
+	total_quota_usd            *float64
+	addtotal_quota_usd         *float64
+	total_cost_usd             *float64
+	addtotal_cost_usd          *float64
+	daily_quota_usd            *float64
+	adddaily_quota_usd         *float64
+	current_period_cost_usd    *float64
+	addcurrent_period_cost_usd *float64
+	valid_days                 *int
+	addvalid_days              *int
+	activated_at               *time.Time
+	expires_at                 *time.Time
+	daily_limit                *int
+	adddaily_limit             *int
+	current_period_start       *time.Time
+	current_period_count       *int
+	addcurrent_period_count    *int
+	total_requests             *int64
+	addtotal_requests          *int64
+	status                     *string
+	clearedFields              map[string]struct{}
+	group                      *int64
+	clearedgroup               bool
+	creator                    *int64
+	clearedcreator             bool
+	usage_logs                 map[int64]struct{}
+	removedusage_logs          map[int64]struct{}
+	clearedusage_logs          bool
+	done                       bool
+	oldValue                   func(context.Context) (*TempAPIKey, error)
+	predicates                 []predicate.TempAPIKey
 }
 
 var _ ent.Mutation = (*TempAPIKeyMutation)(nil)
@@ -10969,6 +10973,118 @@ func (m *TempAPIKeyMutation) AddedTotalCostUsd() (r float64, exists bool) {
 func (m *TempAPIKeyMutation) ResetTotalCostUsd() {
 	m.total_cost_usd = nil
 	m.addtotal_cost_usd = nil
+}
+
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (m *TempAPIKeyMutation) SetDailyQuotaUsd(f float64) {
+	m.daily_quota_usd = &f
+	m.adddaily_quota_usd = nil
+}
+
+// DailyQuotaUsd returns the value of the "daily_quota_usd" field in the mutation.
+func (m *TempAPIKeyMutation) DailyQuotaUsd() (r float64, exists bool) {
+	v := m.daily_quota_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDailyQuotaUsd returns the old "daily_quota_usd" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldDailyQuotaUsd(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDailyQuotaUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDailyQuotaUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDailyQuotaUsd: %w", err)
+	}
+	return oldValue.DailyQuotaUsd, nil
+}
+
+// AddDailyQuotaUsd adds f to the "daily_quota_usd" field.
+func (m *TempAPIKeyMutation) AddDailyQuotaUsd(f float64) {
+	if m.adddaily_quota_usd != nil {
+		*m.adddaily_quota_usd += f
+	} else {
+		m.adddaily_quota_usd = &f
+	}
+}
+
+// AddedDailyQuotaUsd returns the value that was added to the "daily_quota_usd" field in this mutation.
+func (m *TempAPIKeyMutation) AddedDailyQuotaUsd() (r float64, exists bool) {
+	v := m.adddaily_quota_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetDailyQuotaUsd resets all changes to the "daily_quota_usd" field.
+func (m *TempAPIKeyMutation) ResetDailyQuotaUsd() {
+	m.daily_quota_usd = nil
+	m.adddaily_quota_usd = nil
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (m *TempAPIKeyMutation) SetCurrentPeriodCostUsd(f float64) {
+	m.current_period_cost_usd = &f
+	m.addcurrent_period_cost_usd = nil
+}
+
+// CurrentPeriodCostUsd returns the value of the "current_period_cost_usd" field in the mutation.
+func (m *TempAPIKeyMutation) CurrentPeriodCostUsd() (r float64, exists bool) {
+	v := m.current_period_cost_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCurrentPeriodCostUsd returns the old "current_period_cost_usd" field's value of the TempAPIKey entity.
+// If the TempAPIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TempAPIKeyMutation) OldCurrentPeriodCostUsd(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCurrentPeriodCostUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCurrentPeriodCostUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCurrentPeriodCostUsd: %w", err)
+	}
+	return oldValue.CurrentPeriodCostUsd, nil
+}
+
+// AddCurrentPeriodCostUsd adds f to the "current_period_cost_usd" field.
+func (m *TempAPIKeyMutation) AddCurrentPeriodCostUsd(f float64) {
+	if m.addcurrent_period_cost_usd != nil {
+		*m.addcurrent_period_cost_usd += f
+	} else {
+		m.addcurrent_period_cost_usd = &f
+	}
+}
+
+// AddedCurrentPeriodCostUsd returns the value that was added to the "current_period_cost_usd" field in this mutation.
+func (m *TempAPIKeyMutation) AddedCurrentPeriodCostUsd() (r float64, exists bool) {
+	v := m.addcurrent_period_cost_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCurrentPeriodCostUsd resets all changes to the "current_period_cost_usd" field.
+func (m *TempAPIKeyMutation) ResetCurrentPeriodCostUsd() {
+	m.current_period_cost_usd = nil
+	m.addcurrent_period_cost_usd = nil
 }
 
 // SetValidDays sets the "valid_days" field.
@@ -11569,7 +11685,7 @@ func (m *TempAPIKeyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *TempAPIKeyMutation) Fields() []string {
-	fields := make([]string, 0, 18)
+	fields := make([]string, 0, 20)
 	if m.created_at != nil {
 		fields = append(fields, tempapikey.FieldCreatedAt)
 	}
@@ -11596,6 +11712,12 @@ func (m *TempAPIKeyMutation) Fields() []string {
 	}
 	if m.total_cost_usd != nil {
 		fields = append(fields, tempapikey.FieldTotalCostUsd)
+	}
+	if m.daily_quota_usd != nil {
+		fields = append(fields, tempapikey.FieldDailyQuotaUsd)
+	}
+	if m.current_period_cost_usd != nil {
+		fields = append(fields, tempapikey.FieldCurrentPeriodCostUsd)
 	}
 	if m.valid_days != nil {
 		fields = append(fields, tempapikey.FieldValidDays)
@@ -11650,6 +11772,10 @@ func (m *TempAPIKeyMutation) Field(name string) (ent.Value, bool) {
 		return m.TotalQuotaUsd()
 	case tempapikey.FieldTotalCostUsd:
 		return m.TotalCostUsd()
+	case tempapikey.FieldDailyQuotaUsd:
+		return m.DailyQuotaUsd()
+	case tempapikey.FieldCurrentPeriodCostUsd:
+		return m.CurrentPeriodCostUsd()
 	case tempapikey.FieldValidDays:
 		return m.ValidDays()
 	case tempapikey.FieldActivatedAt:
@@ -11695,6 +11821,10 @@ func (m *TempAPIKeyMutation) OldField(ctx context.Context, name string) (ent.Val
 		return m.OldTotalQuotaUsd(ctx)
 	case tempapikey.FieldTotalCostUsd:
 		return m.OldTotalCostUsd(ctx)
+	case tempapikey.FieldDailyQuotaUsd:
+		return m.OldDailyQuotaUsd(ctx)
+	case tempapikey.FieldCurrentPeriodCostUsd:
+		return m.OldCurrentPeriodCostUsd(ctx)
 	case tempapikey.FieldValidDays:
 		return m.OldValidDays(ctx)
 	case tempapikey.FieldActivatedAt:
@@ -11785,6 +11915,20 @@ func (m *TempAPIKeyMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetTotalCostUsd(v)
 		return nil
+	case tempapikey.FieldDailyQuotaUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDailyQuotaUsd(v)
+		return nil
+	case tempapikey.FieldCurrentPeriodCostUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCurrentPeriodCostUsd(v)
+		return nil
 	case tempapikey.FieldValidDays:
 		v, ok := value.(int)
 		if !ok {
@@ -11862,6 +12006,12 @@ func (m *TempAPIKeyMutation) AddedFields() []string {
 	if m.addtotal_cost_usd != nil {
 		fields = append(fields, tempapikey.FieldTotalCostUsd)
 	}
+	if m.adddaily_quota_usd != nil {
+		fields = append(fields, tempapikey.FieldDailyQuotaUsd)
+	}
+	if m.addcurrent_period_cost_usd != nil {
+		fields = append(fields, tempapikey.FieldCurrentPeriodCostUsd)
+	}
 	if m.addvalid_days != nil {
 		fields = append(fields, tempapikey.FieldValidDays)
 	}
@@ -11886,6 +12036,10 @@ func (m *TempAPIKeyMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedTotalQuotaUsd()
 	case tempapikey.FieldTotalCostUsd:
 		return m.AddedTotalCostUsd()
+	case tempapikey.FieldDailyQuotaUsd:
+		return m.AddedDailyQuotaUsd()
+	case tempapikey.FieldCurrentPeriodCostUsd:
+		return m.AddedCurrentPeriodCostUsd()
 	case tempapikey.FieldValidDays:
 		return m.AddedValidDays()
 	case tempapikey.FieldDailyLimit:
@@ -11916,6 +12070,20 @@ func (m *TempAPIKeyMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddTotalCostUsd(v)
+		return nil
+	case tempapikey.FieldDailyQuotaUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddDailyQuotaUsd(v)
+		return nil
+	case tempapikey.FieldCurrentPeriodCostUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCurrentPeriodCostUsd(v)
 		return nil
 	case tempapikey.FieldValidDays:
 		v, ok := value.(int)
@@ -12025,6 +12193,12 @@ func (m *TempAPIKeyMutation) ResetField(name string) error {
 		return nil
 	case tempapikey.FieldTotalCostUsd:
 		m.ResetTotalCostUsd()
+		return nil
+	case tempapikey.FieldDailyQuotaUsd:
+		m.ResetDailyQuotaUsd()
+		return nil
+	case tempapikey.FieldCurrentPeriodCostUsd:
+		m.ResetCurrentPeriodCostUsd()
 		return nil
 	case tempapikey.FieldValidDays:
 		m.ResetValidDays()

@@ -47,6 +47,9 @@ func (r *TempAPIKeyRepo) Create(ctx context.Context, key *service.TempAPIKey) er
 	if key.TotalQuotaUSD > 0 {
 		creator.SetTotalQuotaUsd(key.TotalQuotaUSD)
 	}
+	if key.DailyQuotaUSD > 0 {
+		creator.SetDailyQuotaUsd(key.DailyQuotaUSD)
+	}
 
 	created, err := creator.Save(ctx)
 	if err != nil {
@@ -104,6 +107,16 @@ func (r *TempAPIKeyRepo) Update(ctx context.Context, key *service.TempAPIKey) er
 		SetValidDays(key.ValidDays).
 		SetDailyLimit(key.DailyLimit)
 
+	// quota_only 类型允许更新总额度
+	if key.KeyType == service.TempAPIKeyTypeQuotaOnly {
+		updater.SetTotalQuotaUsd(key.TotalQuotaUSD)
+	}
+
+	// time_quota 类型允许更新每日 USD 额度
+	if key.KeyType == service.TempAPIKeyTypeTimeQuota {
+		updater.SetDailyQuotaUsd(key.DailyQuotaUSD)
+	}
+
 	if key.ActivatedAt != nil {
 		updater.SetActivatedAt(*key.ActivatedAt)
 	}
@@ -138,7 +151,7 @@ func (r *TempAPIKeyRepo) BatchDelete(ctx context.Context, ids []int64) (int, err
 
 // TempAPIKeyListFilters holds optional filters for listing temp API keys
 type TempAPIKeyListFilters struct {
-	KeyType   string // "time_limited" or "quota_only"
+	KeyType   string // "time_limited", "quota_only", or "time_quota"
 	Status    string // "active", "inactive", "expired", "exhausted"
 	GroupID   int64  // filter by group
 	Search    string // fuzzy match on name or key
@@ -312,6 +325,49 @@ func (r *TempAPIKeyRepo) ActivateAndIncrement(ctx context.Context, id int64) (*s
 		return r.toServiceModel(row), false, nil
 	}
 
+	// time_quota 类型：限时 + 每日 USD 额度
+	if row.KeyType == service.TempAPIKeyTypeTimeQuota {
+		updater := r.client.TempAPIKey.UpdateOneID(id)
+
+		if row.ActivatedAt == nil {
+			// 首次激活
+			expiresAt := now.Add(time.Duration(row.ValidDays) * 24 * time.Hour)
+			updater.SetActivatedAt(now)
+			updater.SetExpiresAt(expiresAt)
+			updater.SetCurrentPeriodStart(now)
+			updater.SetCurrentPeriodCostUsd(0)
+		} else if row.CurrentPeriodStart != nil && now.Sub(*row.CurrentPeriodStart) >= 24*time.Hour {
+			// 周期已过期，重置（以 ActivatedAt 为锚点对齐周期）
+			anchor := *row.ActivatedAt
+			elapsed := now.Sub(anchor)
+			periods := int(elapsed / (24 * time.Hour))
+			newPeriodStart := anchor.Add(time.Duration(periods) * 24 * time.Hour)
+			updater.SetCurrentPeriodStart(newPeriodStart)
+			updater.SetCurrentPeriodCostUsd(0)
+		} else if row.DailyQuotaUsd > 0 && row.CurrentPeriodCostUsd >= row.DailyQuotaUsd {
+			// 当前周期内已达每日 USD 额度上限
+			log.Printf("[TempAPIKey] Daily quota exceeded: id=%d cost=%.4f limit=%.4f periodStart=%v",
+				id, row.CurrentPeriodCostUsd, row.DailyQuotaUsd, row.CurrentPeriodStart)
+			return r.toServiceModel(row), true, nil
+		}
+
+		_, err = updater.Save(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+
+		updated, err := r.client.TempAPIKey.Query().
+			Where(tempapikey.ID(id)).
+			WithGroup().
+			WithCreator().
+			Only(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+
+		return r.toServiceModel(updated), false, nil
+	}
+
 	// time_limited 类型
 	updater := r.client.TempAPIKey.UpdateOneID(id)
 
@@ -382,6 +438,14 @@ func (r *TempAPIKeyRepo) BatchUpdateDailyLimit(ctx context.Context, ids []int64,
 	return r.client.TempAPIKey.Update().
 		Where(tempapikey.IDIn(ids...), tempapikey.DeletedAtIsNil()).
 		SetDailyLimit(dailyLimit).
+		Save(ctx)
+}
+
+// BatchUpdateDailyQuota updates daily USD quota for multiple time_quota keys
+func (r *TempAPIKeyRepo) BatchUpdateDailyQuota(ctx context.Context, ids []int64, dailyQuota float64) (int, error) {
+	return r.client.TempAPIKey.Update().
+		Where(tempapikey.IDIn(ids...), tempapikey.DeletedAtIsNil(), tempapikey.KeyType(service.TempAPIKeyTypeTimeQuota)).
+		SetDailyQuotaUsd(dailyQuota).
 		Save(ctx)
 }
 
@@ -488,6 +552,39 @@ func (r *TempAPIKeyRepo) AddCostUSD(ctx context.Context, id int64, costUSD float
 	return key, exhausted, nil
 }
 
+// AddDailyCostUSD adds cost to a time_quota temp API key's current period and checks if daily quota exceeded
+// Returns the updated key and whether the daily quota is now exhausted
+func (r *TempAPIKeyRepo) AddDailyCostUSD(ctx context.Context, id int64, costUSD float64) (*service.TempAPIKey, bool, error) {
+	// 使用原子操作增加当前周期消费金额
+	_, err := r.client.TempAPIKey.Update().
+		Where(tempapikey.ID(id)).
+		AddCurrentPeriodCostUsd(costUSD).
+		Save(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// 查询更新后的记录
+	row, err := r.client.TempAPIKey.Query().
+		Where(tempapikey.ID(id)).
+		WithGroup().
+		WithCreator().
+		Only(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	key := r.toServiceModel(row)
+
+	// 检查是否已达每日额度上限
+	exceeded := false
+	if row.DailyQuotaUsd > 0 && row.CurrentPeriodCostUsd >= row.DailyQuotaUsd {
+		exceeded = true
+	}
+
+	return key, exceeded, nil
+}
+
 // toServiceModel converts ent model to service model
 func (r *TempAPIKeyRepo) toServiceModel(row *dbent.TempAPIKey) *service.TempAPIKey {
 	if row == nil {
@@ -495,21 +592,23 @@ func (r *TempAPIKeyRepo) toServiceModel(row *dbent.TempAPIKey) *service.TempAPIK
 	}
 
 	key := &service.TempAPIKey{
-		ID:                 row.ID,
-		Key:                row.Key,
-		Name:               row.Name,
-		GroupID:            row.GroupID,
-		KeyType:            row.KeyType,
-		TotalQuotaUSD:      row.TotalQuotaUsd,
-		TotalCostUSD:       row.TotalCostUsd,
-		ValidDays:          row.ValidDays,
-		DailyLimit:         row.DailyLimit,
-		CurrentPeriodCount: row.CurrentPeriodCount,
-		TotalRequests:      row.TotalRequests,
-		Status:             row.Status,
-		CreatedBy:          row.CreatedBy,
-		CreatedAt:          row.CreatedAt,
-		UpdatedAt:          row.UpdatedAt,
+		ID:                   row.ID,
+		Key:                  row.Key,
+		Name:                 row.Name,
+		GroupID:              row.GroupID,
+		KeyType:              row.KeyType,
+		TotalQuotaUSD:        row.TotalQuotaUsd,
+		TotalCostUSD:         row.TotalCostUsd,
+		DailyQuotaUSD:        row.DailyQuotaUsd,
+		CurrentPeriodCostUSD: row.CurrentPeriodCostUsd,
+		ValidDays:            row.ValidDays,
+		DailyLimit:           row.DailyLimit,
+		CurrentPeriodCount:   row.CurrentPeriodCount,
+		TotalRequests:        row.TotalRequests,
+		Status:               row.Status,
+		CreatedBy:            row.CreatedBy,
+		CreatedAt:            row.CreatedAt,
+		UpdatedAt:            row.UpdatedAt,
 	}
 
 	// Handle nullable time fields
@@ -546,7 +645,10 @@ func (r *TempAPIKeyRepo) RecalculatePeriodCounts(ctx context.Context) (int, erro
 	keys, err := r.client.TempAPIKey.Query().
 		Where(
 			tempapikey.DeletedAtIsNil(),
-			tempapikey.KeyType(service.TempAPIKeyTypeLimited),
+			tempapikey.Or(
+				tempapikey.KeyType(service.TempAPIKeyTypeLimited),
+				tempapikey.KeyType(service.TempAPIKeyTypeTimeQuota),
+			),
 			tempapikey.Status(service.TempAPIKeyStatusActive),
 			tempapikey.ActivatedAtNotNil(),
 		).
@@ -596,11 +698,26 @@ func (r *TempAPIKeyRepo) RecalculatePeriodCounts(ctx context.Context) (int, erro
 		}
 
 		// Update the key
-		_, err = r.client.TempAPIKey.UpdateOneID(key.ID).
+		updater := r.client.TempAPIKey.UpdateOneID(key.ID).
 			SetCurrentPeriodStart(periodStart).
 			SetCurrentPeriodCount(count).
-			SetTotalRequests(totalCount).
-			Save(ctx)
+			SetTotalRequests(totalCount)
+
+		// time_quota 类型：重算当前周期的 USD 消费
+		if key.KeyType == service.TempAPIKeyTypeTimeQuota {
+			var periodCost float64
+			err = r.sqlDB.QueryRowContext(ctx,
+				"SELECT COALESCE(SUM(actual_cost), 0) FROM usage_logs WHERE temp_api_key_id = $1 AND created_at >= $2 AND created_at < $3",
+				key.ID, periodStart, periodEnd,
+			).Scan(&periodCost)
+			if err != nil {
+				log.Printf("[TempAPIKey] RecalculatePeriodCounts: cost query failed for id=%d: %v", key.ID, err)
+				continue
+			}
+			updater.SetCurrentPeriodCostUsd(periodCost)
+		}
+
+		_, err = updater.Save(ctx)
 		if err != nil {
 			log.Printf("[TempAPIKey] RecalculatePeriodCounts: update failed for id=%d: %v", key.ID, err)
 			continue

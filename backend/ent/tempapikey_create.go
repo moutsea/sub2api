@@ -127,6 +127,34 @@ func (_c *TempAPIKeyCreate) SetNillableTotalCostUsd(v *float64) *TempAPIKeyCreat
 	return _c
 }
 
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (_c *TempAPIKeyCreate) SetDailyQuotaUsd(v float64) *TempAPIKeyCreate {
+	_c.mutation.SetDailyQuotaUsd(v)
+	return _c
+}
+
+// SetNillableDailyQuotaUsd sets the "daily_quota_usd" field if the given value is not nil.
+func (_c *TempAPIKeyCreate) SetNillableDailyQuotaUsd(v *float64) *TempAPIKeyCreate {
+	if v != nil {
+		_c.SetDailyQuotaUsd(*v)
+	}
+	return _c
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (_c *TempAPIKeyCreate) SetCurrentPeriodCostUsd(v float64) *TempAPIKeyCreate {
+	_c.mutation.SetCurrentPeriodCostUsd(v)
+	return _c
+}
+
+// SetNillableCurrentPeriodCostUsd sets the "current_period_cost_usd" field if the given value is not nil.
+func (_c *TempAPIKeyCreate) SetNillableCurrentPeriodCostUsd(v *float64) *TempAPIKeyCreate {
+	if v != nil {
+		_c.SetCurrentPeriodCostUsd(*v)
+	}
+	return _c
+}
+
 // SetValidDays sets the "valid_days" field.
 func (_c *TempAPIKeyCreate) SetValidDays(v int) *TempAPIKeyCreate {
 	_c.mutation.SetValidDays(v)
@@ -339,6 +367,14 @@ func (_c *TempAPIKeyCreate) defaults() error {
 		v := tempapikey.DefaultTotalCostUsd
 		_c.mutation.SetTotalCostUsd(v)
 	}
+	if _, ok := _c.mutation.DailyQuotaUsd(); !ok {
+		v := tempapikey.DefaultDailyQuotaUsd
+		_c.mutation.SetDailyQuotaUsd(v)
+	}
+	if _, ok := _c.mutation.CurrentPeriodCostUsd(); !ok {
+		v := tempapikey.DefaultCurrentPeriodCostUsd
+		_c.mutation.SetCurrentPeriodCostUsd(v)
+	}
 	if _, ok := _c.mutation.ValidDays(); !ok {
 		v := tempapikey.DefaultValidDays
 		_c.mutation.SetValidDays(v)
@@ -397,6 +433,12 @@ func (_c *TempAPIKeyCreate) check() error {
 	}
 	if _, ok := _c.mutation.TotalCostUsd(); !ok {
 		return &ValidationError{Name: "total_cost_usd", err: errors.New(`ent: missing required field "TempAPIKey.total_cost_usd"`)}
+	}
+	if _, ok := _c.mutation.DailyQuotaUsd(); !ok {
+		return &ValidationError{Name: "daily_quota_usd", err: errors.New(`ent: missing required field "TempAPIKey.daily_quota_usd"`)}
+	}
+	if _, ok := _c.mutation.CurrentPeriodCostUsd(); !ok {
+		return &ValidationError{Name: "current_period_cost_usd", err: errors.New(`ent: missing required field "TempAPIKey.current_period_cost_usd"`)}
 	}
 	if _, ok := _c.mutation.ValidDays(); !ok {
 		return &ValidationError{Name: "valid_days", err: errors.New(`ent: missing required field "TempAPIKey.valid_days"`)}
@@ -480,6 +522,14 @@ func (_c *TempAPIKeyCreate) createSpec() (*TempAPIKey, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.TotalCostUsd(); ok {
 		_spec.SetField(tempapikey.FieldTotalCostUsd, field.TypeFloat64, value)
 		_node.TotalCostUsd = value
+	}
+	if value, ok := _c.mutation.DailyQuotaUsd(); ok {
+		_spec.SetField(tempapikey.FieldDailyQuotaUsd, field.TypeFloat64, value)
+		_node.DailyQuotaUsd = value
+	}
+	if value, ok := _c.mutation.CurrentPeriodCostUsd(); ok {
+		_spec.SetField(tempapikey.FieldCurrentPeriodCostUsd, field.TypeFloat64, value)
+		_node.CurrentPeriodCostUsd = value
 	}
 	if value, ok := _c.mutation.ValidDays(); ok {
 		_spec.SetField(tempapikey.FieldValidDays, field.TypeInt, value)
@@ -726,6 +776,42 @@ func (u *TempAPIKeyUpsert) UpdateTotalCostUsd() *TempAPIKeyUpsert {
 // AddTotalCostUsd adds v to the "total_cost_usd" field.
 func (u *TempAPIKeyUpsert) AddTotalCostUsd(v float64) *TempAPIKeyUpsert {
 	u.Add(tempapikey.FieldTotalCostUsd, v)
+	return u
+}
+
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (u *TempAPIKeyUpsert) SetDailyQuotaUsd(v float64) *TempAPIKeyUpsert {
+	u.Set(tempapikey.FieldDailyQuotaUsd, v)
+	return u
+}
+
+// UpdateDailyQuotaUsd sets the "daily_quota_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsert) UpdateDailyQuotaUsd() *TempAPIKeyUpsert {
+	u.SetExcluded(tempapikey.FieldDailyQuotaUsd)
+	return u
+}
+
+// AddDailyQuotaUsd adds v to the "daily_quota_usd" field.
+func (u *TempAPIKeyUpsert) AddDailyQuotaUsd(v float64) *TempAPIKeyUpsert {
+	u.Add(tempapikey.FieldDailyQuotaUsd, v)
+	return u
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (u *TempAPIKeyUpsert) SetCurrentPeriodCostUsd(v float64) *TempAPIKeyUpsert {
+	u.Set(tempapikey.FieldCurrentPeriodCostUsd, v)
+	return u
+}
+
+// UpdateCurrentPeriodCostUsd sets the "current_period_cost_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsert) UpdateCurrentPeriodCostUsd() *TempAPIKeyUpsert {
+	u.SetExcluded(tempapikey.FieldCurrentPeriodCostUsd)
+	return u
+}
+
+// AddCurrentPeriodCostUsd adds v to the "current_period_cost_usd" field.
+func (u *TempAPIKeyUpsert) AddCurrentPeriodCostUsd(v float64) *TempAPIKeyUpsert {
+	u.Add(tempapikey.FieldCurrentPeriodCostUsd, v)
 	return u
 }
 
@@ -1054,6 +1140,48 @@ func (u *TempAPIKeyUpsertOne) AddTotalCostUsd(v float64) *TempAPIKeyUpsertOne {
 func (u *TempAPIKeyUpsertOne) UpdateTotalCostUsd() *TempAPIKeyUpsertOne {
 	return u.Update(func(s *TempAPIKeyUpsert) {
 		s.UpdateTotalCostUsd()
+	})
+}
+
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (u *TempAPIKeyUpsertOne) SetDailyQuotaUsd(v float64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetDailyQuotaUsd(v)
+	})
+}
+
+// AddDailyQuotaUsd adds v to the "daily_quota_usd" field.
+func (u *TempAPIKeyUpsertOne) AddDailyQuotaUsd(v float64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddDailyQuotaUsd(v)
+	})
+}
+
+// UpdateDailyQuotaUsd sets the "daily_quota_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertOne) UpdateDailyQuotaUsd() *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateDailyQuotaUsd()
+	})
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (u *TempAPIKeyUpsertOne) SetCurrentPeriodCostUsd(v float64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetCurrentPeriodCostUsd(v)
+	})
+}
+
+// AddCurrentPeriodCostUsd adds v to the "current_period_cost_usd" field.
+func (u *TempAPIKeyUpsertOne) AddCurrentPeriodCostUsd(v float64) *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddCurrentPeriodCostUsd(v)
+	})
+}
+
+// UpdateCurrentPeriodCostUsd sets the "current_period_cost_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertOne) UpdateCurrentPeriodCostUsd() *TempAPIKeyUpsertOne {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateCurrentPeriodCostUsd()
 	})
 }
 
@@ -1573,6 +1701,48 @@ func (u *TempAPIKeyUpsertBulk) AddTotalCostUsd(v float64) *TempAPIKeyUpsertBulk 
 func (u *TempAPIKeyUpsertBulk) UpdateTotalCostUsd() *TempAPIKeyUpsertBulk {
 	return u.Update(func(s *TempAPIKeyUpsert) {
 		s.UpdateTotalCostUsd()
+	})
+}
+
+// SetDailyQuotaUsd sets the "daily_quota_usd" field.
+func (u *TempAPIKeyUpsertBulk) SetDailyQuotaUsd(v float64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetDailyQuotaUsd(v)
+	})
+}
+
+// AddDailyQuotaUsd adds v to the "daily_quota_usd" field.
+func (u *TempAPIKeyUpsertBulk) AddDailyQuotaUsd(v float64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddDailyQuotaUsd(v)
+	})
+}
+
+// UpdateDailyQuotaUsd sets the "daily_quota_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertBulk) UpdateDailyQuotaUsd() *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateDailyQuotaUsd()
+	})
+}
+
+// SetCurrentPeriodCostUsd sets the "current_period_cost_usd" field.
+func (u *TempAPIKeyUpsertBulk) SetCurrentPeriodCostUsd(v float64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.SetCurrentPeriodCostUsd(v)
+	})
+}
+
+// AddCurrentPeriodCostUsd adds v to the "current_period_cost_usd" field.
+func (u *TempAPIKeyUpsertBulk) AddCurrentPeriodCostUsd(v float64) *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.AddCurrentPeriodCostUsd(v)
+	})
+}
+
+// UpdateCurrentPeriodCostUsd sets the "current_period_cost_usd" field to the value that was provided on create.
+func (u *TempAPIKeyUpsertBulk) UpdateCurrentPeriodCostUsd() *TempAPIKeyUpsertBulk {
+	return u.Update(func(s *TempAPIKeyUpsert) {
+		s.UpdateCurrentPeriodCostUsd()
 	})
 }
 

@@ -183,7 +183,7 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 
 func normalizeCodexModel(model string) string {
 	if model == "" {
-		return "gpt-5.1"
+		return "gpt-5.3-codex"
 	}
 
 	modelID := model
@@ -228,13 +228,13 @@ func normalizeCodexModel(model string) string {
 		return "gpt-5.1"
 	}
 	if strings.Contains(normalized, "codex") {
-		return "gpt-5.1-codex"
+		return "gpt-5.3-codex"
 	}
 	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.1"
+		return "gpt-5.3-codex"
 	}
 
-	return "gpt-5.1"
+	return "gpt-5.3-codex"
 }
 
 // extractCodexModelEffort extracts the reasoning effort suffix from the original model name

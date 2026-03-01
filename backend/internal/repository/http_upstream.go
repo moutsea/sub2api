@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	utls "github.com/refraction-networking/utls"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -615,6 +617,10 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL) (*http.Tra
 	if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
 		return nil, err
 	}
+
+	// 🔥 Enable uTLS for Anthropic domains to bypass TLS fingerprinting
+	transport = wrapWithUTLSDialer(transport)
+
 	return transport, nil
 }
 
@@ -650,4 +656,62 @@ func wrapTrackedBody(body io.ReadCloser, onClose func()) io.ReadCloser {
 		return body
 	}
 	return &trackedBody{ReadCloser: body, onClose: onClose}
+}
+
+// wrapWithUTLSDialer wraps the transport with uTLS dialer for Anthropic domains
+// This bypasses Cloudflare's TLS fingerprinting detection
+func wrapWithUTLSDialer(transport *http.Transport) *http.Transport {
+	// Store original dialer
+	originalDialContext := transport.DialContext
+	if originalDialContext == nil {
+		dialer := &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+		originalDialContext = dialer.DialContext
+	}
+
+	// Wrap with uTLS for TLS connections
+	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Extract hostname for SNI
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+
+		// Dial TCP connection
+		conn, err := originalDialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		// Determine which TLS fingerprint to use
+		var clientHello utls.ClientHelloID
+		if strings.Contains(host, "anthropic.com") || strings.Contains(host, "claude.ai") {
+			// For Anthropic domains, use Firefox fingerprint to bypass detection
+			clientHello = utls.HelloFirefox_Auto
+		} else {
+			// For other domains, use Go's default fingerprint (no change in behavior)
+			clientHello = utls.HelloGolang
+		}
+
+		// Configure TLS
+		tlsConfig := &utls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: false,
+		}
+
+		// Create uTLS connection
+		tlsConn := utls.UClient(conn, tlsConfig, clientHello)
+
+		// Perform TLS handshake
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("tls handshake failed for %s: %w", host, err)
+		}
+
+		return tlsConn, nil
+	}
+
+	return transport
 }
