@@ -21,7 +21,6 @@ type ResponsesStreamConverter struct {
 	toolOutputIndexMap map[int]int    // output_index -> claude content block index
 	openToolBlocks     map[int]struct{}
 	toolBlockHasInput  map[int]bool
-	lastToolBlockIndex int
 	outputTokens       int
 	inputTokens        int
 	sawToolUse         bool
@@ -38,7 +37,6 @@ func NewResponsesStreamConverter(originalModel, messageID string) *ResponsesStre
 		toolOutputIndexMap: make(map[int]int),
 		openToolBlocks:     make(map[int]struct{}),
 		toolBlockHasInput:  make(map[int]bool),
-		lastToolBlockIndex: -1,
 	}
 }
 
@@ -206,11 +204,6 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 	if c.inTextBlock || c.inThinkingBlock {
 		result += c.closeCurrentBlock()
 	}
-	// Defensive: close any stale tool block if upstream skipped corresponding done event.
-	if len(c.openToolBlocks) > 0 {
-		result += c.closeAllOpenToolBlocks()
-	}
-
 	callID, _ := item["call_id"].(string)
 	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
@@ -242,7 +235,6 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 		c.toolOutputIndexMap[outputIndex] = blockIdx
 	}
 	c.openToolBlocks[blockIdx] = struct{}{}
-	c.lastToolBlockIndex = blockIdx
 
 	result += formatClaudeSSE(map[string]any{
 		"type":  "content_block_start",
@@ -254,6 +246,9 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 			"input": map[string]any{},
 		},
 	})
+	// Reserve next content index when opening tool blocks so multiple outstanding
+	// tool calls won't reuse the same index before any done events arrive.
+	c.contentIndex++
 	return result
 }
 
@@ -371,10 +366,13 @@ func (c *ResponsesStreamConverter) handleResponseCompleted(data []byte) string {
 		}
 	}
 
-	if c.sawToolUse {
-		c.stopReason = "tool_use"
-	} else if c.stopReason == "" {
+	if c.stopReason == "" {
 		c.stopReason = "end_turn"
+	}
+	// Keep max_tokens semantics from upstream status. Only remap end_turn to
+	// tool_use when we actually emitted tool_use blocks.
+	if c.sawToolUse && c.stopReason == "end_turn" {
+		c.stopReason = "tool_use"
 	}
 
 	result += formatClaudeSSE(map[string]any{
@@ -437,9 +435,19 @@ func (c *ResponsesStreamConverter) resolveToolBlockIndex(ev map[string]any) (int
 		}
 	}
 
-	// Fallback to the latest open tool block to avoid index reuse/nesting when IDs are missing.
-	if blockIdx, ok := c.latestOpenToolBlock(); ok {
+	// Conservative fallback: only use the sole open block when mapping signals are absent.
+	if blockIdx, ok := c.singleOpenToolBlock(); ok {
 		return blockIdx, true
+	}
+	return 0, false
+}
+
+func (c *ResponsesStreamConverter) singleOpenToolBlock() (int, bool) {
+	if len(c.openToolBlocks) != 1 {
+		return 0, false
+	}
+	for idx := range c.openToolBlocks {
+		return idx, true
 	}
 	return 0, false
 }
@@ -479,19 +487,11 @@ func (c *ResponsesStreamConverter) closeToolBlockByIndex(blockIdx int) string {
 	delete(c.openToolBlocks, blockIdx)
 	delete(c.toolBlockHasInput, blockIdx)
 	c.removeToolMappingsForBlock(blockIdx)
-	if c.lastToolBlockIndex == blockIdx {
-		if latest, ok := c.latestOpenToolBlock(); ok {
-			c.lastToolBlockIndex = latest
-		} else {
-			c.lastToolBlockIndex = -1
-		}
-	}
 
 	result := formatClaudeSSE(map[string]any{
 		"type":  "content_block_stop",
 		"index": blockIdx,
 	})
-	c.contentIndex++
 	return result
 }
 
