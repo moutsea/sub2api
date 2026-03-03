@@ -267,6 +267,7 @@ func (c *ClaudeStreamConverter) handleFinishReason(reason string) string {
 			"stop_sequence": nil,
 		},
 		"usage": map[string]any{
+			"input_tokens":  c.inputTokens,
 			"output_tokens": c.outputTokens,
 		},
 	})

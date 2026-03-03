@@ -432,6 +432,8 @@ func TestClaudeStreamConverter_FinishReason(t *testing.T) {
 
 	// Send text first
 	conv.ConvertChunk([]byte(`{"choices":[{"delta":{"content":"Hi"},"index":0}]}`))
+	// Send usage before finish to simulate include_usage chunk
+	conv.ConvertChunk([]byte(`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7}}`))
 
 	// Send finish
 	events := conv.ConvertChunk([]byte(`{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}`))
@@ -440,6 +442,12 @@ func TestClaudeStreamConverter_FinishReason(t *testing.T) {
 	}
 	if !containsStr(events, "end_turn") {
 		t.Error("missing end_turn stop_reason")
+	}
+	if !containsStr(events, `"input_tokens":11`) {
+		t.Errorf("message_delta usage missing input_tokens, got: %s", events)
+	}
+	if !containsStr(events, `"output_tokens":7`) {
+		t.Errorf("message_delta usage missing output_tokens, got: %s", events)
 	}
 }
 

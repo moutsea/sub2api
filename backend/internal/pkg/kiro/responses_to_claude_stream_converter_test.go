@@ -95,14 +95,18 @@ func TestResponsesStreamConverter_InterleavingToolCalls(t *testing.T) {
 	}
 }
 
-func TestResponsesStreamConverter_StopReasonPreservesMaxTokens(t *testing.T) {
+func TestResponsesStreamConverter_MessageDeltaIncludesInputTokens(t *testing.T) {
 	conv := NewResponsesStreamConverter("claude-sonnet-4-20250514", "msg_test")
 
-	_ = conv.ConvertResponsesEvent("response.output_item.added", []byte(`{"item":{"type":"function_call","call_id":"call_1","name":"Read"}}`))
-	_ = conv.ConvertResponsesEvent("response.function_call_arguments.done", []byte(`{"call_id":"call_1","arguments":"{\"file_path\":\"a.txt\"}"}`))
-	evCompleted := conv.ConvertResponsesEvent("response.completed", []byte(`{"response":{"status":"incomplete","usage":{"input_tokens":10,"output_tokens":20}}}`))
+	evCompleted := conv.ConvertResponsesEvent("response.completed", []byte(`{"response":{"status":"completed","usage":{"input_tokens":123,"output_tokens":45}}}`))
 
-	if !strings.Contains(evCompleted, `"stop_reason":"max_tokens"`) {
-		t.Fatalf("incomplete status should map to max_tokens even with tool use, got: %s", evCompleted)
+	if !strings.Contains(evCompleted, `"type":"message_delta"`) {
+		t.Fatalf("completed should emit message_delta, got: %s", evCompleted)
+	}
+	if !strings.Contains(evCompleted, `"input_tokens":123`) {
+		t.Fatalf("message_delta usage should include input_tokens, got: %s", evCompleted)
+	}
+	if !strings.Contains(evCompleted, `"output_tokens":45`) {
+		t.Fatalf("message_delta usage should include output_tokens, got: %s", evCompleted)
 	}
 }
