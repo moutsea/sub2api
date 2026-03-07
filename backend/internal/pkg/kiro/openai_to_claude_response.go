@@ -87,27 +87,33 @@ func ConvertOpenAIResponseToClaude(respBody []byte, originalModel string) ([]byt
 	// Map usage
 	var usageOut *OpenAIResponseUsage
 	usage, _ := resp["usage"].(map[string]any)
-	inputTokens := jsonInt(usage, "prompt_tokens")
+	upstreamInputTokens := jsonInt(usage, "prompt_tokens")
 	outputTokens := jsonInt(usage, "completion_tokens")
+	cacheCreationTokens := jsonInt(usage, "cache_creation_input_tokens")
+	cacheReadTokens := extractCachedTokensFromUsageDetails(usage, "prompt_tokens_details", "input_tokens_details")
+	inputTokens := normalizeClaudeInputTokens(upstreamInputTokens, cacheCreationTokens, cacheReadTokens)
 	usageOut = &OpenAIResponseUsage{
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
+		InputTokens:              inputTokens,
+		OutputTokens:             outputTokens,
+		CacheCreationInputTokens: cacheCreationTokens,
+		CacheReadInputTokens:     cacheReadTokens,
 	}
 
 	// Build Claude response
 	claudeResp := map[string]any{
-		"id":          fmt.Sprintf("msg_%s", extractOrGenerateID(resp)),
-		"type":        "message",
-		"role":        "assistant",
-		"model":       originalModel,
-		"content":     contentBlocks,
-		"stop_reason": stopReason,
+		"id":            fmt.Sprintf("msg_%s", extractOrGenerateID(resp)),
+		"type":          "message",
+		"role":          "assistant",
+		"model":         originalModel,
+		"content":       contentBlocks,
+		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"usage": map[string]any{
 			"input_tokens":  inputTokens,
 			"output_tokens": outputTokens,
 		},
 	}
+	addClaudeCacheUsageFields(claudeResp["usage"].(map[string]any), cacheCreationTokens, cacheReadTokens)
 
 	result, err := json.Marshal(claudeResp)
 	if err != nil {
@@ -118,8 +124,10 @@ func ConvertOpenAIResponseToClaude(respBody []byte, originalModel string) ([]byt
 
 // OpenAIResponseUsage holds extracted usage from OpenAI response.
 type OpenAIResponseUsage struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 }
 
 // mapOpenAIFinishReason maps OpenAI finish_reason to Claude stop_reason.
@@ -154,5 +162,42 @@ func jsonInt(m map[string]any, key string) int {
 	if v, ok := m[key].(float64); ok {
 		return int(v)
 	}
+	if v, ok := m[key].(int); ok {
+		return v
+	}
 	return 0
+}
+
+func normalizeClaudeInputTokens(totalInputTokens, cacheCreationTokens, cacheReadTokens int) int {
+	adjusted := totalInputTokens - cacheCreationTokens - cacheReadTokens
+	if adjusted < 0 {
+		return 0
+	}
+	return adjusted
+}
+
+func extractCachedTokensFromUsageDetails(usage map[string]any, detailKeys ...string) int {
+	if usage == nil {
+		return 0
+	}
+	for _, key := range detailKeys {
+		details, ok := usage[key].(map[string]any)
+		if !ok || details == nil {
+			continue
+		}
+		return jsonInt(details, "cached_tokens")
+	}
+	return 0
+}
+
+func addClaudeCacheUsageFields(usage map[string]any, cacheCreationTokens, cacheReadTokens int) {
+	if usage == nil {
+		return
+	}
+	if cacheCreationTokens > 0 {
+		usage["cache_creation_input_tokens"] = cacheCreationTokens
+	}
+	if cacheReadTokens > 0 {
+		usage["cache_read_input_tokens"] = cacheReadTokens
+	}
 }

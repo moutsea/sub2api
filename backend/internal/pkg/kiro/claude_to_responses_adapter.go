@@ -46,11 +46,10 @@ func ConvertClaudeToResponses(body []byte) (responsesBody []byte, originalModel 
 
 	responsesReq["input"] = input
 
-	// thinking → reasoning
-	if thinking, ok := req["thinking"].(map[string]any); ok {
-		if converted := convertClaudeThinkingToOpenAI(thinking); converted != nil {
-			responsesReq["reasoning"] = converted
-		}
+	// Force reasoning effort for Claude-compat OpenAI path.
+	responsesReq["reasoning"] = map[string]any{
+		"effort":  "xhigh",
+		"summary": "auto",
 	}
 
 	// tools → Responses API tools format

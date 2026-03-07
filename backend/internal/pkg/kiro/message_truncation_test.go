@@ -985,3 +985,246 @@ func TestEstimateFixedTokens_IncludesCWOverhead(t *testing.T) {
 	t.Logf("fixed=%d, base=%d, CW overhead=%d (toolDoc=%d, thinking=20, wrapping=10)",
 		fixed, baseFixed, fixed-baseFixed, toolDocTokens)
 }
+
+func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
+	t.Run("no messages", func(t *testing.T) {
+		modified := CleanOrphanToolUsesInClaudeMessages(nil)
+		if modified {
+			t.Error("expected no modification for nil messages")
+		}
+	})
+
+	t.Run("no tool_use blocks", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "hi there"},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if modified {
+			t.Error("expected no modification when no tool_use blocks exist")
+		}
+	})
+
+	t.Run("all tool_use paired", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "do something"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "ok"},
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/a.go"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "file content"},
+			}},
+			{Role: "assistant", Content: "done"},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if modified {
+			t.Error("expected no modification when all tool_use blocks are paired")
+		}
+	})
+
+	t.Run("removes orphan tool_use", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "do something"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "let me try"},
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/a.go"}},
+			}},
+			// Missing tool_result for t1 — orphan!
+			{Role: "user", Content: "never mind, do something else"},
+			{Role: "assistant", Content: "ok"},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification when orphan tool_use exists")
+		}
+
+		// Check that tool_use was removed
+		content, ok := messages[1].Content.([]any)
+		if !ok {
+			t.Fatal("expected content to be []any")
+		}
+		for _, block := range content {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if blockMap["type"] == "tool_use" {
+				t.Error("orphan tool_use should have been removed")
+			}
+		}
+		// Text block should still be there
+		if len(content) != 1 {
+			t.Errorf("expected 1 remaining block, got %d", len(content))
+		}
+	})
+
+	t.Run("backfills empty content after removing all blocks", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "do something"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{}},
+			}},
+			// No tool_result — entire assistant content becomes empty after cleanup
+			{Role: "user", Content: "hello again"},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification")
+		}
+
+		content, ok := messages[1].Content.([]any)
+		if !ok {
+			t.Fatal("expected content to be []any")
+		}
+		if len(content) != 1 {
+			t.Fatalf("expected 1 placeholder block, got %d", len(content))
+		}
+		blockMap, ok := content[0].(map[string]any)
+		if !ok {
+			t.Fatal("expected block to be map")
+		}
+		if blockMap["type"] != "text" {
+			t.Errorf("expected placeholder type=text, got %v", blockMap["type"])
+		}
+		text, _ := blockMap["text"].(string)
+		if text == "" {
+			t.Error("placeholder text should not be empty")
+		}
+	})
+
+	t.Run("multiple orphans across messages", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "step 1"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{}},
+				map[string]any{"type": "tool_use", "id": "t2", "name": "write_file", "input": map[string]any{}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+				// t2 has NO tool_result
+			}},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t3", "name": "run_cmd", "input": map[string]any{}},
+			}},
+			// t3 has NO tool_result
+			{Role: "user", Content: "forget it"},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification")
+		}
+
+		// t2 should be removed from messages[1], t1 kept
+		content1, _ := messages[1].Content.([]any)
+		if len(content1) != 1 {
+			t.Fatalf("messages[1] should have 1 block (t1 kept), got %d", len(content1))
+		}
+		blockMap, _ := content1[0].(map[string]any)
+		if blockMap["id"] != "t1" {
+			t.Errorf("expected t1 to be kept, got id=%v", blockMap["id"])
+		}
+
+		// t3 should be removed from messages[3], replaced with placeholder
+		content3, _ := messages[3].Content.([]any)
+		if len(content3) != 1 {
+			t.Fatalf("messages[3] should have 1 placeholder block, got %d", len(content3))
+		}
+		placeholderMap, _ := content3[0].(map[string]any)
+		if placeholderMap["type"] != "text" {
+			t.Errorf("expected placeholder text block, got type=%v", placeholderMap["type"])
+		}
+	})
+
+	t.Run("preserves non-tool blocks in mixed content", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "go"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "thinking..."},
+				map[string]any{"type": "tool_use", "id": "orphan1", "name": "cmd", "input": map[string]any{}},
+				map[string]any{"type": "text", "text": "done thinking"},
+			}},
+			{Role: "user", Content: "ok"},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification")
+		}
+
+		content, _ := messages[1].Content.([]any)
+		if len(content) != 2 {
+			t.Fatalf("expected 2 text blocks remaining, got %d", len(content))
+		}
+		for _, block := range content {
+			bm, _ := block.(map[string]any)
+			if bm["type"] != "text" {
+				t.Errorf("expected only text blocks, got type=%v", bm["type"])
+			}
+		}
+	})
+
+	t.Run("string content assistant message unchanged", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "hello"},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "nonexistent", "content": "x"},
+			}},
+		}
+		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		if modified {
+			t.Error("should not modify when no tool_use blocks exist")
+		}
+	})
+
+	t.Run("roundtrip JSON preserves cleanup", func(t *testing.T) {
+		req := &ClaudeRequest{
+			Model: "claude-sonnet-4-6",
+			Messages: []ClaudeMessage{
+				{Role: "user", Content: "do something"},
+				{Role: "assistant", Content: []any{
+					map[string]any{"type": "tool_use", "id": "t1", "name": "cmd", "input": map[string]any{"cmd": "ls"}},
+				}},
+				{Role: "user", Content: "cancelled"},
+			},
+			MaxTokens: 1024,
+			Stream:    true,
+		}
+
+		modified := CleanOrphanToolUsesInClaudeMessages(req.Messages)
+		if !modified {
+			t.Fatal("expected modification")
+		}
+
+		// Re-serialize and verify valid JSON
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+
+		// Parse back and verify no tool_use blocks
+		var parsed ClaudeRequest
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+
+		for _, msg := range parsed.Messages {
+			if msg.Role != "assistant" {
+				continue
+			}
+			content, ok := msg.Content.([]any)
+			if !ok {
+				continue
+			}
+			for _, block := range content {
+				bm, ok := block.(map[string]any)
+				if !ok {
+					continue
+				}
+				if bm["type"] == "tool_use" {
+					t.Error("tool_use should not exist after cleanup + roundtrip")
+				}
+			}
+		}
+	})
+}

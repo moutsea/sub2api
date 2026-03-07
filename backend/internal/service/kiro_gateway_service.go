@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -112,6 +113,17 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 	if strings.TrimSpace(claudeReq.Model) == "" {
 		return nil, fmt.Errorf("missing model")
+	}
+
+	// Clean orphan tool_uses that have no matching tool_result.
+	// Claude API requires every tool_use to have a corresponding tool_result in the next user message.
+	// Clients may send broken pairs (e.g., interrupted tool execution, client-side truncation).
+	if kiro.CleanOrphanToolUsesInClaudeMessages(claudeReq.Messages) {
+		log.Printf("%s cleaned orphan tool_use blocks from request", prefix)
+		// Re-serialize body for apikey passthrough path
+		if newBody, err := json.Marshal(claudeReq); err == nil {
+			body = newBody
+		}
 	}
 
 	originalModel := claudeReq.Model
@@ -505,6 +517,7 @@ endpointDone:
 
 	var usage *ClaudeUsage
 	var firstTokenMs *int
+	var usageFromUpstream bool
 
 	// Calculate cache tokens to pass to handlers
 	var cacheCreationTokens, cacheReadTokens int
@@ -525,6 +538,7 @@ endpointDone:
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
+		usageFromUpstream = streamRes.usageFromUpstream
 	} else {
 		// Non-streaming response
 		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold)
@@ -534,14 +548,15 @@ endpointDone:
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
+		usageFromUpstream = streamRes.usageFromUpstream
 	}
 
-	// Apply cache token estimation to usage (for billing/logging)
+	// Apply cache token estimation only when upstream did not provide token usage.
 	// Note: According to Anthropic's definition:
 	// - input_tokens = non-cached input tokens (does NOT include cache_read_input_tokens)
 	// - cache_read_input_tokens = tokens read from cache
 	// - Total input = input_tokens + cache_read_input_tokens
-	if cacheEstimation.MeetsCacheThreshold {
+	if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
 		if cacheHit {
 			// Cache hit: attribute cacheable tokens to cache_read
 			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
@@ -569,8 +584,9 @@ endpointDone:
 
 // kiroStreamResult holds streaming result data
 type kiroStreamResult struct {
-	usage        *ClaudeUsage
-	firstTokenMs *int
+	usage             *ClaudeUsage
+	firstTokenMs      *int
+	usageFromUpstream bool
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer
@@ -639,6 +655,7 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	var firstTokenMs *int
 	var credits float64
 	var contextPct float64
+	var tokenUsage *ClaudeUsage
 
 	// Read and process stream
 	buf := make([]byte, 4096)
@@ -706,6 +723,15 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 					}
 					if event.ContextPercentage > 0 {
 						contextPct = event.ContextPercentage
+					}
+					if event.HasTokenUsage {
+						tokenUsage = &ClaudeUsage{
+							InputTokens:              event.InputTokens,
+							OutputTokens:             event.OutputTokens,
+							CacheCreationInputTokens: event.CacheCreationInputTokens,
+							CacheReadInputTokens:     event.CacheReadInputTokens,
+							ContextUsagePercent:      event.ContextPercentage,
+						}
 					}
 				}
 
@@ -779,11 +805,24 @@ finishStream:
 		}
 	}
 
-	// Build usage from converter stats
-	usage := &ClaudeUsage{
-		InputTokens:         accurateInputTokens,
-		OutputTokens:        converter.TotalOutputTokens(),
-		ContextUsagePercent: contextPct,
+	usageFromUpstream := tokenUsage != nil
+	var usage *ClaudeUsage
+	if usageFromUpstream {
+		usage = tokenUsage
+		// Keep conservative fallback when upstream omits output token count.
+		if usage.OutputTokens <= 0 {
+			usage.OutputTokens = converter.TotalOutputTokens()
+		}
+		if usage.ContextUsagePercent <= 0 && contextPct > 0 {
+			usage.ContextUsagePercent = contextPct
+		}
+	} else {
+		// Build usage from local estimation fallback.
+		usage = &ClaudeUsage{
+			InputTokens:         accurateInputTokens,
+			OutputTokens:        converter.TotalOutputTokens(),
+			ContextUsagePercent: contextPct,
+		}
 	}
 
 	// Log credits/context usage if available
@@ -791,7 +830,11 @@ finishStream:
 		log.Printf("[kiro-Forward] credits=%.4f context_pct=%.2f input_tokens=%d", credits, contextPct, accurateInputTokens)
 	}
 
-	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
+	return &kiroStreamResult{
+		usage:             usage,
+		firstTokenMs:      firstTokenMs,
+		usageFromUpstream: usageFromUpstream,
+	}, nil
 }
 
 // handleNonStreamingResponse handles non-streaming response from CodeWhisperer
@@ -824,9 +867,12 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 		}
 	}
 
-	// Set cache tokens for response
-	parsedResp.CacheCreationTokens = cacheCreationTokens
-	parsedResp.CacheReadTokens = cacheReadTokens
+	usageFromUpstream := parsedResp.HasTokenUsage
+	// Set cache tokens for response only when upstream usage does not include token usage.
+	if !usageFromUpstream {
+		parsedResp.CacheCreationTokens = cacheCreationTokens
+		parsedResp.CacheReadTokens = cacheReadTokens
+	}
 
 	// Build Claude response with accurate input tokens
 	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, accurateInputTokens, parsedResp)
@@ -844,14 +890,33 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 
 	c.Data(http.StatusOK, "application/json", respJSON)
 
-	// Extract usage
-	usage := &ClaudeUsage{
-		InputTokens:         accurateInputTokens,
-		OutputTokens:        (len(parsedResp.Text) + 3) / 4, // Rough estimate
-		ContextUsagePercent: parsedResp.ContextPct,
+	var usage *ClaudeUsage
+	if usageFromUpstream {
+		usage = &ClaudeUsage{
+			InputTokens:              parsedResp.InputTokens,
+			OutputTokens:             parsedResp.OutputTokens,
+			CacheCreationInputTokens: parsedResp.CacheCreationTokens,
+			CacheReadInputTokens:     parsedResp.CacheReadTokens,
+			ContextUsagePercent:      parsedResp.ContextPct,
+		}
+		// Fallback when upstream omits output token count.
+		if usage.OutputTokens <= 0 {
+			usage.OutputTokens = (len(parsedResp.Text) + 3) / 4
+		}
+	} else {
+		// Local estimation fallback.
+		usage = &ClaudeUsage{
+			InputTokens:         accurateInputTokens,
+			OutputTokens:        (len(parsedResp.Text) + 3) / 4,
+			ContextUsagePercent: parsedResp.ContextPct,
+		}
 	}
 
-	return &kiroStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
+	return &kiroStreamResult{
+		usage:             usage,
+		firstTokenMs:      firstTokenMs,
+		usageFromUpstream: usageFromUpstream,
+	}, nil
 }
 
 // buildWebSearchSSEEvents builds SSE events for a single web search (server_tool_use + web_search_tool_result)
@@ -1081,7 +1146,11 @@ func (s *KiroGatewayService) writeMappedClaudeError(c *gin.Context, account *Acc
 	case 400:
 		statusCode = http.StatusBadRequest
 		errType = "invalid_request_error"
-		errMsg = "Invalid request"
+		if upstreamMsg != "" {
+			errMsg = "Invalid request: " + upstreamMsg
+		} else {
+			errMsg = "Invalid request"
+		}
 	case 401:
 		statusCode = http.StatusBadGateway
 		errType = "authentication_error"
@@ -1278,6 +1347,20 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	return nil, fmt.Errorf("all endpoints failed")
 }
 
+// buildClaudeAPIHTTPRequest constructs an HTTP request for the Claude API with standard headers.
+// Used by forwardClaudeAPIRequest and its signature-error retry paths to avoid duplicating header setup.
+func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targetURL, apiKey string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	return req, nil
+}
+
 // forwardClaudeAPIRequest forwards Claude API requests directly to a base_url endpoint (apikey accounts).
 // No CodeWhisperer transformation — request and response are Claude API format.
 func (s *KiroGatewayService) forwardClaudeAPIRequest(
@@ -1295,14 +1378,10 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}
 	targetURL := strings.TrimRight(baseURL, "/") + "/v1/messages"
 
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	req, err := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
 
 	log.Printf("%s url=%s model=%s stream=%v body_size=%d", prefix, targetURL, originalModel, claudeReq.Stream, len(body))
 
@@ -1312,10 +1391,88 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// Thinking block signature error detection and two-stage retry.
+	// When Claude API returns 400 due to invalid/missing signature in thinking blocks,
+	// retry with filtered body before falling back to failover.
+	if resp.StatusCode == http.StatusBadRequest {
+		sigCheckBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close() // close original body explicitly; defer will close whatever resp points to at return
+
+		if isThinkingBlockSignatureError(sigCheckBody) {
+			log.Printf("%s detected thinking block signature error, attempting retry with filtered body", prefix)
+
+			looksLikeToolSignatureError := func(msg string) bool {
+				m := strings.ToLower(msg)
+				return strings.Contains(m, "tool_use") ||
+					strings.Contains(m, "tool_result") ||
+					strings.Contains(m, "functioncall") || strings.Contains(m, "function_call") ||
+					strings.Contains(m, "functionresponse") || strings.Contains(m, "function_response")
+			}
+
+			retrySucceeded := false
+
+			// Stage 1: filter thinking blocks (thinking→text, remove redacted_thinking, disable thinking)
+			time.Sleep(500 * time.Millisecond)
+			filteredBody := FilterThinkingBlocksForRetry(body)
+			if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody); buildErr == nil {
+				if retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency); retryErr == nil {
+					if retryResp.StatusCode < 400 {
+						log.Printf("%s signature error retry succeeded (thinking downgraded)", prefix)
+						resp = retryResp
+						retrySucceeded = true
+					} else {
+						// Stage 1 still errored — check if Stage 2 (tool block downgrade) applies
+						retryRespBody, retryReadErr := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
+						_ = retryResp.Body.Close()
+
+						if retryReadErr == nil && retryResp.StatusCode == 400 && isThinkingBlockSignatureError(retryRespBody) {
+							msg2 := extractUpstreamErrorMessage(retryRespBody)
+							if looksLikeToolSignatureError(msg2) {
+								log.Printf("%s signature retry still failing and tool-related, retrying with tool blocks downgraded", prefix)
+								time.Sleep(500 * time.Millisecond)
+								filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body)
+								if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody2); buildErr2 == nil {
+									if retryResp2, retryErr2 := s.httpUpstream.Do(retryReq2, proxyURL, account.ID, account.Concurrency); retryErr2 == nil {
+										if retryResp2.StatusCode < 400 {
+											log.Printf("%s signature error retry succeeded (tools downgraded)", prefix)
+											resp = retryResp2
+											retrySucceeded = true
+										} else {
+											_ = retryResp2.Body.Close()
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			if !retrySucceeded {
+				log.Printf("%s signature error retries exhausted, falling back to failover", prefix)
+				// Restore body so downstream error handling can read it
+				resp.Body = io.NopCloser(bytes.NewReader(sigCheckBody))
+			}
+		} else {
+			// Not a signature error — restore body for downstream error handling
+			resp.Body = io.NopCloser(bytes.NewReader(sigCheckBody))
+		}
+	}
+
 	// Handle error responses
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		log.Printf("%s status=%d body=%s", prefix, resp.StatusCode, truncateForLog(respBody, 1000))
+
+		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+
+		// apikey path: 400 errors also trigger failover (different apikey may have different config/limits)
+		if resp.StatusCode == http.StatusBadRequest {
+			upstreamMsg := extractKiroErrorMessage(respBody)
+			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+			log.Printf("%s status=400 apikey bad_request msg=%s, triggering failover", prefix, upstreamMsg)
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
+		}
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
@@ -1348,6 +1505,9 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 
 		var outputTokens int
 		var firstTokenMs *int
+		upstreamUsage := &ClaudeUsage{}
+		usageFromUpstream := false
+		var sseTail strings.Builder
 		buf := make([]byte, 4096)
 
 		for {
@@ -1361,6 +1521,28 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 				chunk := buf[:n]
 				// Count output tokens from text deltas for estimation
 				outputTokens += s.countClaudeSSEOutputTokens(chunk)
+				// Parse upstream usage tokens from SSE lines when available.
+				sseTail.Write(chunk)
+				sseData := sseTail.String()
+				lines := strings.Split(sseData, "\n")
+				sseTail.Reset()
+				if len(lines) > 0 {
+					// Keep last partial line as tail.
+					sseTail.WriteString(lines[len(lines)-1])
+					for _, line := range lines[:len(lines)-1] {
+						line = strings.TrimSpace(line)
+						if !strings.HasPrefix(line, "data: ") {
+							continue
+						}
+						data := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+						if data == "" || data == "[DONE]" {
+							continue
+						}
+						if updateClaudeUsageFromSSEData(data, upstreamUsage) {
+							usageFromUpstream = true
+						}
+					}
+				}
 
 				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
 					break
@@ -1372,14 +1554,26 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			}
 		}
 
-		// Build usage with local estimation (consistent with OAuth path)
-		usage := &ClaudeUsage{
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
+		var usage *ClaudeUsage
+		if usageFromUpstream {
+			usage = upstreamUsage
+			// Keep conservative fallback when upstream omits output token count.
+			if usage.OutputTokens <= 0 {
+				usage.OutputTokens = outputTokens
+			}
+			if usage.InputTokens <= 0 && usage.CacheCreationInputTokens == 0 && usage.CacheReadInputTokens == 0 {
+				usage.InputTokens = inputTokens
+			}
+		} else {
+			// Local estimation fallback.
+			usage = &ClaudeUsage{
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+			}
 		}
 
-		// Apply cache estimation (consistent with OAuth path)
-		if cacheEstimation.MeetsCacheThreshold {
+		// Apply cache estimation only when upstream did not provide token usage.
+		if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
 			if cacheHit {
 				usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
 				usage.InputTokens -= cacheEstimation.CacheableTokens
@@ -1411,16 +1605,28 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 
 	c.Data(http.StatusOK, "application/json", respBody)
 
-	// Estimate output tokens from response text (consistent with OAuth path)
-	outputTokens := s.estimateClaudeJSONOutputTokens(respBody)
-
-	usage := &ClaudeUsage{
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
+	upstreamUsage, usageFromUpstream := extractClaudeUsageFromJSON(respBody)
+	var usage *ClaudeUsage
+	if usageFromUpstream {
+		usage = upstreamUsage
+		// Conservative fallback when output token usage is missing.
+		if usage.OutputTokens <= 0 {
+			usage.OutputTokens = s.estimateClaudeJSONOutputTokens(respBody)
+		}
+		if usage.InputTokens <= 0 && usage.CacheCreationInputTokens == 0 && usage.CacheReadInputTokens == 0 {
+			usage.InputTokens = inputTokens
+		}
+	} else {
+		// Local estimation fallback.
+		outputTokens := s.estimateClaudeJSONOutputTokens(respBody)
+		usage = &ClaudeUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		}
 	}
 
-	// Apply cache estimation (consistent with OAuth path)
-	if cacheEstimation.MeetsCacheThreshold {
+	// Apply cache estimation only when upstream did not provide token usage.
+	if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
 		if cacheHit {
 			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
 			usage.InputTokens -= cacheEstimation.CacheableTokens
@@ -1440,6 +1646,149 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		Duration:     time.Since(startTime),
 		FirstTokenMs: &ms,
 	}, nil
+}
+
+func updateClaudeUsageFromSSEData(data string, usage *ClaudeUsage) bool {
+	if usage == nil || data == "" {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return false
+	}
+
+	eventType, _ := payload["type"].(string)
+	switch eventType {
+	case "message_start":
+		if message, ok := payload["message"].(map[string]any); ok && message != nil {
+			if usageMap, ok := message["usage"].(map[string]any); ok && usageMap != nil {
+				return applyClaudeUsageMap(usageMap, usage, false)
+			}
+		}
+	case "message_delta":
+		if usageMap, ok := payload["usage"].(map[string]any); ok && usageMap != nil {
+			return applyClaudeUsageMap(usageMap, usage, true)
+		}
+	}
+	return false
+}
+
+func extractClaudeUsageFromJSON(body []byte) (*ClaudeUsage, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	usageMap, ok := payload["usage"].(map[string]any)
+	if !ok || usageMap == nil {
+		return nil, false
+	}
+	usage := &ClaudeUsage{}
+	if !applyClaudeUsageMap(usageMap, usage, true) {
+		return nil, false
+	}
+	return usage, true
+}
+
+func applyClaudeUsageMap(usageMap map[string]any, usage *ClaudeUsage, overwrite bool) bool {
+	if usageMap == nil || usage == nil {
+		return false
+	}
+	applied := false
+
+	setIf := func(target *int, value int) {
+		if value < 0 {
+			return
+		}
+		if overwrite || *target == 0 {
+			*target = value
+			if value > 0 {
+				applied = true
+			}
+		}
+	}
+	setIfFloat := func(target *float64, value float64) {
+		if value <= 0 {
+			return
+		}
+		if overwrite || *target == 0 {
+			*target = value
+			applied = true
+		}
+	}
+
+	setIf(&usage.InputTokens, usageIntByKeys(usageMap, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens"))
+	setIf(&usage.OutputTokens, usageIntByKeys(usageMap, "output_tokens", "outputTokens", "completion_tokens", "completionTokens"))
+	setIf(&usage.CacheCreationInputTokens, usageIntByKeys(usageMap, "cache_creation_input_tokens", "cacheCreationInputTokens"))
+	setIf(&usage.CacheReadInputTokens, usageIntByKeys(usageMap, "cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens"))
+	if usage.CacheReadInputTokens == 0 {
+		if details, ok := usageMap["input_tokens_details"].(map[string]any); ok && details != nil {
+			setIf(&usage.CacheReadInputTokens, usageIntByKeys(details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens"))
+		}
+	}
+	if usage.CacheReadInputTokens == 0 {
+		if details, ok := usageMap["prompt_tokens_details"].(map[string]any); ok && details != nil {
+			setIf(&usage.CacheReadInputTokens, usageIntByKeys(details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens"))
+		}
+	}
+	if value, ok := usageFloatByKeys(usageMap, "context_usage_percent", "contextUsagePercentage", "contextUsagePercent"); ok {
+		setIfFloat(&usage.ContextUsagePercent, value)
+	}
+
+	return applied
+}
+
+func usageIntByKeys(m map[string]any, keys ...string) int {
+	for _, key := range keys {
+		if v, ok := usageIntFromAny(m[key]); ok {
+			return v
+		}
+	}
+	return 0
+}
+
+func usageFloatByKeys(m map[string]any, keys ...string) (float64, bool) {
+	for _, key := range keys {
+		if v, ok := usageFloatFromAny(m[key]); ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func usageIntFromAny(v any) (int, bool) {
+	f, ok := usageFloatFromAny(v)
+	if !ok {
+		return 0, false
+	}
+	return int(f), true
+}
+
+func usageFloatFromAny(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return f, true
+		}
+	case string:
+		s := strings.TrimSpace(n)
+		if s == "" {
+			return 0, false
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
 }
 
 // countClaudeSSEOutputTokens estimates output tokens from Claude SSE stream chunks

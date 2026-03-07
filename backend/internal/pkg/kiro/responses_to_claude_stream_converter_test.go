@@ -95,6 +95,26 @@ func TestResponsesStreamConverter_InterleavingToolCalls(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamConverter_ToolUseIDFallbackWhenMissing(t *testing.T) {
+	conv := NewResponsesStreamConverter("claude-sonnet-4-20250514", "msg_test")
+
+	ev1 := conv.ConvertResponsesEvent("response.output_item.added", []byte(`{"output_index":0,"item":{"type":"function_call","name":"Read"}}`))
+	ev2 := conv.ConvertResponsesEvent("response.output_item.added", []byte(`{"output_index":1,"item":{"type":"function_call","name":"Search"}}`))
+
+	if strings.Contains(ev1, `"id":""`) {
+		t.Fatalf("first tool_use id should not be empty, got: %s", ev1)
+	}
+	if strings.Contains(ev2, `"id":""`) {
+		t.Fatalf("second tool_use id should not be empty, got: %s", ev2)
+	}
+	if !strings.Contains(ev1, `"index":0`) {
+		t.Fatalf("first tool_use should be index=0, got: %s", ev1)
+	}
+	if !strings.Contains(ev2, `"index":1`) {
+		t.Fatalf("second tool_use should be index=1, got: %s", ev2)
+	}
+}
+
 func TestResponsesStreamConverter_MessageDeltaIncludesInputTokens(t *testing.T) {
 	conv := NewResponsesStreamConverter("claude-sonnet-4-20250514", "msg_test")
 
@@ -108,5 +128,55 @@ func TestResponsesStreamConverter_MessageDeltaIncludesInputTokens(t *testing.T) 
 	}
 	if !strings.Contains(evCompleted, `"output_tokens":45`) {
 		t.Fatalf("message_delta usage should include output_tokens, got: %s", evCompleted)
+	}
+}
+
+func TestResponsesStreamConverter_MessageDeltaIncludesCacheTokens(t *testing.T) {
+	conv := NewResponsesStreamConverter("claude-sonnet-4-20250514", "msg_test")
+
+	evCompleted := conv.ConvertResponsesEvent("response.completed", []byte(`{"response":{"status":"completed","usage":{"input_tokens":123,"output_tokens":45,"input_tokens_details":{"cached_tokens":20}}}}`))
+
+	if !strings.Contains(evCompleted, `"cache_read_input_tokens":20`) {
+		t.Fatalf("message_delta usage should include cache_read_input_tokens, got: %s", evCompleted)
+	}
+	if !strings.Contains(evCompleted, `"input_tokens":103`) {
+		t.Fatalf("input_tokens should be normalized (123-20), got: %s", evCompleted)
+	}
+}
+
+func TestResponsesStreamConverter_ReasoningTextEvents(t *testing.T) {
+	conv := NewResponsesStreamConverter("claude-sonnet-4-20250514", "msg_test")
+
+	evDelta := conv.ConvertResponsesEvent("response.reasoning_text.delta", []byte(`{"delta":"Let me think..."}`))
+	evDone := conv.ConvertResponsesEvent("response.reasoning_text.done", []byte(`{}`))
+
+	if !strings.Contains(evDelta, `"type":"thinking_delta"`) {
+		t.Fatalf("reasoning_text.delta should emit thinking_delta, got: %s", evDelta)
+	}
+	if !strings.Contains(evDelta, `"type":"content_block_start"`) {
+		t.Fatalf("reasoning_text.delta should start thinking block, got: %s", evDelta)
+	}
+	if !strings.Contains(evDone, `"type":"content_block_stop"`) {
+		t.Fatalf("reasoning_text.done should close thinking block, got: %s", evDone)
+	}
+	if !strings.Contains(evDone, `"type":"signature_delta"`) {
+		t.Fatalf("reasoning_text.done should emit signature_delta before stop, got: %s", evDone)
+	}
+}
+
+func TestResponsesStreamConverter_ReasoningSummaryTextEvents(t *testing.T) {
+	conv := NewResponsesStreamConverter("claude-sonnet-4-20250514", "msg_test")
+
+	evDelta := conv.ConvertResponsesEvent("response.reasoning_summary_text.delta", []byte(`{"delta":"summary..."}`))
+	evDone := conv.ConvertResponsesEvent("response.reasoning_summary_text.done", []byte(`{}`))
+
+	if !strings.Contains(evDelta, `"type":"thinking_delta"`) {
+		t.Fatalf("reasoning_summary_text.delta should emit thinking_delta, got: %s", evDelta)
+	}
+	if !strings.Contains(evDone, `"type":"content_block_stop"`) {
+		t.Fatalf("reasoning_summary_text.done should close thinking block, got: %s", evDone)
+	}
+	if !strings.Contains(evDone, `"type":"signature_delta"`) {
+		t.Fatalf("reasoning_summary_text.done should emit signature_delta before stop, got: %s", evDone)
 	}
 }

@@ -40,6 +40,7 @@ type CreateTempAPIKeyRequest struct {
 type UpdateTempAPIKeyRequest struct {
 	Name       string   `json:"name"`
 	Status     string   `json:"status" binding:"omitempty,oneof=active inactive exhausted"`
+	GroupID    *int64   `json:"group_id"`
 	ValidDays  *int     `json:"valid_days"`
 	DailyLimit *int     `json:"daily_limit"`
 	TotalQuota *float64 `json:"total_quota"`
@@ -248,6 +249,13 @@ func (h *TempAPIKeyHandler) Update(c *gin.Context) {
 	}
 	if req.Status != "" {
 		key.Status = req.Status
+	}
+	if req.GroupID != nil {
+		if *req.GroupID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "group_id must be greater than 0"})
+			return
+		}
+		key.GroupID = *req.GroupID
 	}
 	if key.KeyType == service.TempAPIKeyTypeQuotaOnly {
 		// quota_only: 只允许修改 total_quota，valid_days/daily_limit/daily_quota 不生效

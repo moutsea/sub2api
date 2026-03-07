@@ -245,6 +245,11 @@ func (m *mockGatewayCacheForGemini) RefreshSessionTTL(ctx context.Context, group
 	return nil
 }
 
+func (m *mockGatewayCacheForGemini) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
+	delete(m.sessionBindings, sessionHash)
+	return nil
+}
+
 // TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiPlatform 测试 Gemini 单平台选择
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiPlatform(t *testing.T) {
 	ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -325,6 +326,109 @@ func contextUsageFromTokenUsage(tokenUsage map[string]any) float64 {
 	return 0
 }
 
+func asFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return f, true
+		}
+	case string:
+		s := strings.TrimSpace(n)
+		if s == "" {
+			return 0, false
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+func tokenUsageIntFromAny(v any) (int, bool) {
+	f, ok := asFloat64(v)
+	if !ok {
+		return 0, false
+	}
+	return int(f), true
+}
+
+func firstIntByKeys(m map[string]any, keys ...string) int {
+	if m == nil {
+		return 0
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if v, ok := tokenUsageIntFromAny(m[key]); ok && v >= 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func extractTokenUsage(tokenUsage map[string]any) (inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int, has bool) {
+	if tokenUsage == nil {
+		return 0, 0, 0, 0, false
+	}
+
+	inputTokens = firstIntByKeys(tokenUsage,
+		"inputTokens", "input_tokens",
+		"promptTokens", "prompt_tokens",
+		"inputTokenCount", "input_token_count",
+		"totalInputTokens", "total_input_tokens",
+	)
+	outputTokens = firstIntByKeys(tokenUsage,
+		"outputTokens", "output_tokens",
+		"completionTokens", "completion_tokens",
+		"outputTokenCount", "output_token_count",
+		"generatedTokens", "generated_tokens",
+		"totalOutputTokens", "total_output_tokens",
+	)
+	cacheCreationTokens = firstIntByKeys(tokenUsage,
+		"cacheCreationInputTokens", "cache_creation_input_tokens",
+		"cacheWriteInputTokens", "cache_write_input_tokens",
+	)
+	cacheReadTokens = firstIntByKeys(tokenUsage,
+		"cacheReadInputTokens", "cache_read_input_tokens",
+		"cachedInputTokens", "cached_input_tokens",
+		"cachedTokens", "cached_tokens",
+	)
+
+	// Handle nested token details formats (e.g. cached_tokens under details maps).
+	if cacheReadTokens == 0 {
+		for _, detailKey := range []string{"inputTokenDetails", "input_tokens_details", "promptTokenDetails", "prompt_tokens_details", "details"} {
+			if details, ok := tokenUsage[detailKey].(map[string]any); ok && details != nil {
+				cacheReadTokens = firstIntByKeys(details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens")
+				if cacheReadTokens > 0 {
+					break
+				}
+			}
+		}
+	}
+
+	// Normalize to Claude usage semantics when upstream appears to report total input.
+	if inputTokens > 0 && (cacheCreationTokens > 0 || cacheReadTokens > 0) {
+		normalized := normalizeClaudeInputTokens(inputTokens, cacheCreationTokens, cacheReadTokens)
+		if normalized > 0 || inputTokens >= cacheCreationTokens+cacheReadTokens {
+			inputTokens = normalized
+		}
+	}
+
+	has = inputTokens > 0 || outputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0
+	return inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, has
+}
+
 func tokenUsageFromMetadata(meta map[string]any) map[string]any {
 	if meta == nil {
 		return nil
@@ -494,6 +598,11 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 	// 5) usage / context usage (nested and flat)
 	credits := 0.0
 	ctxPct := 0.0
+	hasTokenUsage := false
+	inputTokens := 0
+	outputTokens := 0
+	cacheCreationTokens := 0
+	cacheReadTokens := 0
 
 	if payload.Usage != nil {
 		credits = *payload.Usage
@@ -528,8 +637,34 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		ctxPct = contextUsageFromTokenUsage(tokenUsageFromMetadata(payload.MetadataEvent))
 	}
 
-	if credits > 0 || ctxPct > 0 {
-		events = append(events, StreamEvent{Type: EventBackendUsage, Credits: credits, ContextPercentage: ctxPct})
+	for _, usageMap := range []map[string]any{
+		payload.TokenUsage,
+		tokenUsageFromMetadata(payload.MessageMetadataEvent),
+		tokenUsageFromMetadata(payload.MetadataEvent),
+	} {
+		in, out, cacheCreation, cacheRead, has := extractTokenUsage(usageMap)
+		if !has {
+			continue
+		}
+		hasTokenUsage = true
+		inputTokens = in
+		outputTokens = out
+		cacheCreationTokens = cacheCreation
+		cacheReadTokens = cacheRead
+		break
+	}
+
+	if credits > 0 || ctxPct > 0 || hasTokenUsage {
+		events = append(events, StreamEvent{
+			Type:                     EventBackendUsage,
+			Credits:                  credits,
+			ContextPercentage:        ctxPct,
+			HasTokenUsage:            hasTokenUsage,
+			InputTokens:              inputTokens,
+			OutputTokens:             outputTokens,
+			CacheCreationInputTokens: cacheCreationTokens,
+			CacheReadInputTokens:     cacheReadTokens,
+		})
 	}
 
 	return events, nil
@@ -982,9 +1117,12 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 
 // CompleteResponse represents a parsed complete response
 type CompleteResponse struct {
-	Text       string
-	ToolCalls  []ToolCallData
-	ContextPct float64 // Context usage percentage from backend
+	Text          string
+	ToolCalls     []ToolCallData
+	ContextPct    float64 // Context usage percentage from backend
+	HasTokenUsage bool
+	InputTokens   int
+	OutputTokens  int
 
 	// Cache token estimation (set externally before building response)
 	CacheCreationTokens int
@@ -1040,6 +1178,13 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 		case EventBackendUsage:
 			if e.ContextPercentage > 0 {
 				resp.ContextPct = e.ContextPercentage
+			}
+			if e.HasTokenUsage {
+				resp.HasTokenUsage = true
+				resp.InputTokens = e.InputTokens
+				resp.OutputTokens = e.OutputTokens
+				resp.CacheCreationTokens = e.CacheCreationInputTokens
+				resp.CacheReadTokens = e.CacheReadInputTokens
 			}
 		}
 	}

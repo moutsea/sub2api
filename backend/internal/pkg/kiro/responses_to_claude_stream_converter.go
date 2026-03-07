@@ -3,7 +3,10 @@
 package kiro
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -13,18 +16,21 @@ type ResponsesStreamConverter struct {
 	messageID     string
 
 	// State
-	contentIndex       int
-	inTextBlock        bool
-	inThinkingBlock    bool
-	toolCallMap        map[string]int // call_id -> claude content block index
-	toolItemMap        map[string]int // item_id -> claude content block index
-	toolOutputIndexMap map[int]int    // output_index -> claude content block index
-	openToolBlocks     map[int]struct{}
-	toolBlockHasInput  map[int]bool
-	outputTokens       int
-	inputTokens        int
-	sawToolUse         bool
-	stopReason         string
+	contentIndex             int
+	inTextBlock              bool
+	inThinkingBlock          bool
+	toolCallMap              map[string]int // call_id -> claude content block index
+	toolItemMap              map[string]int // item_id -> claude content block index
+	toolOutputIndexMap       map[int]int    // output_index -> claude content block index
+	openToolBlocks           map[int]struct{}
+	toolBlockHasInput        map[int]bool
+	outputTokens             int
+	inputTokens              int
+	cacheCreationInputTokens int
+	cacheReadInputTokens     int
+	sawToolUse               bool
+	stopReason               string
+	thinkingBuffer           strings.Builder
 }
 
 // NewResponsesStreamConverter creates a new Responses API → Claude converter.
@@ -50,6 +56,21 @@ func (c *ResponsesStreamConverter) InputTokens() int {
 	return c.inputTokens
 }
 
+// SetInputTokens sets initial input tokens for message_start usage.
+func (c *ResponsesStreamConverter) SetInputTokens(tokens int) {
+	c.inputTokens = tokens
+}
+
+// CacheCreationInputTokens returns cache_creation_input_tokens usage.
+func (c *ResponsesStreamConverter) CacheCreationInputTokens() int {
+	return c.cacheCreationInputTokens
+}
+
+// CacheReadInputTokens returns cache_read_input_tokens usage.
+func (c *ResponsesStreamConverter) CacheReadInputTokens() int {
+	return c.cacheReadInputTokens
+}
+
 // BuildMessageStart builds the initial message_start SSE event.
 func (c *ResponsesStreamConverter) BuildMessageStart() string {
 	event := map[string]any{
@@ -61,7 +82,7 @@ func (c *ResponsesStreamConverter) BuildMessageStart() string {
 			"model":   c.originalModel,
 			"content": []any{},
 			"usage": map[string]any{
-				"input_tokens":  0,
+				"input_tokens":  c.inputTokens,
 				"output_tokens": 0,
 			},
 		},
@@ -89,9 +110,9 @@ func (c *ResponsesStreamConverter) ConvertResponsesEvent(eventType string, data 
 		return c.handleTextDelta(data)
 	case "response.output_text.done":
 		return c.handleTextDone(data)
-	case "response.reasoning.delta":
+	case "response.reasoning.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
 		return c.handleReasoningDelta(data)
-	case "response.reasoning.done":
+	case "response.reasoning.done", "response.reasoning_text.done", "response.reasoning_summary_text.done":
 		return c.handleReasoningDone()
 	case "response.function_call_arguments.delta":
 		return c.handleFunctionCallDelta(data)
@@ -118,26 +139,26 @@ func (c *ResponsesStreamConverter) handleTextDelta(data []byte) string {
 		return ""
 	}
 
-	var result string
+	var result strings.Builder
 	// Close thinking block if open
 	if c.inThinkingBlock {
-		result += c.closeCurrentBlock()
+		result.WriteString(c.closeThinkingBlock())
 	}
 	if !c.inTextBlock {
-		result += formatClaudeSSE(map[string]any{
+		result.WriteString(formatClaudeSSE(map[string]any{
 			"type":          "content_block_start",
 			"index":         c.contentIndex,
 			"content_block": map[string]any{"type": "text", "text": ""},
-		})
+		}))
 		c.inTextBlock = true
 	}
-	result += formatClaudeSSE(map[string]any{
+	result.WriteString(formatClaudeSSE(map[string]any{
 		"type":  "content_block_delta",
 		"index": c.contentIndex,
 		"delta": map[string]any{"type": "text_delta", "text": delta},
-	})
-	c.outputTokens += len(delta) / 4
-	return result
+	}))
+	c.outputTokens += len(delta) >> 2
+	return result.String()
 }
 
 func (c *ResponsesStreamConverter) handleTextDone(_ []byte) string {
@@ -157,30 +178,31 @@ func (c *ResponsesStreamConverter) handleReasoningDelta(data []byte) string {
 		return ""
 	}
 
-	var result string
+	var result strings.Builder
 	if c.inTextBlock {
-		result += c.closeCurrentBlock()
+		result.WriteString(c.closeCurrentBlock())
 	}
 	if !c.inThinkingBlock {
-		result += formatClaudeSSE(map[string]any{
+		result.WriteString(formatClaudeSSE(map[string]any{
 			"type":          "content_block_start",
 			"index":         c.contentIndex,
 			"content_block": map[string]any{"type": "thinking", "thinking": ""},
-		})
+		}))
 		c.inThinkingBlock = true
 	}
-	result += formatClaudeSSE(map[string]any{
+	result.WriteString(formatClaudeSSE(map[string]any{
 		"type":  "content_block_delta",
 		"index": c.contentIndex,
 		"delta": map[string]any{"type": "thinking_delta", "thinking": delta},
-	})
-	c.outputTokens += len(delta) / 4
-	return result
+	}))
+	c.thinkingBuffer.WriteString(delta)
+	c.outputTokens += len(delta) >> 2
+	return result.String()
 }
 
 func (c *ResponsesStreamConverter) handleReasoningDone() string {
 	if c.inThinkingBlock {
-		return c.closeCurrentBlock()
+		return c.closeThinkingBlock()
 	}
 	return ""
 }
@@ -200,13 +222,12 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 	}
 
 	// Close any open block
-	var result string
-	if c.inTextBlock || c.inThinkingBlock {
-		result += c.closeCurrentBlock()
-	}
+	var result strings.Builder
+	result.WriteString(c.closeOpenNonToolBlock())
 	callID, _ := item["call_id"].(string)
 	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
+	blockIdx := c.contentIndex
 	toolUseID := strings.TrimSpace(callID)
 	if toolUseID == "" {
 		toolUseID = strings.TrimSpace(itemID)
@@ -219,9 +240,11 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 			}
 		}
 	}
+	if toolUseID == "" {
+		toolUseID = fmt.Sprintf("toolu_%s_%d", c.messageID, blockIdx)
+	}
 
 	c.sawToolUse = true
-	blockIdx := c.contentIndex
 	if callID != "" {
 		c.toolCallMap[callID] = blockIdx
 	}
@@ -236,7 +259,7 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 	}
 	c.openToolBlocks[blockIdx] = struct{}{}
 
-	result += formatClaudeSSE(map[string]any{
+	result.WriteString(formatClaudeSSE(map[string]any{
 		"type":  "content_block_start",
 		"index": blockIdx,
 		"content_block": map[string]any{
@@ -245,11 +268,11 @@ func (c *ResponsesStreamConverter) handleOutputItemAdded(data []byte) string {
 			"name":  name,
 			"input": map[string]any{},
 		},
-	})
+	}))
 	// Reserve next content index when opening tool blocks so multiple outstanding
 	// tool calls won't reuse the same index before any done events arrive.
 	c.contentIndex++
-	return result
+	return result.String()
 }
 
 func (c *ResponsesStreamConverter) handleFunctionCallDelta(data []byte) string {
@@ -318,34 +341,32 @@ func (c *ResponsesStreamConverter) handleToolCallDoneEvent(ev map[string]any) st
 		return ""
 	}
 
-	var result string
+	var result strings.Builder
 	arguments := argumentsToJSONString(ev["arguments"])
 	if arguments != "" && !c.toolBlockHasInput[blockIdx] {
-		result += formatClaudeSSE(map[string]any{
+		result.WriteString(formatClaudeSSE(map[string]any{
 			"type":  "content_block_delta",
 			"index": blockIdx,
 			"delta": map[string]any{
 				"type":         "input_json_delta",
 				"partial_json": arguments,
 			},
-		})
+		}))
 		c.toolBlockHasInput[blockIdx] = true
-		c.outputTokens += len(arguments) / 4
+		c.outputTokens += len(arguments) >> 2
 	}
 
-	result += c.closeToolBlockByIndex(blockIdx)
-	return result
+	result.WriteString(c.closeToolBlockByIndex(blockIdx))
+	return result.String()
 }
 
 func (c *ResponsesStreamConverter) handleResponseCompleted(data []byte) string {
-	var result string
+	var result strings.Builder
 
 	// Close any open blocks
-	if c.inTextBlock || c.inThinkingBlock {
-		result += c.closeCurrentBlock()
-	}
+	result.WriteString(c.closeOpenNonToolBlock())
 	// Close any still-open tool blocks.
-	result += c.closeAllOpenToolBlocks()
+	result.WriteString(c.closeAllOpenToolBlocks())
 
 	// Extract usage from response.completed
 	var ev map[string]any
@@ -353,7 +374,9 @@ func (c *ResponsesStreamConverter) handleResponseCompleted(data []byte) string {
 		if response, ok := ev["response"].(map[string]any); ok {
 			if usage, ok := response["usage"].(map[string]any); ok {
 				if v := jsonInt(usage, "input_tokens"); v > 0 {
-					c.inputTokens = v
+					c.cacheCreationInputTokens = jsonInt(usage, "cache_creation_input_tokens")
+					c.cacheReadInputTokens = extractCachedTokensFromUsageDetails(usage, "input_tokens_details", "prompt_tokens_details")
+					c.inputTokens = normalizeClaudeInputTokens(v, c.cacheCreationInputTokens, c.cacheReadInputTokens)
 				}
 				if v := jsonInt(usage, "output_tokens"); v > 0 {
 					c.outputTokens = v
@@ -375,18 +398,21 @@ func (c *ResponsesStreamConverter) handleResponseCompleted(data []byte) string {
 		c.stopReason = "tool_use"
 	}
 
-	result += formatClaudeSSE(map[string]any{
+	usage := map[string]any{
+		"input_tokens":  c.inputTokens,
+		"output_tokens": c.outputTokens,
+	}
+	addClaudeCacheUsageFields(usage, c.cacheCreationInputTokens, c.cacheReadInputTokens)
+
+	result.WriteString(formatClaudeSSE(map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   c.stopReason,
 			"stop_sequence": nil,
 		},
-		"usage": map[string]any{
-			"input_tokens":  c.inputTokens,
-			"output_tokens": c.outputTokens,
-		},
-	})
-	return result
+		"usage": usage,
+	}))
+	return result.String()
 }
 
 func (c *ResponsesStreamConverter) closeCurrentBlock() string {
@@ -398,6 +424,39 @@ func (c *ResponsesStreamConverter) closeCurrentBlock() string {
 	c.inThinkingBlock = false
 	c.contentIndex++
 	return result
+}
+
+func (c *ResponsesStreamConverter) closeThinkingBlock() string {
+	if !c.inThinkingBlock {
+		return ""
+	}
+	signature := syntheticThinkingSignature(c.thinkingBuffer.String())
+	c.thinkingBuffer.Reset()
+	result := formatClaudeSSE(map[string]any{
+		"type":  "content_block_delta",
+		"index": c.contentIndex,
+		"delta": map[string]any{
+			"type":      "signature_delta",
+			"signature": signature,
+		},
+	})
+	result += c.closeCurrentBlock()
+	return result
+}
+
+func (c *ResponsesStreamConverter) closeOpenNonToolBlock() string {
+	if c.inThinkingBlock {
+		return c.closeThinkingBlock()
+	}
+	if c.inTextBlock {
+		return c.closeCurrentBlock()
+	}
+	return ""
+}
+
+func syntheticThinkingSignature(thinking string) string {
+	sum := sha256.Sum256([]byte(thinking))
+	return "proxy_sig_" + base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func (c *ResponsesStreamConverter) resolveToolBlockIndex(ev map[string]any) (int, bool) {

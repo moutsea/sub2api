@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -29,8 +30,8 @@ func TestConvertClaudeToOpenAI_BasicText(t *testing.T) {
 	if err := json.Unmarshal(openaiBody, &req); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if req["model"] != "gpt-5.2-codex" {
-		t.Errorf("model = %v, want gpt-5.2-codex", req["model"])
+	if req["model"] != "gpt-5.3-codex" {
+		t.Errorf("model = %v, want gpt-5.3-codex", req["model"])
 	}
 	msgs, _ := req["messages"].([]any)
 	if len(msgs) != 1 {
@@ -42,6 +43,13 @@ func TestConvertClaudeToOpenAI_BasicText(t *testing.T) {
 	}
 	if req["max_tokens"] != float64(100) {
 		t.Errorf("max_tokens = %v", req["max_tokens"])
+	}
+	reasoning, _ := req["reasoning"].(map[string]any)
+	if reasoning == nil {
+		t.Fatal("reasoning is nil")
+	}
+	if reasoning["effort"] != "xhigh" {
+		t.Errorf("effort = %v, want xhigh", reasoning["effort"])
 	}
 }
 
@@ -61,8 +69,8 @@ func TestConvertClaudeToOpenAI_OpusModel(t *testing.T) {
 	}
 	var req map[string]any
 	json.Unmarshal(openaiBody, &req)
-	if req["model"] != "gpt-5.3-codex" {
-		t.Errorf("model = %v, want gpt-5.3-codex", req["model"])
+	if req["model"] != "gpt-5.4-codex" {
+		t.Errorf("model = %v, want gpt-5.4-codex", req["model"])
 	}
 }
 
@@ -194,8 +202,8 @@ func TestConvertClaudeToOpenAI_Thinking(t *testing.T) {
 	if reasoning == nil {
 		t.Fatal("reasoning is nil")
 	}
-	if reasoning["effort"] != "high" {
-		t.Errorf("effort = %v, want high", reasoning["effort"])
+	if reasoning["effort"] != "xhigh" {
+		t.Errorf("effort = %v, want xhigh", reasoning["effort"])
 	}
 }
 
@@ -215,8 +223,34 @@ func TestConvertClaudeToOpenAI_ThinkingLowBudget(t *testing.T) {
 	json.Unmarshal(openaiBody, &req)
 
 	reasoning, _ := req["reasoning"].(map[string]any)
-	if reasoning["effort"] != "low" {
-		t.Errorf("effort = %v, want low", reasoning["effort"])
+	if reasoning["effort"] != "xhigh" {
+		t.Errorf("effort = %v, want xhigh", reasoning["effort"])
+	}
+}
+
+func TestConvertClaudeToResponses_ReasoningForcedXHigh(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-opus-4-6",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": "hello"}]
+	}`)
+
+	responsesBody, _, err := ConvertClaudeToResponses(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(responsesBody, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	reasoning, _ := req["reasoning"].(map[string]any)
+	if reasoning == nil {
+		t.Fatal("reasoning is nil")
+	}
+	if reasoning["effort"] != "xhigh" {
+		t.Errorf("effort = %v, want xhigh", reasoning["effort"])
 	}
 }
 
@@ -451,6 +485,20 @@ func TestClaudeStreamConverter_FinishReason(t *testing.T) {
 	}
 }
 
+func TestClaudeStreamConverter_FinishReasonIncludesCacheTokens(t *testing.T) {
+	conv := NewClaudeStreamConverter("claude-sonnet-4-20250514", "msg_test123")
+
+	conv.ConvertChunk([]byte(`{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":30}}}`))
+	events := conv.ConvertChunk([]byte(`{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}`))
+
+	if !containsStr(events, `"cache_read_input_tokens":30`) {
+		t.Errorf("message_delta usage missing cache_read_input_tokens, got: %s", events)
+	}
+	if !containsStr(events, `"input_tokens":70`) {
+		t.Errorf("input_tokens should be normalized (100-30), got: %s", events)
+	}
+}
+
 func TestClaudeStreamConverter_ToolCallDelta(t *testing.T) {
 	conv := NewClaudeStreamConverter("claude-sonnet-4-20250514", "msg_test123")
 
@@ -471,6 +519,26 @@ func TestClaudeStreamConverter_ToolCallDelta(t *testing.T) {
 	}
 }
 
+func TestClaudeStreamConverter_MultiToolCallUsesDistinctIndices(t *testing.T) {
+	conv := NewClaudeStreamConverter("claude-sonnet-4-20250514", "msg_test123")
+
+	chunk := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":\"a\"}"}},{"index":1,"id":"call_2","function":{"name":"search","arguments":"{\"pattern\":\"x\"}"}}]},"index":0}]}`
+	events := conv.ConvertChunk([]byte(chunk))
+
+	if strings.Count(events, `"type":"content_block_start"`) < 2 {
+		t.Fatalf("expected at least 2 content_block_start events, got: %s", events)
+	}
+	if !strings.Contains(events, `"index":0`) {
+		t.Fatalf("missing index=0 for first tool block, got: %s", events)
+	}
+	if !strings.Contains(events, `"index":1`) {
+		t.Fatalf("missing index=1 for second tool block, got: %s", events)
+	}
+	if strings.Contains(events, `"id":""`) {
+		t.Fatalf("tool_use id should not be empty, got: %s", events)
+	}
+}
+
 func TestClaudeStreamConverter_ReasoningDelta(t *testing.T) {
 	conv := NewClaudeStreamConverter("claude-opus-4-6", "msg_test123")
 
@@ -481,6 +549,13 @@ func TestClaudeStreamConverter_ReasoningDelta(t *testing.T) {
 	}
 	if !containsStr(events, "thinking_delta") {
 		t.Error("missing thinking_delta")
+	}
+
+	// Transition from thinking to text should emit signature_delta before closing thinking block.
+	textChunk := `{"choices":[{"delta":{"content":"Done."},"index":0}]}`
+	events2 := conv.ConvertChunk([]byte(textChunk))
+	if !containsStr(events2, "signature_delta") {
+		t.Errorf("missing signature_delta when closing thinking block: %s", events2)
 	}
 }
 
@@ -499,14 +574,14 @@ func TestGetOpenAIModelID(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"claude-sonnet-4-20250514", "gpt-5.2-codex"},
-		{"claude-sonnet-4-6", "gpt-5.2-codex"},
-		{"claude-opus-4-6", "gpt-5.3-codex"},
-		{"claude-opus-4-5", "gpt-5.3-codex"},
+		{"claude-sonnet-4-20250514", "gpt-5.3-codex"},
+		{"claude-sonnet-4-6", "gpt-5.3-codex"},
+		{"claude-opus-4-6", "gpt-5.4-codex"},
+		{"claude-opus-4-5", "gpt-5.4-codex"},
 		{"claude-haiku-4-5", "gpt-5.2-codex"},
-		{"unknown-model", "gpt-5.3-codex"},
-		{"some-sonnet-variant", "gpt-5.2-codex"},
-		{"some-opus-variant", "gpt-5.3-codex"},
+		{"unknown-model", "gpt-5.4-codex"},
+		{"some-sonnet-variant", "gpt-5.3-codex"},
+		{"some-opus-variant", "gpt-5.4-codex"},
 	}
 	for _, tt := range tests {
 		got := GetOpenAIModelID(tt.input)

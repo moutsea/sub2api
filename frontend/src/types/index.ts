@@ -363,6 +363,7 @@ export interface CreateTempApiKeyRequest {
 export interface UpdateTempApiKeyRequest {
   name?: string
   status?: 'active' | 'inactive' | 'exhausted'
+  group_id?: number
   valid_days?: number
   daily_limit?: number
   total_quota?: number

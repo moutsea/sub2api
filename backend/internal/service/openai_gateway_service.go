@@ -172,6 +172,15 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash, accountID, openaiStickySessionTTL)
 }
 
+// InvalidateStickySession removes the sticky session binding so the next
+// request with the same session hash will not be pinned to a failed account.
+func (s *OpenAIGatewayService) InvalidateStickySession(ctx context.Context, groupID *int64, sessionHash string) {
+	if sessionHash == "" || s.cache == nil {
+		return
+	}
+	_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash)
+}
+
 // SelectAccount selects an OpenAI account with sticky session support
 func (s *OpenAIGatewayService) SelectAccount(ctx context.Context, groupID *int64, sessionHash string) (*Account, error) {
 	return s.SelectAccountForModel(ctx, groupID, sessionHash, "")

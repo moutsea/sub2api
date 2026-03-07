@@ -20,7 +20,8 @@ import (
 // For APIKey accounts: Claude → Chat Completions → upstream → Claude
 // For OAuth accounts: Claude → Responses API → upstream (chatgpt.com) → Claude
 func (s *OpenAIGatewayService) ForwardAsClaudeMessages(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
-	log.Printf("[openai-claude-compat] account=%s(%d) type=%s platform=%s", account.Name, account.ID, account.Type, account.Platform)
+	// High-frequency entry log is intentionally muted to reduce noise.
+	// log.Printf("[openai-claude-compat] account=%s(%d) type=%s platform=%s", account.Name, account.ID, account.Type, account.Platform)
 	if account.Type == AccountTypeOAuth {
 		return s.forwardClaudeViaResponsesAPI(ctx, c, account, body)
 	}
@@ -31,13 +32,15 @@ func (s *OpenAIGatewayService) ForwardAsClaudeMessages(ctx context.Context, c *g
 func (s *OpenAIGatewayService) forwardClaudeViaChatCompletions(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	startTime := time.Now()
 	prefix := fmt.Sprintf("[openai-claude-compat] account=%s(%d) type=apikey", account.Name, account.ID)
+	estimatedInputTokens := estimateClaudeRequestInputTokens(body)
 
 	// 1. Convert Claude request → OpenAI Chat Completions format
 	openaiBody, originalModel, wantStream, err := kiro.ConvertClaudeToOpenAI(body)
 	if err != nil {
 		return nil, fmt.Errorf("convert claude to openai: %w", err)
 	}
-	log.Printf("%s model=%s→%s stream=%v", prefix, originalModel, kiro.GetOpenAIModelID(originalModel), wantStream)
+	// High-frequency model mapping log is intentionally muted to reduce noise.
+	// log.Printf("%s model=%s→%s stream=%v", prefix, originalModel, kiro.GetOpenAIModelID(originalModel), wantStream)
 
 	// 2. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
@@ -52,13 +55,14 @@ func (s *OpenAIGatewayService) forwardClaudeViaChatCompletions(ctx context.Conte
 	}
 
 	// 4. Send request and handle response
-	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, openaiBody, originalModel, wantStream, startTime, prefix, false)
+	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, openaiBody, originalModel, wantStream, startTime, prefix, estimatedInputTokens, false)
 }
 
 // forwardClaudeViaResponsesAPI handles Claude → Responses API path (for OAuth accounts).
 func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	startTime := time.Now()
 	prefix := fmt.Sprintf("[openai-claude-compat] account=%s(%d) type=oauth", account.Name, account.ID)
+	estimatedInputTokens := estimateClaudeRequestInputTokens(body)
 
 	// 1. Convert Claude request → OpenAI Responses API format
 	responsesBody, originalModel, err := kiro.ConvertClaudeToResponses(body)
@@ -66,23 +70,30 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 		return nil, fmt.Errorf("convert claude to responses: %w", err)
 	}
 
-	// 2. Apply codex OAuth transform (model normalization, instructions, etc.)
+	// 2. Apply codex OAuth transform (model normalization, store/stream, etc.)
+	//    Preserve the original Claude system prompt — do NOT let applyCodexOAuthTransform
+	//    overwrite instructions with OpenCode/Codex headers.
 	var reqBody map[string]any
 	if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 		return nil, fmt.Errorf("parse responses body: %w", err)
 	}
+	origInstructions, _ := reqBody["instructions"].(string)
 	codexResult := applyCodexOAuthTransform(reqBody)
-	mappedModel := kiro.GetOpenAIModelID(originalModel)
-	if codexResult.NormalizedModel != "" {
-		mappedModel = codexResult.NormalizedModel
+	// Restore the original Claude system prompt that was set by ConvertClaudeToResponses.
+	if origInstructions != "" {
+		reqBody["instructions"] = origInstructions
 	}
+	// Keep a stable fallback so Claude-compat requests can still emit reasoning events
+	// even when upstream transforms or variant request paths omit reasoning.
+	ensureResponsesReasoning(reqBody)
 	// Re-serialize after transform
 	responsesBody, err = json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("serialize responses body: %w", err)
 	}
 
-	log.Printf("%s model=%s→%s (responses API)", prefix, originalModel, mappedModel)
+	// High-frequency model mapping log is intentionally muted to reduce noise.
+	// log.Printf("%s model=%s→%s (responses API)", prefix, originalModel, kiro.GetOpenAIModelID(originalModel))
 
 	// 3. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
@@ -98,7 +109,7 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 	}
 
 	// 5. Send request and handle response (Responses API SSE → Claude SSE)
-	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, responsesBody, originalModel, true, startTime, prefix, true)
+	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, responsesBody, originalModel, true, startTime, prefix, estimatedInputTokens, true)
 }
 
 // doClaudeCompatRequest sends the upstream request and handles the response, converting back to Claude format.
@@ -108,6 +119,7 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 	upstreamReq *http.Request, upstreamBody []byte,
 	originalModel string, wantStream bool,
 	startTime time.Time, prefix string,
+	estimatedInputTokens int,
 	isResponsesAPI bool,
 ) (*ForwardResult, error) {
 	// Send request
@@ -172,24 +184,29 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 
 	// Handle success response
 	var inputTokens, outputTokens int
+	var cacheCreationInputTokens, cacheReadInputTokens int
 	var firstTokenMs *int
 
 	if isResponsesAPI {
 		// Responses API always streams
-		result, err := s.handleClaudeCompatResponsesStream(resp, c, startTime, originalModel)
+		result, err := s.handleClaudeCompatResponsesStream(resp, c, startTime, originalModel, estimatedInputTokens)
 		if err != nil {
 			return nil, err
 		}
 		inputTokens = result.inputTokens
 		outputTokens = result.outputTokens
+		cacheCreationInputTokens = result.cacheCreationInputTokens
+		cacheReadInputTokens = result.cacheReadInputTokens
 		firstTokenMs = result.firstTokenMs
 	} else if wantStream {
-		result, err := s.handleClaudeCompatStreamResponse(resp, c, startTime, originalModel)
+		result, err := s.handleClaudeCompatStreamResponse(resp, c, startTime, originalModel, estimatedInputTokens)
 		if err != nil {
 			return nil, err
 		}
 		inputTokens = result.inputTokens
 		outputTokens = result.outputTokens
+		cacheCreationInputTokens = result.cacheCreationInputTokens
+		cacheReadInputTokens = result.cacheReadInputTokens
 		firstTokenMs = result.firstTokenMs
 	} else {
 		result, err := s.handleClaudeCompatNonStreamResponse(resp, c, originalModel)
@@ -198,6 +215,11 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 		}
 		inputTokens = result.inputTokens
 		outputTokens = result.outputTokens
+		cacheCreationInputTokens = result.cacheCreationInputTokens
+		cacheReadInputTokens = result.cacheReadInputTokens
+	}
+	if inputTokens == 0 && estimatedInputTokens > 0 {
+		inputTokens = estimatedInputTokens
 	}
 
 	log.Printf("%s status=ok input=%d output=%d duration=%v", prefix, inputTokens, outputTokens, time.Since(startTime))
@@ -205,8 +227,10 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 	return &ForwardResult{
 		RequestID: resp.Header.Get("x-request-id"),
 		Usage: ClaudeUsage{
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
+			InputTokens:              inputTokens,
+			OutputTokens:             outputTokens,
+			CacheCreationInputTokens: cacheCreationInputTokens,
+			CacheReadInputTokens:     cacheReadInputTokens,
 		},
 		Model:        originalModel,
 		Stream:       wantStream || isResponsesAPI,
@@ -217,9 +241,11 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 
 // claudeCompatResult holds parsed usage from response handling.
 type claudeCompatResult struct {
-	inputTokens  int
-	outputTokens int
-	firstTokenMs *int
+	inputTokens              int
+	outputTokens             int
+	cacheCreationInputTokens int
+	cacheReadInputTokens     int
+	firstTokenMs             *int
 }
 
 // handleClaudeCompatNonStreamResponse reads OpenAI response, converts to Claude format, writes to client.
@@ -240,15 +266,18 @@ func (s *OpenAIGatewayService) handleClaudeCompatNonStreamResponse(resp *http.Re
 	if usage != nil {
 		result.inputTokens = usage.InputTokens
 		result.outputTokens = usage.OutputTokens
+		result.cacheCreationInputTokens = usage.CacheCreationInputTokens
+		result.cacheReadInputTokens = usage.CacheReadInputTokens
 	}
 	return result, nil
 }
 
 // handleClaudeCompatStreamResponse reads OpenAI Chat Completions SSE stream, converts to Claude SSE.
-func (s *OpenAIGatewayService) handleClaudeCompatStreamResponse(resp *http.Response, c *gin.Context, startTime time.Time, originalModel string) (*claudeCompatResult, error) {
+func (s *OpenAIGatewayService) handleClaudeCompatStreamResponse(resp *http.Response, c *gin.Context, startTime time.Time, originalModel string, estimatedInputTokens int) (*claudeCompatResult, error) {
 	messageID := fmt.Sprintf("msg_%s", generateShortID())
 
 	converter := kiro.NewClaudeStreamConverter(originalModel, messageID)
+	converter.SetInputTokens(estimatedInputTokens)
 
 	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -261,7 +290,7 @@ func (s *OpenAIGatewayService) handleClaudeCompatStreamResponse(resp *http.Respo
 
 	var firstTokenMs *int
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, 4096, 256*1024), 256*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -293,17 +322,20 @@ func (s *OpenAIGatewayService) handleClaudeCompatStreamResponse(resp *http.Respo
 	c.Writer.Flush()
 
 	return &claudeCompatResult{
-		inputTokens:  converter.InputTokens(),
-		outputTokens: converter.OutputTokens(),
-		firstTokenMs: firstTokenMs,
+		inputTokens:              converter.InputTokens(),
+		outputTokens:             converter.OutputTokens(),
+		cacheCreationInputTokens: converter.CacheCreationInputTokens(),
+		cacheReadInputTokens:     converter.CacheReadInputTokens(),
+		firstTokenMs:             firstTokenMs,
 	}, nil
 }
 
 // handleClaudeCompatResponsesStream reads OpenAI Responses API SSE stream, converts to Claude SSE.
-func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Response, c *gin.Context, startTime time.Time, originalModel string) (*claudeCompatResult, error) {
+func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Response, c *gin.Context, startTime time.Time, originalModel string, estimatedInputTokens int) (*claudeCompatResult, error) {
 	messageID := fmt.Sprintf("msg_%s", generateShortID())
 
 	converter := kiro.NewResponsesStreamConverter(originalModel, messageID)
+	converter.SetInputTokens(estimatedInputTokens)
 
 	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -316,7 +348,7 @@ func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Resp
 
 	var firstTokenMs *int
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, 4096, 256*1024), 256*1024)
 
 	// Responses API SSE format: "event: xxx\ndata: {...}\n\n"
 	var currentEventType string
@@ -359,10 +391,44 @@ func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Resp
 	c.Writer.Flush()
 
 	return &claudeCompatResult{
-		inputTokens:  converter.InputTokens(),
-		outputTokens: converter.OutputTokens(),
-		firstTokenMs: firstTokenMs,
+		inputTokens:              converter.InputTokens(),
+		outputTokens:             converter.OutputTokens(),
+		cacheCreationInputTokens: converter.CacheCreationInputTokens(),
+		cacheReadInputTokens:     converter.CacheReadInputTokens(),
+		firstTokenMs:             firstTokenMs,
 	}, nil
+}
+
+func estimateClaudeRequestInputTokens(body []byte) int {
+	claudeReq, err := kiro.ParseClaudeRequestFromJSON(body)
+	if err != nil || claudeReq == nil {
+		return 0
+	}
+	return kiro.EstimateInputTokens(claudeReq)
+}
+
+func ensureResponsesReasoning(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	if !ok || reasoning == nil {
+		reqBody["reasoning"] = map[string]any{
+			"effort":  "xhigh",
+			"summary": "auto",
+		}
+		return true
+	}
+	modified := false
+	if effort, _ := reasoning["effort"].(string); strings.TrimSpace(effort) == "" {
+		reasoning["effort"] = "xhigh"
+		modified = true
+	}
+	if summary, _ := reasoning["summary"].(string); strings.TrimSpace(summary) == "" {
+		reasoning["summary"] = "auto"
+		modified = true
+	}
+	return modified
 }
 
 // handleClaudeCompatErrorResponse handles non-failover upstream errors, returning Claude-format error.

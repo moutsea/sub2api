@@ -356,3 +356,106 @@ func TruncateAndRetry(req *ClaudeRequest) (*ClaudeRequest, bool) {
 
 	return newReq, true
 }
+
+// CleanOrphanToolUsesInClaudeMessages validates tool_use/tool_result pairing across
+// Claude-format messages and removes orphaned tool_use blocks that have no matching
+// tool_result in any subsequent user message.
+//
+// Claude API requires every tool_use in an assistant message to have a corresponding
+// tool_result (with matching tool_use_id) in the immediately following user message.
+// Clients may send broken pairs due to interrupted tool execution, client-side
+// truncation, or streaming interruption.
+//
+// This is the Claude message format equivalent of cleanOrphanToolUses in
+// request_transformer.go (which operates on AWSQ HistoryEntry format).
+//
+// Returns true if any modification was made.
+func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) bool {
+	if len(messages) == 0 {
+		return false
+	}
+
+	// 1. Collect all tool_use IDs from assistant messages
+	allToolUseIDs := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, id := range extractToolUseIDs(msg) {
+			allToolUseIDs[id] = true
+		}
+	}
+
+	if len(allToolUseIDs) == 0 {
+		return false
+	}
+
+	// 2. Collect all tool_result IDs from user messages
+	pairedIDs := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		for _, id := range extractToolResultIDs(msg) {
+			pairedIDs[id] = true
+		}
+	}
+
+	// 3. Find orphaned tool_use IDs (have tool_use but no tool_result anywhere)
+	orphanedIDs := make(map[string]bool)
+	for id := range allToolUseIDs {
+		if !pairedIDs[id] {
+			orphanedIDs[id] = true
+		}
+	}
+
+	if len(orphanedIDs) == 0 {
+		return false
+	}
+
+	// 4. Remove orphaned tool_use blocks from assistant messages
+	modified := false
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+
+		content, ok := messages[i].Content.([]any)
+		if !ok {
+			continue
+		}
+
+		newContent := make([]any, 0, len(content))
+		contentModified := false
+
+		for _, block := range content {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				newContent = append(newContent, block)
+				continue
+			}
+
+			blockType, _ := blockMap["type"].(string)
+			if blockType == "tool_use" {
+				if id, _ := blockMap["id"].(string); orphanedIDs[id] {
+					contentModified = true
+					log.Printf("[kiro] removed orphan tool_use id=%s from assistant message", id)
+					continue // skip orphaned tool_use
+				}
+			}
+
+			newContent = append(newContent, block)
+		}
+
+		if contentModified {
+			modified = true
+			if len(newContent) == 0 {
+				// Backfill empty content to avoid sending message with no content blocks
+				newContent = []any{map[string]any{"type": "text", "text": "I understand."}}
+			}
+			messages[i].Content = newContent
+		}
+	}
+
+	return modified
+}

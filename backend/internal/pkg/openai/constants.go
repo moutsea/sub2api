@@ -15,6 +15,12 @@ type Model struct {
 
 // DefaultModels OpenAI models list
 var DefaultModels = []Model{
+	{ID: "gpt-5.4-codex-xhigh", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Codex XHigh"},
+	{ID: "gpt-5.4-codex-high", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Codex High"},
+	{ID: "gpt-5.4-codex-medium", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Codex Medium"},
+	{ID: "gpt-5.4-codex-low", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Codex Low"},
+	{ID: "gpt-5.4-codex", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Codex"},
+	{ID: "gpt-5.4", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4"},
 	{ID: "gpt-5.3-codex-xhigh", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex XHigh"},
 	{ID: "gpt-5.3-codex-high", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex High"},
 	{ID: "gpt-5.3-codex-medium", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Medium"},
@@ -40,7 +46,7 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel default model for testing OpenAI accounts
-const DefaultTestModel = "gpt-5.2-codex"
+const DefaultTestModel = "gpt-5.4-codex"
 
 // DefaultInstructions default instructions for non-Codex CLI requests
 // Content loaded from instructions.txt at compile time

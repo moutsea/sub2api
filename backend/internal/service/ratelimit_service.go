@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +35,11 @@ type geminiUsageCacheEntry struct {
 }
 
 const geminiPrecheckCacheTTL = time.Minute
+
+const (
+	defaultRateLimitFallback = 5 * time.Minute
+	openAI429Fallback        = 30 * time.Second
+)
 
 // NewRateLimitService 创建RateLimitService实例
 func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogRepository, cfg *config.Config, geminiQuotaService *GeminiQuotaService, tempUnschedCache TempUnschedCache) *RateLimitService {
@@ -368,12 +374,15 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		return
 	}
 
-	// 2. 解析重置时间
-	resetAt := s.parseResetTime(headers)
-
-	// 3. 检查 header 是否存在（记录警告但仍然标记）
-	if headers.Get("anthropic-ratelimit-unified-reset") == "" {
-		slog.Warn("429_without_reset_header", "account_id", account.ID, "using_default", "5m", "msg", upstreamMsg)
+	// 2. 解析重置时间（平台感知）
+	resetAt, resetSource := s.parseResetTime(account, headers)
+	if strings.HasPrefix(resetSource, "default:") {
+		slog.Warn("429_without_reset_header",
+			"account_id", account.ID,
+			"platform", account.Platform,
+			"fallback", resetSource,
+			"msg", upstreamMsg,
+		)
 	}
 
 	// 4. 如果是 Sonnet 模型限流，只设置模型级限流（不影响其他模型）
@@ -395,23 +404,117 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	slog.Info("account_rate_limited", "account_id", account.ID, "reset_at", resetAt, "msg", upstreamMsg)
 }
 
-// parseResetTime 解析重置时间，失败时返回默认5分钟
-func (s *RateLimitService) parseResetTime(headers http.Header) time.Time {
-	resetTimestamp := headers.Get("anthropic-ratelimit-unified-reset")
-	if resetTimestamp == "" {
-		slog.Warn("rate_limit_reset_header_missing", "using_default", "5m", "available_headers", headers)
-		return time.Now().Add(5 * time.Minute)
+// parseResetTime 解析 429 重置时间。
+// 返回值:
+//   - resetAt: 重置时间
+//   - source: 命中来源（便于日志诊断）
+func (s *RateLimitService) parseResetTime(account *Account, headers http.Header) (time.Time, string) {
+	now := time.Now()
+
+	platform := ""
+	if account != nil {
+		platform = account.Platform
 	}
 
-	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
-	if err != nil {
-		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err, "using_default", "5m")
-		return time.Now().Add(5 * time.Minute)
+	// Anthropic: 专属 reset 头优先，其次 Retry-After。
+	if platform == PlatformAnthropic {
+		if ts := strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-reset")); ts != "" {
+			if unixTs, err := strconv.ParseInt(ts, 10, 64); err == nil {
+				return time.Unix(unixTs, 0), "header:anthropic-ratelimit-unified-reset"
+			}
+		}
+		if resetAt, ok := parseRetryAfter(headers.Get("retry-after"), now); ok {
+			return resetAt, "header:retry-after"
+		}
+		return now.Add(defaultRateLimitFallback), "default:5m"
 	}
 
-	resetTime := time.Unix(ts, 0)
-	slog.Info("rate_limit_reset_parsed", "reset_timestamp", resetTimestamp, "reset_at", resetTime, "duration", time.Until(resetTime))
-	return resetTime
+	// OpenAI: Retry-After / x-ratelimit-reset-* 优先。
+	if platform == PlatformOpenAI {
+		if resetAt, ok := parseRetryAfter(headers.Get("retry-after"), now); ok {
+			return resetAt, "header:retry-after"
+		}
+		if resetAt, ok := parseOpenAIReset(headers.Get("x-ratelimit-reset-requests"), now); ok {
+			return resetAt, "header:x-ratelimit-reset-requests"
+		}
+		if resetAt, ok := parseOpenAIReset(headers.Get("x-ratelimit-reset-tokens"), now); ok {
+			return resetAt, "header:x-ratelimit-reset-tokens"
+		}
+		return now.Add(openAI429Fallback), "default:openai-30s"
+	}
+
+	// Unknown/other: 通用优先级（Retry-After -> OpenAI reset -> Anthropic reset）
+	if resetAt, ok := parseRetryAfter(headers.Get("retry-after"), now); ok {
+		return resetAt, "header:retry-after"
+	}
+	if resetAt, ok := parseOpenAIReset(headers.Get("x-ratelimit-reset-requests"), now); ok {
+		return resetAt, "header:x-ratelimit-reset-requests"
+	}
+	if resetAt, ok := parseOpenAIReset(headers.Get("x-ratelimit-reset-tokens"), now); ok {
+		return resetAt, "header:x-ratelimit-reset-tokens"
+	}
+	if ts := strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-reset")); ts != "" {
+		if unixTs, err := strconv.ParseInt(ts, 10, 64); err == nil {
+			return time.Unix(unixTs, 0), "header:anthropic-ratelimit-unified-reset"
+		}
+	}
+
+	return now.Add(defaultRateLimitFallback), "default:5m"
+}
+
+func parseRetryAfter(raw string, now time.Time) (time.Time, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, false
+	}
+
+	if secs, err := strconv.ParseFloat(value, 64); err == nil {
+		if secs < 0 {
+			secs = 0
+		}
+		d := time.Duration(math.Ceil(secs * float64(time.Second)))
+		return now.Add(d), true
+	}
+
+	if t, err := http.ParseTime(value); err == nil {
+		if t.Before(now) {
+			return now, true
+		}
+		return t, true
+	}
+
+	return time.Time{}, false
+}
+
+func parseOpenAIReset(raw string, now time.Time) (time.Time, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, false
+	}
+
+	// OpenAI 常见格式: "17ms", "1s", "1m0s"
+	if d, err := time.ParseDuration(value); err == nil {
+		if d < 0 {
+			d = 0
+		}
+		return now.Add(d), true
+	}
+
+	// 兼容纯数字:
+	// - 小值: 相对秒数
+	// - 大值(>= 1e9): unix 秒时间戳
+	if n, err := strconv.ParseFloat(value, 64); err == nil {
+		if n >= 1_000_000_000 {
+			return time.Unix(int64(n), 0), true
+		}
+		if n < 0 {
+			n = 0
+		}
+		d := time.Duration(math.Ceil(n * float64(time.Second)))
+		return now.Add(d), true
+	}
+
+	return time.Time{}, false
 }
 
 func (s *RateLimitService) shouldScopeClaudeSonnetRateLimit(account *Account, responseBody []byte) bool {

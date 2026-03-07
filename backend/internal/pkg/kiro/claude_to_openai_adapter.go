@@ -10,22 +10,22 @@ import (
 
 // Claude model → OpenAI model mapping
 var claudeToOpenAIModelMap = map[string]string{
-	// Opus series → gpt-5.3-codex
-	"claude-opus-4-6":            "gpt-5.3-codex",
-	"claude-opus-4-6-1m":         "gpt-5.3-codex",
-	"claude-opus-4-5":            "gpt-5.3-codex",
-	"claude-opus-4-5-20251101":   "gpt-5.3-codex",
-	"claude-opus-4.5":            "gpt-5.3-codex",
-	// Sonnet series → gpt-5.2-codex
-	"claude-sonnet-4-6":            "gpt-5.2-codex",
-	"claude-sonnet-4-6-1m":         "gpt-5.2-codex",
-	"claude-sonnet-4-5":            "gpt-5.2-codex",
-	"claude-sonnet-4-5-20250929":   "gpt-5.2-codex",
-	"claude-sonnet-4-20250514":     "gpt-5.2-codex",
-	"claude-3-7-sonnet-20250219":   "gpt-5.2-codex",
-	"claude-3-5-sonnet-20241022":   "gpt-5.2-codex",
-	"claude-3-5-sonnet-latest":     "gpt-5.2-codex",
-	"claude-3-5-sonnet-v2":         "gpt-5.2-codex",
+	// Opus series → gpt-5.4-codex
+	"claude-opus-4-6":            "gpt-5.4-codex",
+	"claude-opus-4-6-1m":         "gpt-5.4-codex",
+	"claude-opus-4-5":            "gpt-5.4-codex",
+	"claude-opus-4-5-20251101":   "gpt-5.4-codex",
+	"claude-opus-4.5":            "gpt-5.4-codex",
+	// Sonnet series → gpt-5.3-codex
+	"claude-sonnet-4-6":            "gpt-5.3-codex",
+	"claude-sonnet-4-6-1m":         "gpt-5.3-codex",
+	"claude-sonnet-4-5":            "gpt-5.3-codex",
+	"claude-sonnet-4-5-20250929":   "gpt-5.3-codex",
+	"claude-sonnet-4-20250514":     "gpt-5.3-codex",
+	"claude-3-7-sonnet-20250219":   "gpt-5.3-codex",
+	"claude-3-5-sonnet-20241022":   "gpt-5.3-codex",
+	"claude-3-5-sonnet-latest":     "gpt-5.3-codex",
+	"claude-3-5-sonnet-v2":         "gpt-5.3-codex",
 	// Haiku series → gpt-5.2-codex (fallback to lighter model)
 	"claude-haiku-4-5":          "gpt-5.2-codex",
 	"claude-haiku-4-5-20251001": "gpt-5.2-codex",
@@ -33,7 +33,7 @@ var claudeToOpenAIModelMap = map[string]string{
 	"claude-3-5-haiku-latest":   "gpt-5.2-codex",
 }
 
-const defaultOpenAIModel = "gpt-5.3-codex"
+const defaultOpenAIModel = "gpt-5.4-codex"
 
 // GetOpenAIModelID maps a Claude model name to an OpenAI model ID.
 func GetOpenAIModelID(claudeModel string) string {
@@ -42,11 +42,14 @@ func GetOpenAIModelID(claudeModel string) string {
 	}
 	// Check prefix-based matching for unknown versions
 	lower := strings.ToLower(claudeModel)
-	if strings.Contains(lower, "sonnet") || strings.Contains(lower, "haiku") {
+	if strings.Contains(lower, "haiku") {
 		return "gpt-5.2-codex"
 	}
-	if strings.Contains(lower, "opus") {
+	if strings.Contains(lower, "sonnet") {
 		return "gpt-5.3-codex"
+	}
+	if strings.Contains(lower, "opus") {
+		return "gpt-5.4-codex"
 	}
 	return defaultOpenAIModel
 }
@@ -119,11 +122,9 @@ func ConvertClaudeToOpenAI(body []byte) (openaiBody []byte, originalModel string
 		}
 	}
 
-	// thinking → reasoning
-	if thinking, ok := req["thinking"].(map[string]any); ok {
-		if converted := convertClaudeThinkingToOpenAI(thinking); converted != nil {
-			openaiReq["reasoning"] = converted
-		}
+	// Force reasoning effort for Claude-compat OpenAI path.
+	openaiReq["reasoning"] = map[string]any{
+		"effort": "xhigh",
 	}
 
 	openaiBody, err = json.Marshal(openaiReq)
@@ -418,24 +419,4 @@ func convertClaudeToolChoiceToOpenAI(tc any) any {
 		return "none"
 	}
 	return nil
-}
-
-// convertClaudeThinkingToOpenAI converts Claude thinking config to OpenAI reasoning.
-func convertClaudeThinkingToOpenAI(thinking map[string]any) map[string]any {
-	thinkingType, _ := thinking["type"].(string)
-	if thinkingType != "enabled" && thinkingType != "adaptive" {
-		return nil
-	}
-	budgetTokens, _ := thinking["budget_tokens"].(float64)
-	effort := "high"
-	if budgetTokens > 0 {
-		if budgetTokens < 5000 {
-			effort = "low"
-		} else if budgetTokens < 20000 {
-			effort = "medium"
-		}
-	}
-	return map[string]any{
-		"effort": effort,
-	}
 }

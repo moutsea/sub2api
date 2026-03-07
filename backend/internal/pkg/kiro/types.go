@@ -337,6 +337,11 @@ type StreamEvent struct {
 	// BackendUsage
 	Credits           float64
 	ContextPercentage float64
+	HasTokenUsage     bool
+	InputTokens       int
+	OutputTokens      int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 
 	// Error
 	ErrorType    string

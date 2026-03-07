@@ -193,9 +193,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, reqBody)
 
 	const maxAccountSwitches = 3
+	const maxTotalSwitches = 10
 	switchCount := 0
+	totalSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	lastFailoverStatus := 0
+	lastFailoverMsg := ""
 
 	for {
 		// Select account supporting the requested model
@@ -207,7 +210,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 				return
 			}
-			h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+			h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 			return
 		}
 		account := selection.Account
@@ -282,14 +286,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}
-				if switchCount >= maxAccountSwitches {
-					lastFailoverStatus = failoverErr.StatusCode
-					h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+				lastFailoverStatus = failoverErr.StatusCode
+				lastFailoverMsg = failoverErr.Message
+				// 全局硬上限：单请求内最多切换 10 次，避免过长链路。
+				if totalSwitchCount >= maxTotalSwitches {
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 					return
 				}
-				lastFailoverStatus = failoverErr.StatusCode
-				switchCount++
-				log.Printf("Account %d: upstream error %d, switching account %d/%d", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+				if failoverErr.StatusCode == http.StatusTooManyRequests {
+					// 429 仅受全局上限约束，允许更多切换。
+					totalSwitchCount++
+					log.Printf("Account %d: upstream 429, rate-limit failover (total=%d/%d)", account.ID, totalSwitchCount, maxTotalSwitches)
+				} else {
+					// 非 429 维持较低切换上限。
+					if switchCount >= maxAccountSwitches {
+						h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+						h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
+						return
+					}
+					switchCount++
+					totalSwitchCount++
+					log.Printf("Account %d: upstream error %d, switching account %d/%d (total=%d/%d)", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches, totalSwitchCount, maxTotalSwitches)
+				}
 				continue
 			}
 			// Error response already handled in Forward, just log
@@ -428,9 +447,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, reqBody)
 
 	const maxAccountSwitches = 3
+	const maxTotalSwitches = 10
 	switchCount := 0
+	totalSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	lastFailoverStatus := 0
+	lastFailoverMsg := ""
 
 	for {
 		log.Printf("[OpenAI CC Handler] Selecting account: groupID=%v model=%s", apiKey.GroupID, reqModel)
@@ -441,12 +463,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 				return
 			}
+			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
 			if lastFailoverStatus == 0 {
 				h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error",
 					"No available accounts for Chat Completions endpoint", streamStarted)
 				return
 			}
-			h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+			h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 			return
 		}
 		account := selection.Account
@@ -528,14 +551,29 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}
-				if switchCount >= maxAccountSwitches {
-					lastFailoverStatus = failoverErr.StatusCode
-					h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+				lastFailoverStatus = failoverErr.StatusCode
+				lastFailoverMsg = failoverErr.Message
+				// 全局硬上限：单请求内最多切换 10 次，避免过长链路。
+				if totalSwitchCount >= maxTotalSwitches {
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 					return
 				}
-				lastFailoverStatus = failoverErr.StatusCode
-				switchCount++
-				log.Printf("Account %d: upstream error %d, switching account %d/%d", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+				if failoverErr.StatusCode == http.StatusTooManyRequests {
+					// 429 仅受全局上限约束，允许更多切换。
+					totalSwitchCount++
+					log.Printf("Account %d: upstream 429, rate-limit failover (total=%d/%d)", account.ID, totalSwitchCount, maxTotalSwitches)
+				} else {
+					// 非 429 维持较低切换上限。
+					if switchCount >= maxAccountSwitches {
+						h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+						h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
+						return
+					}
+					switchCount++
+					totalSwitchCount++
+					log.Printf("Account %d: upstream error %d, switching account %d/%d (total=%d/%d)", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches, totalSwitchCount, maxTotalSwitches)
+				}
 				continue
 			}
 			log.Printf("Account %d: ForwardChatCompletions failed: %v", account.ID, err)
@@ -580,13 +618,19 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 		fmt.Sprintf("Concurrency limit exceeded for %s, please retry later", slotType), streamStarted)
 }
 
-func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, streamStarted bool) {
-	status, errType, errMsg := h.mapUpstreamError(statusCode)
+func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, lastMessage string, streamStarted bool) {
+	status, errType, errMsg := h.mapUpstreamError(statusCode, lastMessage)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
-func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, string) {
+func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int, lastMessage string) (int, string, string) {
 	switch statusCode {
+	case 400:
+		msg := "Invalid request"
+		if lastMessage != "" {
+			msg = "Invalid request: " + lastMessage
+		}
+		return http.StatusBadRequest, "invalid_request_error", msg
 	case 401:
 		return http.StatusBadGateway, "upstream_error", "Upstream authentication failed, please contact administrator"
 	case 403:

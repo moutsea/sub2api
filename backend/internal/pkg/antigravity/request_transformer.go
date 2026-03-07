@@ -157,7 +157,7 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	v1Req := V1InternalRequest{
 		Project:     projectID,
 		RequestID:   "agent-" + uuid.New().String(),
-		UserAgent:   "antigravity", // 固定值，与官方客户端一致
+		UserAgent:   UserAgent, // 与 Header 统一
 		RequestType: requestType,
 		Model:       targetModel,
 		Request:     innerRequest,

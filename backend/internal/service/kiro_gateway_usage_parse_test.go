@@ -1,0 +1,50 @@
+package service
+
+import "testing"
+
+func TestUpdateClaudeUsageFromSSEData_MessageStartAndDelta(t *testing.T) {
+	usage := &ClaudeUsage{}
+
+	startUpdated := updateClaudeUsageFromSSEData(`{"type":"message_start","message":{"usage":{"input_tokens":123,"cache_creation_input_tokens":11}}}`, usage)
+	if !startUpdated {
+		t.Fatal("expected message_start usage to be parsed")
+	}
+	if usage.InputTokens != 123 {
+		t.Fatalf("input_tokens=%d, want 123", usage.InputTokens)
+	}
+	if usage.CacheCreationInputTokens != 11 {
+		t.Fatalf("cache_creation_input_tokens=%d, want 11", usage.CacheCreationInputTokens)
+	}
+
+	deltaUpdated := updateClaudeUsageFromSSEData(`{"type":"message_delta","usage":{"output_tokens":45,"cache_read_input_tokens":6}}`, usage)
+	if !deltaUpdated {
+		t.Fatal("expected message_delta usage to be parsed")
+	}
+	if usage.OutputTokens != 45 {
+		t.Fatalf("output_tokens=%d, want 45", usage.OutputTokens)
+	}
+	if usage.CacheReadInputTokens != 6 {
+		t.Fatalf("cache_read_input_tokens=%d, want 6", usage.CacheReadInputTokens)
+	}
+}
+
+func TestExtractClaudeUsageFromJSON(t *testing.T) {
+	body := []byte(`{"type":"message","usage":{"input_tokens":77,"output_tokens":13,"cache_creation_input_tokens":8,"cache_read_input_tokens":9}}`)
+
+	usage, ok := extractClaudeUsageFromJSON(body)
+	if !ok {
+		t.Fatal("expected usage to be extracted")
+	}
+	if usage.InputTokens != 77 {
+		t.Fatalf("input_tokens=%d, want 77", usage.InputTokens)
+	}
+	if usage.OutputTokens != 13 {
+		t.Fatalf("output_tokens=%d, want 13", usage.OutputTokens)
+	}
+	if usage.CacheCreationInputTokens != 8 {
+		t.Fatalf("cache_creation_input_tokens=%d, want 8", usage.CacheCreationInputTokens)
+	}
+	if usage.CacheReadInputTokens != 9 {
+		t.Fatalf("cache_read_input_tokens=%d, want 9", usage.CacheReadInputTokens)
+	}
+}

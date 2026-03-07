@@ -359,6 +359,14 @@
           <input v-model="editForm.name" type="text" class="input" />
         </div>
         <div>
+          <label class="label">{{ t('admin.tempApiKeys.group') }} *</label>
+          <Select
+            v-model="editForm.group_id"
+            :options="groupOptions"
+            :placeholder="t('admin.tempApiKeys.selectGroup')"
+          />
+        </div>
+        <div>
           <label class="label">{{ t('admin.tempApiKeys.status') }}</label>
           <Select
             v-model="editForm.status"
@@ -526,6 +534,7 @@ const editingKey = ref<TempApiKey | null>(null)
 const editForm = ref({
   name: '',
   status: 'active' as 'active' | 'inactive' | 'exhausted',
+  group_id: 0,
   valid_days: 7,
   daily_limit: 1000,
   total_quota: 0,
@@ -683,6 +692,7 @@ const handleEdit = (key: TempApiKey) => {
   editForm.value = {
     name: key.name,
     status: key.status === 'expired' ? 'inactive' : key.status,
+    group_id: key.group_id,
     valid_days: key.valid_days,
     daily_limit: key.daily_limit,
     total_quota: key.total_quota || 0,
@@ -693,11 +703,16 @@ const handleEdit = (key: TempApiKey) => {
 
 const handleUpdate = async () => {
   if (!editingKey.value) return
+  if (!editForm.value.group_id) {
+    appStore.showError(t('admin.tempApiKeys.fillRequired'))
+    return
+  }
   updating.value = true
   try {
     const payload: Record<string, unknown> = {
       name: editForm.value.name,
       status: editForm.value.status,
+      group_id: editForm.value.group_id,
     }
     if (editingKey.value.key_type === 'quota_only') {
       payload.total_quota = editForm.value.total_quota

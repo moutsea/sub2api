@@ -104,6 +104,7 @@ func (r *TempAPIKeyRepo) Update(ctx context.Context, key *service.TempAPIKey) er
 	updater := r.client.TempAPIKey.UpdateOneID(key.ID).
 		SetName(key.Name).
 		SetStatus(key.Status).
+		SetGroupID(key.GroupID).
 		SetValidDays(key.ValidDays).
 		SetDailyLimit(key.DailyLimit)
 

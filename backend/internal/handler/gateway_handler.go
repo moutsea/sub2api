@@ -195,6 +195,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		switchCount := 0
 		failedAccountIDs := make(map[int64]struct{})
 		lastFailoverStatus := 0
+		lastFailoverMsg := ""
 
 		for {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, failedAccountIDs, "") // Gemini 不使用会话限制
@@ -203,7 +204,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 					return
 				}
-				h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+				h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 				return
 			}
 			account := selection.Account
@@ -288,8 +289,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverStatus = failoverErr.StatusCode
+					lastFailoverMsg = failoverErr.Message
 					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+						h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 						return
 					}
 					switchCount++
@@ -335,9 +337,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	const maxAccountSwitches = 10
+	const maxBadRequestSwitches = 3 // 400 errors are likely deterministic; limit retries
 	switchCount := 0
+	badRequestSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	lastFailoverStatus := 0
+	lastFailoverMsg := ""
 
 	for {
 		// 选择支持该模型的账号
@@ -347,7 +352,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 				return
 			}
-			h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+			h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 			return
 		}
 		account := selection.Account
@@ -442,8 +447,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverStatus = failoverErr.StatusCode
-				if switchCount >= maxAccountSwitches {
-					h.handleFailoverExhausted(c, lastFailoverStatus, streamStarted)
+				lastFailoverMsg = failoverErr.Message
+				// 400 errors: stricter retry limit (likely deterministic, switching rarely helps)
+				if failoverErr.StatusCode == http.StatusBadRequest {
+					badRequestSwitchCount++
+				}
+				if switchCount >= maxAccountSwitches || badRequestSwitchCount >= maxBadRequestSwitches {
+					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 					return
 				}
 				switchCount++
@@ -664,13 +674,19 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 		fmt.Sprintf("Concurrency limit exceeded for %s, please retry later", slotType), streamStarted)
 }
 
-func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, streamStarted bool) {
-	status, errType, errMsg := h.mapUpstreamError(statusCode)
+func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, lastMessage string, streamStarted bool) {
+	status, errType, errMsg := h.mapUpstreamError(statusCode, lastMessage)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
-func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) {
+func (h *GatewayHandler) mapUpstreamError(statusCode int, lastMessage string) (int, string, string) {
 	switch statusCode {
+	case 400:
+		msg := "Invalid request"
+		if lastMessage != "" {
+			msg = "Invalid request: " + lastMessage
+		}
+		return http.StatusBadRequest, "invalid_request_error", msg
 	case 401:
 		return http.StatusBadGateway, "upstream_error", "Upstream authentication failed, please contact administrator"
 	case 403:

@@ -212,6 +212,11 @@ func (m *mockGatewayCacheForPlatform) RefreshSessionTTL(ctx context.Context, gro
 	return nil
 }
 
+func (m *mockGatewayCacheForPlatform) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
+	delete(m.sessionBindings, sessionHash)
+	return nil
+}
+
 type mockGroupRepoForGateway struct {
 	groups           map[int64]*Group
 	getByIDCalls     int

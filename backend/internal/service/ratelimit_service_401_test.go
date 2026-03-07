@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,9 +16,11 @@ import (
 
 type rateLimitAccountRepoStub struct {
 	mockAccountRepoForGemini
-	setErrorCalls int
-	tempCalls     int
-	lastErrorMsg  string
+	setErrorCalls      int
+	tempCalls          int
+	setRateLimitedCall int
+	lastErrorMsg       string
+	lastRateLimitReset time.Time
 }
 
 func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, errorMsg string) error {
@@ -28,6 +31,12 @@ func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, error
 
 func (r *rateLimitAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.tempCalls++
+	return nil
+}
+
+func (r *rateLimitAccountRepoStub) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
+	r.setRateLimitedCall++
+	r.lastRateLimitReset = resetAt
 	return nil
 }
 
@@ -118,4 +127,156 @@ func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 	require.True(t, shouldDisable)
 	require.Equal(t, 1, repo.setErrorCalls)
 	require.Empty(t, invalidator.accounts)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI429RetryAfter(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       201,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	start := time.Now()
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		http.Header{"Retry-After": []string{"2"}},
+		[]byte(`{"error":{"message":"Rate limit reached"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	require.WithinDuration(t, start.Add(2*time.Second), repo.lastRateLimitReset, 1500*time.Millisecond)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI429DefaultFallback(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       202,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	start := time.Now()
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		http.Header{},
+		[]byte(`{"error":{"message":"Rate limit exceeded"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	require.WithinDuration(t, start.Add(30*time.Second), repo.lastRateLimitReset, 2*time.Second)
+}
+
+func TestRateLimitService_HandleUpstreamError_Anthropic429UsesResetHeader(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       203,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+	}
+
+	target := time.Now().Add(90 * time.Second).Truncate(time.Second)
+	headers := http.Header{
+		"Anthropic-Ratelimit-Unified-Reset": []string{strconv.FormatInt(target.Unix(), 10)},
+	}
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"error":{"message":"Rate limit exceeded"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	require.WithinDuration(t, target, repo.lastRateLimitReset, time.Second)
+}
+
+func TestRateLimitService_HandleUpstreamError_Anthropic429HeaderPrecedence(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       205,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+	}
+
+	target := time.Now().Add(80 * time.Second).Truncate(time.Second)
+	headers := http.Header{
+		"Anthropic-Ratelimit-Unified-Reset": []string{strconv.FormatInt(target.Unix(), 10)},
+		"Retry-After":                       []string{"2"},
+	}
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"error":{"message":"Rate limit exceeded"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	require.WithinDuration(t, target, repo.lastRateLimitReset, time.Second)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI429UsesOpenAIResetHeader(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       204,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	start := time.Now()
+	headers := http.Header{
+		"X-Ratelimit-Reset-Requests": []string{"1500ms"},
+	}
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"error":{"message":"Rate limit reached"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	require.WithinDuration(t, start.Add(1500*time.Millisecond), repo.lastRateLimitReset, 800*time.Millisecond)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI429HeaderPrecedence(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       206,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	start := time.Now()
+	headers := http.Header{
+		"Retry-After":                []string{"2"},
+		"X-Ratelimit-Reset-Requests": []string{"1500ms"},
+	}
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"error":{"message":"Rate limit reached"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	require.WithinDuration(t, start.Add(2*time.Second), repo.lastRateLimitReset, 1500*time.Millisecond)
 }

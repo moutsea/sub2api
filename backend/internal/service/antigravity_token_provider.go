@@ -291,7 +291,7 @@ func (p *AntigravityTokenProvider) testConnection(ctx context.Context, account *
 	wrapped := map[string]any{
 		"project":     projectID,
 		"requestId":   "recovery-test",
-		"userAgent":   "antigravity",
+		"userAgent":   antigravity.UserAgent,
 		"requestType": "agent",
 		"model":       "claude-sonnet-4-5",
 		"request":     json.RawMessage(payloadBytes),

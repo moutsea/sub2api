@@ -119,6 +119,7 @@ type GatewayCache interface {
 	GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error)
 	SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error
 	RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error
+	DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error
 }
 
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil
@@ -170,9 +171,13 @@ type ForwardResult struct {
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
 	StatusCode int
+	Message    string // upstream error message (sanitized), preserved across failover for final response
 }
 
 func (e *UpstreamFailoverError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("upstream error: %d message=%s (failover)", e.StatusCode, e.Message)
+	}
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
 }
 
@@ -2543,7 +2548,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if readErr == nil {
 				_ = resp.Body.Close()
 
-				if s.isThinkingBlockSignatureError(respBody) {
+				if isThinkingBlockSignatureError(respBody) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						Platform:           account.Platform,
 						AccountID:          account.ID,
@@ -2598,7 +2603,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 							retryRespBody, retryReadErr := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
 							_ = retryResp.Body.Close()
-							if retryReadErr == nil && retryResp.StatusCode == 400 && s.isThinkingBlockSignatureError(retryRespBody) {
+							if retryReadErr == nil && retryResp.StatusCode == 400 && isThinkingBlockSignatureError(retryRespBody) {
 								appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 									Platform:           account.Platform,
 									AccountID:          account.ID,
@@ -2945,6 +2950,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		req.Header.Set("authorization", "Bearer "+token)
 	} else {
 		req.Header.Set("x-api-key", token)
+		// Anthropic-compatible upstreams may require Authorization even when x-api-key is present.
+		if account.Platform == PlatformAnthropic {
+			req.Header.Set("authorization", "Bearer "+token)
+		}
 	}
 
 	// 白名单透传headers
@@ -3068,7 +3077,7 @@ func truncateForLog(b []byte, maxBytes int) string {
 
 // isThinkingBlockSignatureError 检测是否是thinking block相关错误
 // 这类错误可以通过过滤thinking blocks并重试来解决
-func (s *GatewayService) isThinkingBlockSignatureError(respBody []byte) bool {
+func isThinkingBlockSignatureError(respBody []byte) bool {
 	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 	if msg == "" {
 		return false
@@ -3951,7 +3960,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// 检测 thinking block 签名错误（400）并重试一次（过滤 thinking blocks）
-	if resp.StatusCode == 400 && s.isThinkingBlockSignatureError(respBody) {
+	if resp.StatusCode == 400 && isThinkingBlockSignatureError(respBody) {
 		log.Printf("Account %d: detected thinking block signature error on count_tokens, retrying with filtered thinking blocks", account.ID)
 
 		filteredBody := FilterThinkingBlocksForRetry(body)
@@ -4057,6 +4066,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		req.Header.Set("authorization", "Bearer "+token)
 	} else {
 		req.Header.Set("x-api-key", token)
+		// Anthropic-compatible upstreams may require Authorization even when x-api-key is present.
+		if account.Platform == PlatformAnthropic {
+			req.Header.Set("authorization", "Bearer "+token)
+		}
 	}
 
 	// 白名单透传 headers
