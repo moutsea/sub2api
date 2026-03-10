@@ -357,6 +357,160 @@ func TruncateAndRetry(req *ClaudeRequest) (*ClaudeRequest, bool) {
 	return newReq, true
 }
 
+// ForceTruncateMessages is a fallback truncation strategy used when
+// TruncateMessagesIfNeeded fails to find safe truncation points.
+// Unlike the safe version, this function:
+//  1. Ignores tool_use/tool_result pairing constraints
+//  2. Removes messages from the beginning until under targetTokens
+//  3. Ensures the first remaining message has role "user"
+//  4. Cleans up orphaned tool_use/tool_result blocks afterwards
+//
+// This is more aggressive and may break tool continuity, but prevents
+// the upstream "input is too long" rejection which is worse.
+func ForceTruncateMessages(req *ClaudeRequest, targetTokens int) (*ClaudeRequest, bool) {
+	if req == nil || len(req.Messages) <= 4 {
+		return req, false
+	}
+
+	messages := req.Messages
+	fixedTokens := estimateFixedTokens(req)
+	msgTokens := computeMessageTokens(messages)
+	suffixSum := computeSuffixSum(msgTokens)
+
+	totalTokens := fixedTokens + suffixSum[0]
+	if totalTokens <= targetTokens {
+		return req, false
+	}
+
+	// Find the earliest point where we're under target,
+	// ensuring we keep at least 4 messages and start with a "user" message.
+	minKeep := 4
+	maxRemove := len(messages) - minKeep
+
+	bestPoint := -1
+	for i := 1; i <= maxRemove; i++ {
+		tokensIfTruncated := fixedTokens + suffixSum[i]
+		// Must start with a user message
+		if messages[i].Role != "user" {
+			continue
+		}
+		if tokensIfTruncated <= targetTokens {
+			bestPoint = i
+			break
+		}
+	}
+
+	// If we couldn't reach the target, take the most aggressive valid point
+	if bestPoint == -1 {
+		for i := maxRemove; i >= 1; i-- {
+			if messages[i].Role == "user" {
+				bestPoint = i
+				break
+			}
+		}
+	}
+
+	if bestPoint == -1 || bestPoint >= len(messages) {
+		log.Printf("[kiro] force truncation: no valid truncation point found (no user-role message in truncation window, messages=%d, minKeep=%d)", len(messages), minKeep)
+		return req, false
+	}
+
+	truncatedMessages := make([]ClaudeMessage, len(messages)-bestPoint)
+	copy(truncatedMessages, messages[bestPoint:])
+
+	// Clean orphaned tool_use/tool_result pairs created by the aggressive truncation
+	CleanOrphanToolUsesInClaudeMessages(truncatedMessages)
+
+	// Also clean orphaned tool_results in user messages (tool_use was removed)
+	cleanOrphanToolResultsInClaudeMessages(truncatedMessages)
+
+	newTokens := fixedTokens + suffixSum[bestPoint]
+	log.Printf("[kiro] force truncation: removed %d/%d messages, tokens %d -> %d (target %d)",
+		bestPoint, len(messages), totalTokens, newTokens, targetTokens)
+
+	newReq := &ClaudeRequest{
+		Model:       req.Model,
+		Messages:    truncatedMessages,
+		System:      req.System,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+		Stream:      req.Stream,
+		Thinking:    req.Thinking,
+	}
+
+	return newReq, true
+}
+
+// cleanOrphanToolResultsInClaudeMessages removes tool_result blocks from user messages
+// that reference tool_use IDs not present in any assistant message.
+// This is the complement of CleanOrphanToolUsesInClaudeMessages.
+func cleanOrphanToolResultsInClaudeMessages(messages []ClaudeMessage) bool {
+	if len(messages) == 0 {
+		return false
+	}
+
+	// Collect all tool_use IDs from assistant messages
+	allToolUseIDs := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, id := range extractToolUseIDs(msg) {
+			allToolUseIDs[id] = true
+		}
+	}
+
+	// Remove tool_results that reference non-existent tool_use IDs
+	modified := false
+	for i := range messages {
+		if messages[i].Role != "user" {
+			continue
+		}
+
+		content, ok := messages[i].Content.([]any)
+		if !ok {
+			continue
+		}
+
+		newContent := make([]any, 0, len(content))
+		contentModified := false
+
+		for _, block := range content {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				newContent = append(newContent, block)
+				continue
+			}
+
+			blockType, _ := blockMap["type"].(string)
+			if blockType == "tool_result" {
+				if toolUseID, _ := blockMap["tool_use_id"].(string); toolUseID != "" {
+					if !allToolUseIDs[toolUseID] {
+						contentModified = true
+						log.Printf("[kiro] removed orphan tool_result tool_use_id=%s from user message", toolUseID)
+						continue // skip orphaned tool_result
+					}
+				}
+			}
+
+			newContent = append(newContent, block)
+		}
+
+		if contentModified {
+			modified = true
+			if len(newContent) == 0 {
+				// Backfill: user message must have content
+				newContent = []any{map[string]any{"type": "text", "text": "Continue"}}
+			}
+			messages[i].Content = newContent
+		}
+	}
+
+	return modified
+}
+
 // CleanOrphanToolUsesInClaudeMessages validates tool_use/tool_result pairing across
 // Claude-format messages and removes orphaned tool_use blocks that have no matching
 // tool_result in any subsequent user message.

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -71,6 +73,11 @@ type KiroGatewayService struct {
 	rateLimitService *RateLimitService
 	httpUpstream     HTTPUpstream
 	settingService   *SettingService
+	usageCache       *UsageCache
+	proxyRepo        ProxyRepository // proxy pool data source for Free-tier rotation
+	proxyPool        []Proxy         // cached active proxy list
+	proxyPoolMu      sync.RWMutex    // protects proxyPool
+	proxyPoolUpdated time.Time       // cache timestamp
 }
 
 // NewKiroGatewayService creates a new KiroGatewayService
@@ -80,6 +87,8 @@ func NewKiroGatewayService(
 	rateLimitService *RateLimitService,
 	httpUpstream HTTPUpstream,
 	settingService *SettingService,
+	usageCache *UsageCache,
+	proxyRepo ProxyRepository,
 ) *KiroGatewayService {
 	return &KiroGatewayService{
 		accountRepo:      accountRepo,
@@ -87,12 +96,134 @@ func NewKiroGatewayService(
 		rateLimitService: rateLimitService,
 		httpUpstream:     httpUpstream,
 		settingService:   settingService,
+		usageCache:       usageCache,
+		proxyRepo:        proxyRepo,
 	}
 }
 
 // GetTokenProvider returns the token provider
 func (s *KiroGatewayService) GetTokenProvider() *KiroTokenProvider {
 	return s.tokenProvider
+}
+
+const (
+	// freeTierMachineIDRotatePercent is the probability (0-100) of using a random machine ID
+	// for Free-tier accounts instead of the deterministic SHA256(refreshToken) one.
+	freeTierMachineIDRotatePercent = 20
+
+	// proxyPoolCacheTTL is how long the active proxy list is cached before refresh.
+	proxyPoolCacheTTL = 5 * time.Minute
+)
+
+// getActiveProxyPool returns the cached list of active proxies, refreshing if stale.
+// Fail-open: returns stale data if refresh fails; returns nil if no data at all.
+func (s *KiroGatewayService) getActiveProxyPool(ctx context.Context) []Proxy {
+	if s.proxyRepo == nil {
+		return nil
+	}
+
+	// Fast path: read lock check
+	s.proxyPoolMu.RLock()
+	if time.Since(s.proxyPoolUpdated) < proxyPoolCacheTTL && len(s.proxyPool) > 0 {
+		pool := s.proxyPool
+		s.proxyPoolMu.RUnlock()
+		return pool
+	}
+	s.proxyPoolMu.RUnlock()
+
+	// Slow path: write lock refresh
+	s.proxyPoolMu.Lock()
+	defer s.proxyPoolMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if time.Since(s.proxyPoolUpdated) < proxyPoolCacheTTL && len(s.proxyPool) > 0 {
+		return s.proxyPool
+	}
+
+	proxies, err := s.proxyRepo.ListActive(ctx)
+	if err != nil {
+		log.Printf("[kiro-freeTier] proxy_pool_refresh failed: %v, using stale data (len=%d)", err, len(s.proxyPool))
+		// Negative cache: avoid hammering DB on persistent failure. Retry in 30s.
+		s.proxyPoolUpdated = time.Now().Add(-proxyPoolCacheTTL + 30*time.Second)
+		return s.proxyPool // fail-open: return stale data
+	}
+
+	s.proxyPool = proxies
+	s.proxyPoolUpdated = time.Now()
+	return s.proxyPool
+}
+
+// resolveMachineID returns the machine ID for a request.
+// For Free-tier (non-apikey) accounts, randomly generates a new machine ID
+// with freeTierMachineIDRotatePercent probability.
+func (s *KiroGatewayService) resolveMachineID(account *Account) string {
+	if s.isKiroFreeTier(account.ID) && !account.IsKiroApiKey() {
+		if rand.IntN(100) < freeTierMachineIDRotatePercent {
+			mid := kiro.GenerateRandomMachineID()
+			log.Printf("[kiro-freeTier] account=%s using random machine_id=%s...%s",
+				account.Name, mid[:8], mid[len(mid)-8:])
+			return mid
+		}
+	}
+	return kiro.GenerateMachineID(account.GetKiroRefreshToken())
+}
+
+// resolveProxyURL returns the proxy URL for a request.
+// For Free-tier (non-apikey) accounts, randomly selects from the active proxy pool.
+// Falls back to account-bound proxy if pool is empty.
+func (s *KiroGatewayService) resolveProxyURL(ctx context.Context, account *Account) string {
+	// Default: account-bound proxy
+	defaultProxy := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		defaultProxy = account.Proxy.URL()
+	}
+
+	if !s.isKiroFreeTier(account.ID) || account.IsKiroApiKey() {
+		return defaultProxy
+	}
+
+	pool := s.getActiveProxyPool(ctx)
+	if len(pool) == 0 {
+		return defaultProxy // fallback to account-bound proxy
+	}
+
+	chosen := pool[rand.IntN(len(pool))]
+	chosenURL := chosen.URL()
+	log.Printf("[kiro-freeTier] account=%s proxy_rotation: using proxy=%s (pool_size=%d)",
+		account.Name, chosen.Name, len(pool))
+	return chosenURL
+}
+
+// isKiroFreeTier 判断 Kiro 账号是否为 Free 订阅类型
+// Free 账号不支持 Opus 模型，需要自动降级为 Sonnet
+func (s *KiroGatewayService) isKiroFreeTier(accountID int64) bool {
+	if s.usageCache == nil {
+		return false // 缓存不可用时默认允许（不误杀）
+	}
+	subType := s.usageCache.GetKiroSubscriptionType(accountID)
+	if subType == "" {
+		return false // 订阅类型未知时默认允许
+	}
+	return strings.Contains(strings.ToUpper(subType), "FREE")
+}
+
+// remapModelForFreeTier 对 Free 订阅类型的账号，将不支持的模型自动降级到 Sonnet 4.5
+// Free 账号仅支持 Sonnet 4.5 及以下，不支持 Opus 和 Sonnet 4.6
+// 返回 (映射后的模型名, 是否发生了映射)
+func (s *KiroGatewayService) remapModelForFreeTier(account *Account, model string) (string, bool) {
+	if !s.isKiroFreeTier(account.ID) {
+		return model, false
+	}
+	modelLower := strings.ToLower(model)
+	// Opus 系列 → Sonnet 4.5
+	if strings.Contains(modelLower, "opus") {
+		return "claude-sonnet-4-5", true
+	}
+	// Sonnet 4.6 系列 → Sonnet 4.5（匹配 sonnet-4-6、sonnet-4-6-1m 等，不匹配 sonnet-4-5）
+	if strings.Contains(modelLower, "sonnet-4-6") || strings.Contains(modelLower, "sonnet-4.6") {
+		return "claude-sonnet-4-5", true
+	}
+	return model, false
 }
 
 // IsModelSupported checks if the model is supported by Kiro
@@ -121,6 +252,16 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if kiro.CleanOrphanToolUsesInClaudeMessages(claudeReq.Messages) {
 		log.Printf("%s cleaned orphan tool_use blocks from request", prefix)
 		// Re-serialize body for apikey passthrough path
+		if newBody, err := json.Marshal(claudeReq); err == nil {
+			body = newBody
+		}
+	}
+
+	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5
+	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model); ok {
+		log.Printf("%s free_tier_model_remap: %s -> %s", prefix, claudeReq.Model, remapped)
+		claudeReq.Model = remapped
+		// 同步更新 body 中的 model 字段
 		if newBody, err := json.Marshal(claudeReq); err == nil {
 			body = newBody
 		}
@@ -171,8 +312,26 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				body = newBody
 			}
 		} else {
-			log.Printf("%s status=truncation_not_possible estimated_tokens=%d limit=%d, proceeding anyway",
+			// Safe truncation failed (likely no safe truncation points due to continuous
+			// tool_use chains). Fall back to force truncation which ignores tool pairing.
+			log.Printf("%s status=safe_truncation_failed estimated_tokens=%d limit=%d, attempting force truncation",
 				prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+
+			forceReq, forceOk := kiro.ForceTruncateMessages(claudeReq, kiro.DefaultTruncationConfig().TargetTokens)
+			if forceOk {
+				newEstimate := kiro.EstimateInputTokens(forceReq)
+				log.Printf("%s status=force_truncated original_messages=%d new_messages=%d tokens=%d->%d",
+					prefix, len(claudeReq.Messages), len(forceReq.Messages), estimatedTokens, newEstimate)
+				claudeReq = forceReq
+				estimatedTokens = newEstimate
+
+				if newBody, err := json.Marshal(claudeReq); err == nil {
+					body = newBody
+				}
+			} else {
+				log.Printf("%s status=force_truncation_failed estimated_tokens=%d limit=%d, proceeding anyway",
+					prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+			}
 		}
 	}
 
@@ -185,15 +344,30 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		return nil, fmt.Errorf("get access_token failed: %w", err)
 	}
 
-	// Proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	// Proxy URL (Free-tier: random from pool; others: account-bound)
+	proxyURL := s.resolveProxyURL(ctx, account)
 
 	// apikey accounts: direct Claude API passthrough (no CodeWhisperer transform)
 	if account.IsKiroApiKey() {
-		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheHit)
+		// 自动注入 cache_control 断点 + 限制最多 4 个
+		// cacheInjected=true 表示平台注入了，需隐藏响应中的 cache tokens
+		body, cacheInjected := injectCacheControlBreakpoints(body)
+		body = enforceCacheControlLimit(body)
+		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheHit, cacheInjected)
+	}
+
+	// Resolve URL-based images to base64 (CW only supports base64).
+	// This handles both data: URLs and HTTP/HTTPS URLs.
+	if kiro.ResolveURLImagesInRequest(claudeReq) {
+		log.Printf("%s URL images resolved to base64", prefix)
+	}
+
+	// Compress oversized base64 images before CW transformation.
+	// CW has a hard body size limit of ~810KB; uncompressed PNG screenshots
+	// can easily exceed this. Compress before transform so that both the
+	// token estimation and serialized body reflect actual sizes.
+	if kiro.CompressImagesInRequest(claudeReq) {
+		log.Printf("%s images compressed for body size reduction", prefix)
 	}
 
 	// Get profile ARN
@@ -249,8 +423,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	// Build endpoint list (primary + fallback)
 	endpoints := getKiroEndpoints(account)
 
-	// Generate machine ID for User-Agent headers
-	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
+	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
+	machineID := s.resolveMachineID(account)
 	kiroVersion := "1.6.0"
 
 	// Endpoint loop: try each endpoint, with retries per endpoint
@@ -392,10 +566,12 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				// Check if error is context/input size related
 				errorMsgLower := strings.ToLower(errorMsg)
 				if strings.Contains(errorMsgLower, "input too long") ||
+					strings.Contains(errorMsgLower, "is too long") ||
 					strings.Contains(errorMsgLower, "too large") ||
 					strings.Contains(errorMsgLower, "context") ||
 					strings.Contains(errorMsgLower, "exceeds") ||
-					strings.Contains(errorMsgLower, "maximum") {
+					strings.Contains(errorMsgLower, "maximum") ||
+					strings.Contains(errorMsgLower, "content_length") {
 					log.Printf("%s status=context_error_detected error=%s", prefix, errorMsg)
 					setOpsUpstreamError(c, resp.StatusCode, errorMsg, "")
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -567,10 +743,15 @@ endpointDone:
 			}
 		} else {
 			// Cache miss: attribute cacheable tokens to cache_creation
-			// Note: cache_creation tokens are still processed as input, so don't subtract
 			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
+			usage.InputTokens -= cacheEstimation.CacheableTokens
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
+			}
 		}
 	}
+
+	// CW 路径未注入 cache_control，透传真实 usage，不合并 cache tokens
 
 	return &ForwardResult{
 		RequestID:    requestID,
@@ -1272,17 +1453,14 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	// Proxy URL (Free-tier: random from pool; others: account-bound)
+	proxyURL := s.resolveProxyURL(ctx, account)
 
 	// Build endpoint list (test connection: small request)
 	endpoints := getKiroEndpoints(account)
 
-	// Generate machine ID for User-Agent headers
-	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
+	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
+	machineID := s.resolveMachineID(account)
 	kiroVersion := "1.6.0"
 
 	// Try each endpoint
@@ -1369,6 +1547,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	apiKey, proxyURL, originalModel string,
 	startTime time.Time,
 	cacheEstimation kiro.CacheEstimation, cacheHit bool,
+	hideCacheUsage bool,
 ) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-apikey-Forward] account=%s", account.Name)
 
@@ -1491,7 +1670,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	inputTokens := kiro.EstimateInputTokens(claudeReq)
 
 	if claudeReq.Stream {
-		// Stream: pipe SSE directly to client
+		// Stream: pipe SSE line-by-line to client (with cache usage rewrite)
 		c.Header("Content-Type", "text/event-stream; charset=utf-8")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
@@ -1507,6 +1686,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		var firstTokenMs *int
 		upstreamUsage := &ClaudeUsage{}
 		usageFromUpstream := false
+		clientDisconnected := false
 		var sseTail strings.Builder
 		buf := make([]byte, 4096)
 
@@ -1521,7 +1701,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 				chunk := buf[:n]
 				// Count output tokens from text deltas for estimation
 				outputTokens += s.countClaudeSSEOutputTokens(chunk)
-				// Parse upstream usage tokens from SSE lines when available.
+				// Reconstruct full SSE lines for usage parsing + cache rewrite.
 				sseTail.Write(chunk)
 				sseData := sseTail.String()
 				lines := strings.Split(sseData, "\n")
@@ -1530,27 +1710,58 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 					// Keep last partial line as tail.
 					sseTail.WriteString(lines[len(lines)-1])
 					for _, line := range lines[:len(lines)-1] {
-						line = strings.TrimSpace(line)
-						if !strings.HasPrefix(line, "data: ") {
-							continue
+						trimmed := strings.TrimSpace(line)
+
+						// Parse upstream usage from data lines (internal tracking).
+						if strings.HasPrefix(trimmed, "data: ") {
+							data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data: "))
+							if data != "" && data != "[DONE]" {
+								if updateClaudeUsageFromSSEData(data, upstreamUsage) {
+									usageFromUpstream = true
+								}
+							}
 						}
-						data := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
-						if data == "" || data == "[DONE]" {
-							continue
-						}
-						if updateClaudeUsageFromSSEData(data, upstreamUsage) {
-							usageFromUpstream = true
+
+						// Rewrite cache usage (only if platform injected) and write to client.
+						if !clientDisconnected {
+							clientLine := line
+							if hideCacheUsage {
+								clientLine = rewriteCacheUsageInSSELine(line)
+							}
+							if _, writeErr := fmt.Fprintf(c.Writer, "%s\n", clientLine); writeErr != nil {
+								clientDisconnected = true
+							}
 						}
 					}
 				}
 
-				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
-					break
+				if !clientDisconnected {
+					flusher.Flush()
 				}
-				flusher.Flush()
 			}
 			if readErr != nil {
 				break
+			}
+		}
+
+		// Flush any remaining data in sseTail (e.g., final line without trailing \n)
+		if tail := sseTail.String(); tail != "" {
+			trimmed := strings.TrimSpace(tail)
+			if strings.HasPrefix(trimmed, "data: ") {
+				data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data: "))
+				if data != "" && data != "[DONE]" {
+					if updateClaudeUsageFromSSEData(data, upstreamUsage) {
+						usageFromUpstream = true
+					}
+				}
+			}
+			if !clientDisconnected {
+				clientLine := tail
+				if hideCacheUsage {
+					clientLine = rewriteCacheUsageInSSELine(tail)
+				}
+				_, _ = fmt.Fprintf(c.Writer, "%s\n", clientLine)
+				flusher.Flush()
 			}
 		}
 
@@ -1582,6 +1793,10 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 				}
 			} else {
 				usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
+				usage.InputTokens -= cacheEstimation.CacheableTokens
+				if usage.InputTokens < 0 {
+					usage.InputTokens = 0
+				}
 			}
 		}
 
@@ -1603,9 +1818,15 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 
 	ms := int(time.Since(startTime).Milliseconds())
 
-	c.Data(http.StatusOK, "application/json", respBody)
-
+	// 先提取真实 usage（用于内部计费），再根据注入情况决定是否重写 cache tokens
 	upstreamUsage, usageFromUpstream := extractClaudeUsageFromJSON(respBody)
+
+	// 仅平台注入时隐藏 cache tokens；用户自带的透传原始响应
+	if hideCacheUsage {
+		c.Data(http.StatusOK, "application/json", rewriteCacheUsageInJSON(respBody))
+	} else {
+		c.Data(http.StatusOK, "application/json", respBody)
+	}
 	var usage *ClaudeUsage
 	if usageFromUpstream {
 		usage = upstreamUsage
@@ -1635,6 +1856,10 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			}
 		} else {
 			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
+			usage.InputTokens -= cacheEstimation.CacheableTokens
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
+			}
 		}
 	}
 

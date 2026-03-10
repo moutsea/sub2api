@@ -33,6 +33,12 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	// Ensure stream is set (Kiro always uses streaming internally)
 	wantStream := claudeReq.Stream
 
+	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5
+	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model); ok {
+		log.Printf("%s free_tier_model_remap: %s -> %s", prefix, claudeReq.Model, remapped)
+		claudeReq.Model = remapped
+	}
+
 	originalModel := claudeReq.Model
 	mappedModel := kiro.GetModelID(originalModel)
 
@@ -81,12 +87,20 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		return nil, fmt.Errorf("get access_token failed: %w", err)
 	}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	// Proxy URL (Free-tier: random from pool; others: account-bound)
+	proxyURL := s.resolveProxyURL(ctx, account)
+
+	// 5. Resolve URL images to base64 (CW only supports base64)
+	if kiro.ResolveURLImagesInRequest(claudeReq) {
+		log.Printf("%s URL images resolved to base64", prefix)
 	}
 
-	// 5. Transform to CodeWhisperer format
+	// 5b. Compress oversized images before CW transformation
+	if kiro.CompressImagesInRequest(claudeReq) {
+		log.Printf("%s images compressed for body size reduction", prefix)
+	}
+
+	// 6. Transform to CodeWhisperer format
 	profileArn := account.GetKiroProfileArn()
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
 	if err != nil {
@@ -98,7 +112,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// 6. Body size check and truncation
+	// 7. Body size check and truncation
 	const maxRequestBodySize = 800 * 1024
 	if len(reqBody) > maxRequestBodySize {
 		log.Printf("%s status=request_body_oversized body_size=%d limit=%d, attempting truncation",
@@ -122,7 +136,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	// 7. Endpoint loop (reuse existing pattern)
 	endpoints := getKiroEndpoints(account)
-	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
+	machineID := s.resolveMachineID(account)
 	kiroVersion := "1.6.0"
 
 	var resp *http.Response

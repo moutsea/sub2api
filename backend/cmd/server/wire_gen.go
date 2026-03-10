@@ -115,7 +115,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	gatewayCache := repository.NewGatewayCache(redisClient)
 	antigravityTokenProvider := service.NewAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, antigravityTokenProvider, rateLimitService, httpUpstream, settingService, accountUsageService, usageCache)
-	kiroGatewayService := service.NewKiroGatewayService(accountRepository, kiroTokenProvider, rateLimitService, httpUpstream, settingService)
+	kiroGatewayService := service.NewKiroGatewayService(accountRepository, kiroTokenProvider, rateLimitService, httpUpstream, settingService, usageCache, proxyRepository)
 	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, antigravityGatewayService, kiroGatewayService, httpUpstream, configConfig)
 	concurrencyCache := repository.ProvideConcurrencyCache(redisClient, configConfig)
 	concurrencyService := service.ProvideConcurrencyService(concurrencyCache, accountRepository, configConfig)
@@ -146,7 +146,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	tempAPIKeyRepo := repository.NewTempAPIKeyRepo(client, db)
 	gatewayService := service.ProvideGatewayService(accountRepository, groupRepository, usageLogRepository, userRepository, userSubscriptionRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, identityService, httpUpstream, deferredService, claudeTokenProvider, kiroTokenProvider, sessionLimitCache, usageCache, accountUsageService, tempAPIKeyRepo)
 	openAITokenProvider := service.NewOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService)
-	openAIGatewayService := service.NewOpenAIGatewayService(accountRepository, usageLogRepository, userRepository, userSubscriptionRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, tempAPIKeyRepo)
+	openAIGatewayService := service.NewOpenAIGatewayService(accountRepository, usageLogRepository, userRepository, userSubscriptionRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, tempAPIKeyRepo, usageCache)
 	geminiMessagesCompatService := service.NewGeminiMessagesCompatService(accountRepository, groupRepository, gatewayCache, schedulerSnapshotService, geminiTokenProvider, rateLimitService, httpUpstream, antigravityGatewayService, configConfig)
 	opsService := service.NewOpsService(opsRepository, settingRepository, configConfig, accountRepository, concurrencyService, gatewayService, openAIGatewayService, geminiMessagesCompatService, antigravityGatewayService)
 	settingHandler := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService)
@@ -242,6 +242,12 @@ func provideCleanup(
 			{"KiroTokenProvider", func() error {
 				if kiroTokenProvider != nil {
 					kiroTokenProvider.Stop()
+				}
+				return nil
+			}},
+			{"AntigravityTokenProvider", func() error {
+				if antigravityTokenProvider != nil {
+					antigravityTokenProvider.Stop()
 				}
 				return nil
 			}},

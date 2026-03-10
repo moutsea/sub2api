@@ -96,6 +96,7 @@ type OpenAIGatewayService struct {
 	openAITokenProvider *OpenAITokenProvider
 	toolCorrector       *CodexToolCorrector
 	tempAPIKeyRepo      TempAPIKeyRepository
+	usageCache          *UsageCache
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -115,6 +116,7 @@ func NewOpenAIGatewayService(
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
 	tempAPIKeyRepo TempAPIKeyRepository,
+	usageCache *UsageCache,
 ) *OpenAIGatewayService {
 	return &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -133,6 +135,7 @@ func NewOpenAIGatewayService(
 		openAITokenProvider: openAITokenProvider,
 		toolCorrector:       NewCodexToolCorrector(),
 		tempAPIKeyRepo:      tempAPIKeyRepo,
+		usageCache:          usageCache,
 	}
 }
 
@@ -199,7 +202,8 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
-				if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) && (requestedModel == "" || account.IsModelSupported(requestedModel)) {
+				if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) && (requestedModel == "" || account.IsModelSupported(requestedModel)) &&
+					(s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
 					// Refresh sticky session TTL
 					_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
 					return account, nil
@@ -214,8 +218,9 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
 
-	// 3. Select by priority + LRU
+	// 3. Select by priority + LRU (soft-filter: quota-exhausted accounts as fallback)
 	var selected *Account
+	var quotaFallback *Account // 额度已满的最优候选，作为后备
 	for i := range accounts {
 		acc := &accounts[i]
 		if _, excluded := excludedIDs[acc.ID]; excluded {
@@ -228,6 +233,14 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 		}
 		// Check model support
 		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
+			continue
+		}
+		// Check OpenAI quota availability — soft filter with fallback
+		if s.usageCache != nil && !s.usageCache.IsOpenAIQuotaAvailable(acc.ID) {
+			// Track best quota-exhausted account as fallback
+			if quotaFallback == nil || acc.Priority < quotaFallback.Priority {
+				quotaFallback = acc
+			}
 			continue
 		}
 		if selected == nil {
@@ -252,6 +265,11 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 				}
 			}
 		}
+	}
+
+	// Fallback to quota-exhausted account if no healthy accounts available
+	if selected == nil && quotaFallback != nil {
+		selected = quotaFallback
 	}
 
 	if selected == nil {
@@ -337,8 +355,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash)
 		if err == nil && accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
-			if err == nil && account.IsSchedulable() && account.IsOpenAI() &&
-				(requestedModel == "" || account.IsModelSupported(requestedModel)) {
+			if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) &&
+				(requestedModel == "" || account.IsModelSupported(requestedModel)) &&
+				(s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
 				result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 				if err == nil && result.Acquired {
 					_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
@@ -367,6 +386,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 
 	// ============ Layer 2: Load-aware selection ============
 	candidates := make([]*Account, 0, len(accounts))
+	var quotaExhaustedFallback []*Account // 额度已满的账号作为后备
 	for i := range accounts {
 		acc := &accounts[i]
 		if isExcluded(acc.ID) {
@@ -381,7 +401,17 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
 			continue
 		}
+		// 软过滤：额度已满的账号放入 fallback 列表
+		if s.usageCache != nil && !s.usageCache.IsOpenAIQuotaAvailable(acc.ID) {
+			quotaExhaustedFallback = append(quotaExhaustedFallback, acc)
+			continue
+		}
 		candidates = append(candidates, acc)
+	}
+
+	// 如果所有健康账号不可用，使用额度已满的账号作为后备
+	if len(candidates) == 0 && len(quotaExhaustedFallback) > 0 {
+		candidates = quotaExhaustedFallback
 	}
 
 	if len(candidates) == 0 {
@@ -601,6 +631,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// Track if body needs re-serialization
 	bodyModified := false
 	originalModel := reqModel
+	modelFallbackAttempted := false // OAuth 模型回退标记，防止无限重试
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent"))
 
@@ -653,6 +684,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	// OAuth 账号走 ChatGPT internal API，该端点不再接受带 -codex 后缀的模型名。
+	// 在所有规范化完成后统一去除 -codex，对 CodexCLI 和非 CodexCLI 均生效。
+	if account.Type == AccountTypeOAuth {
+		if model, ok := reqBody["model"].(string); ok {
+			stripped := stripCodexModelSuffix(model)
+			if stripped != model {
+				log.Printf("[OpenAI] Strip -codex suffix for OAuth: %s -> %s (account: %s, isCodexCLI: %v)",
+					model, stripped, account.Name, isCodexCLI)
+				reqBody["model"] = stripped
+				mappedModel = stripped
+				bodyModified = true
+			}
+		}
+	}
+
+	// Strip unsupported fields that upstream APIs reject (e.g. Claude Code v2.1.22+ context_management)
+	for _, unsupportedField := range []string{"context_management"} {
+		if _, exists := reqBody[unsupportedField]; exists {
+			delete(reqBody, unsupportedField)
+			bodyModified = true
+		}
+	}
+
 	// Handle max_output_tokens based on platform and account type
 	if !isCodexCLI {
 		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
@@ -700,6 +754,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+retryWithFallbackModel:
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -778,6 +833,36 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			s.handleFailoverSideEffects(ctx, resp, account)
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
 		}
+
+		// OAuth 模型回退：上游返回 400 且错误信息指示模型不可用时，
+		// 自动降级到 gpt-5.2 重试（同账号），覆盖非 Plus 账号无 gpt-5.4 权限的场景。
+		if resp.StatusCode == http.StatusBadRequest && account.Type == AccountTypeOAuth && !modelFallbackAttempted {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			currentModel, _ := reqBody["model"].(string)
+			fallbackModel := getOAuthModelFallback(currentModel)
+
+			if fallbackModel != "" && isModelNotSupportedError(upstreamMsg) {
+				// 对 OAuth 账号再做一次 -codex 剥离
+				stripped := stripCodexModelSuffix(fallbackModel)
+				log.Printf("[OpenAI] OAuth model fallback: %s -> %s (stripped: %s) upstream=%q (account: %s)",
+					currentModel, fallbackModel, stripped, upstreamMsg, account.Name)
+
+				reqBody["model"] = stripped
+				mappedModel = stripped
+				modelFallbackAttempted = true
+
+				// 重新序列化并重试
+				body, err = json.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("serialize fallback request: %w", err)
+				}
+				goto retryWithFallbackModel
+			}
+		}
+
 		return s.handleErrorResponse(ctx, resp, c, account)
 	}
 
@@ -803,6 +888,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if snapshot := extractCodexUsageHeaders(resp.Header); snapshot != nil {
 			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 		}
+	}
+
+	// Check rate limit headers for API Key accounts
+	if account.Type == AccountTypeAPIKey {
+		s.checkOpenAIRateLimitHeaders(account.ID, resp.Header)
 	}
 
 	return &OpenAIForwardResult{
@@ -1833,6 +1923,79 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 		defer cancel()
 		_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
 	}()
+
+	// Update OpenAI quota availability based on canonical 5h/7d usage
+	if s.usageCache != nil {
+		var maxResetSeconds int
+		var anyOverThreshold bool
+
+		// Check codex_5h_used_percent
+		if v, ok := updates["codex_5h_used_percent"]; ok {
+			if pct, ok := v.(float64); ok && pct >= quotaHealthyThreshold {
+				anyOverThreshold = true
+				if rs, ok := updates["codex_5h_reset_after_seconds"]; ok {
+					if sec, ok := rs.(int); ok && sec > maxResetSeconds {
+						maxResetSeconds = sec
+					}
+				}
+			}
+		}
+		// Check codex_7d_used_percent
+		if v, ok := updates["codex_7d_used_percent"]; ok {
+			if pct, ok := v.(float64); ok && pct >= quotaHealthyThreshold {
+				anyOverThreshold = true
+				if rs, ok := updates["codex_7d_reset_after_seconds"]; ok {
+					if sec, ok := rs.(int); ok && sec > maxResetSeconds {
+						maxResetSeconds = sec
+					}
+				}
+			}
+		}
+
+		if anyOverThreshold && maxResetSeconds > 0 {
+			resetAt := time.Now().Add(time.Duration(maxResetSeconds) * time.Second)
+			s.usageCache.SetOpenAIQuotaReset(accountID, resetAt)
+			log.Printf("[OpenAI Quota] Account %d marked quota exhausted, reset at %s (in %ds)", accountID, resetAt.Format(time.RFC3339), maxResetSeconds)
+		} else if anyOverThreshold {
+			// Over threshold but no reset time available — use fallback
+			resetAt := time.Now().Add(openAI429Fallback)
+			s.usageCache.SetOpenAIQuotaReset(accountID, resetAt)
+			log.Printf("[OpenAI Quota] Account %d marked quota exhausted (no reset time), fallback reset in %s", accountID, openAI429Fallback)
+		} else {
+			s.usageCache.ClearOpenAIQuotaReset(accountID)
+		}
+	}
+}
+
+// checkOpenAIRateLimitHeaders 检查 OpenAI API Key 响应 header 中的速率限制信息
+// 用于 API Key 类型账号的额度预判（OAuth 账号通过 Codex usage snapshot 处理）
+func (s *OpenAIGatewayService) checkOpenAIRateLimitHeaders(accountID int64, headers http.Header) {
+	if s.usageCache == nil {
+		return
+	}
+
+	remaining := strings.TrimSpace(headers.Get("x-ratelimit-remaining-requests"))
+	if remaining == "" {
+		return
+	}
+
+	if remaining == "0" {
+		// 请求配额已耗尽，解析重置时间
+		resetRaw := strings.TrimSpace(headers.Get("x-ratelimit-reset-requests"))
+		if resetRaw != "" {
+			if resetAt, ok := parseOpenAIReset(resetRaw, time.Now()); ok {
+				s.usageCache.SetOpenAIQuotaReset(accountID, resetAt)
+				log.Printf("[OpenAI Quota] API Key account %d requests exhausted, reset at %s", accountID, resetAt.Format(time.RFC3339))
+				return
+			}
+		}
+		// 无法解析重置时间，使用 fallback
+		s.usageCache.SetOpenAIQuotaReset(accountID, time.Now().Add(openAI429Fallback))
+		log.Printf("[OpenAI Quota] API Key account %d requests exhausted, fallback reset in %s", accountID, openAI429Fallback)
+	} else {
+		// 还有剩余配额，清除标记（如果之前被标记过）
+		s.usageCache.ClearOpenAIQuotaReset(accountID)
+	}
 }
 
 // sortAccountsByPriorityAndLastUsedSimple 按优先级和最后使用时间排序账号
@@ -1881,6 +2044,14 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		log.Printf("[OpenAI CC] Model mapping applied: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
 		reqBody["model"] = mappedModel
 		bodyModified = true
+	}
+
+	// Strip unsupported fields that upstream APIs reject (e.g. Claude Code v2.1.22+ context_management)
+	for _, unsupportedField := range []string{"context_management"} {
+		if _, exists := reqBody[unsupportedField]; exists {
+			delete(reqBody, unsupportedField)
+			bodyModified = true
+		}
 	}
 
 	if bodyModified {
@@ -1979,6 +2150,11 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// Check rate limit headers for API Key accounts
+	if account.Type == AccountTypeAPIKey {
+		s.checkOpenAIRateLimitHeaders(account.ID, resp.Header)
 	}
 
 	return &OpenAIForwardResult{
@@ -2271,6 +2447,7 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 	}
 
 	originalModel, _ := ccReqBody["model"].(string)
+	modelFallbackAttempted := false // OAuth 模型回退标记
 
 	// Convert CC request to Responses API format
 	responsesBody := convertCCRequestToResponses(ccReqBody)
@@ -2305,12 +2482,24 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 		}
 	}
 
+	// OAuth 账号走 ChatGPT internal API，该端点不再接受带 -codex 后缀的模型名。
+	if model, ok := responsesBody["model"].(string); ok {
+		stripped := stripCodexModelSuffix(model)
+		if stripped != model {
+			log.Printf("[OpenAI CC→Responses] Strip -codex suffix for OAuth: %s -> %s (account: %s, isCodexCLI: %v)",
+				model, stripped, account.Name, isCodexCLI)
+			responsesBody["model"] = stripped
+			mappedModel = stripped
+		}
+	}
+
 	// Serialize the converted body
 	convertedBody, err := json.Marshal(responsesBody)
 	if err != nil {
 		return nil, fmt.Errorf("serialize converted request: %w", err)
 	}
 
+retryWithCCFallbackModel:
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -2388,6 +2577,33 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 			s.handleFailoverSideEffects(ctx, resp, account)
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
 		}
+
+		// OAuth 模型回退：上游返回 400 且模型不可用时，降级到 gpt-5.2 重试
+		if resp.StatusCode == http.StatusBadRequest && account.Type == AccountTypeOAuth && !modelFallbackAttempted {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			currentModel, _ := responsesBody["model"].(string)
+			fallbackModel := getOAuthModelFallback(currentModel)
+
+			if fallbackModel != "" && isModelNotSupportedError(upstreamMsg) {
+				stripped := stripCodexModelSuffix(fallbackModel)
+				log.Printf("[OpenAI CC→Responses] OAuth model fallback: %s -> %s (stripped: %s) upstream=%q (account: %s)",
+					currentModel, fallbackModel, stripped, upstreamMsg, account.Name)
+
+				responsesBody["model"] = stripped
+				mappedModel = stripped
+				modelFallbackAttempted = true
+
+				convertedBody, err = json.Marshal(responsesBody)
+				if err != nil {
+					return nil, fmt.Errorf("serialize fallback request: %w", err)
+				}
+				goto retryWithCCFallbackModel
+			}
+		}
+
 		return s.handleErrorResponse(ctx, resp, c, account)
 	}
 

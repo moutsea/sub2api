@@ -2272,6 +2272,176 @@ func injectClaudeCodePrompt(body []byte, system any) []byte {
 	return result
 }
 
+// injectCacheControlBreakpoints 自动注入 cache_control 断点以利用 Anthropic prompt cache。
+// 返回 (处理后的 body, 是否发生了注入)。第二个返回值为 true 时表示平台主动注入了
+// cache_control，调用方应隐藏响应中的 cache tokens 并按 input 单价计费。
+// 为 false 时表示用户已自带 cache_control 或无需注入，应透传 cache tokens。
+//
+// 策略（方案 A：用户有任何 cache_control 则完全不注入）：
+//  0. 前置检查：若 tools/system/messages 任一区域已有 cache_control，直接返回 false
+//  1. tools：在最后一个 tool 上添加 {type: "ephemeral"}
+//  2. system：在最后一个非 thinking block 上添加
+//  3. messages：若有 ≥2 个 user 消息，在倒数第二个 user 消息的最后一个非 thinking content block 上添加
+func injectCacheControlBreakpoints(body []byte) ([]byte, bool) {
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return body, false
+	}
+
+	// --- 前置检查：用户在任一区域自带 cache_control 则完全不注入 ---
+	if tools, ok := data["tools"].([]any); ok && regionHasCacheControl(tools) {
+		return body, false
+	}
+	if system, ok := data["system"].([]any); ok && regionHasCacheControl(system) {
+		return body, false
+	}
+	if messages, ok := data["messages"].([]any); ok && messagesHaveCacheControl(messages) {
+		return body, false
+	}
+
+	modified := false
+
+	// 每处注入使用独立的 map 实例，避免共享引用导致的潜在副作用
+	newEphemeral := func() map[string]any { return map[string]any{"type": "ephemeral"} }
+
+	// --- 1. tools ---
+	if tools, ok := data["tools"].([]any); ok && len(tools) > 0 {
+		if last, ok := tools[len(tools)-1].(map[string]any); ok {
+			last["cache_control"] = newEphemeral()
+			modified = true
+		}
+	}
+
+	// --- 2. system ---
+	if system, ok := data["system"].([]any); ok && len(system) > 0 {
+		// 从尾部找第一个非 thinking block
+		for i := len(system) - 1; i >= 0; i-- {
+			if m, ok := system[i].(map[string]any); ok {
+				if blockType, _ := m["type"].(string); blockType == "thinking" {
+					continue
+				}
+				m["cache_control"] = newEphemeral()
+				modified = true
+				break
+			}
+		}
+	}
+
+	// --- 3. messages ---
+	if messages, ok := data["messages"].([]any); ok {
+		// 统计 user 消息
+		var userMsgIndices []int
+		for i, msg := range messages {
+			if msgMap, ok := msg.(map[string]any); ok {
+				if role, _ := msgMap["role"].(string); role == "user" {
+					userMsgIndices = append(userMsgIndices, i)
+				}
+			}
+		}
+
+		// 3a. 长对话中间点 breakpoint：user 消息 >10 条时，在中间位置的 user 消息注入
+		// 使中间点之前的内容可被缓存，后续请求只需传增量部分
+		if len(userMsgIndices) > 10 {
+			midIdx := userMsgIndices[len(userMsgIndices)/2]
+			if midMsg, ok := messages[midIdx].(map[string]any); ok {
+				if content, ok := midMsg["content"].([]any); ok && len(content) > 0 {
+					for j := len(content) - 1; j >= 0; j-- {
+						if block, ok := content[j].(map[string]any); ok {
+							if blockType, _ := block["type"].(string); blockType == "thinking" {
+								continue
+							}
+							block["cache_control"] = newEphemeral()
+							modified = true
+							break
+						}
+					}
+				} else if content, ok := midMsg["content"].(string); ok && content != "" {
+					// content 是纯字符串时，转换为数组形式以支持 cache_control
+					midMsg["content"] = []any{
+						map[string]any{
+							"type":          "text",
+							"text":          content,
+							"cache_control": newEphemeral(),
+						},
+					}
+					modified = true
+				}
+			}
+		}
+
+		// 3b. 倒数第二个 user 消息 breakpoint
+		if len(userMsgIndices) >= 2 {
+			targetIdx := userMsgIndices[len(userMsgIndices)-2]
+			if targetMsg, ok := messages[targetIdx].(map[string]any); ok {
+				if content, ok := targetMsg["content"].([]any); ok && len(content) > 0 {
+					for j := len(content) - 1; j >= 0; j-- {
+						if block, ok := content[j].(map[string]any); ok {
+							if blockType, _ := block["type"].(string); blockType == "thinking" {
+								continue
+							}
+							block["cache_control"] = newEphemeral()
+							modified = true
+							break
+						}
+					}
+				} else if content, ok := targetMsg["content"].(string); ok && content != "" {
+					// content 是纯字符串时，转换为数组形式以支持 cache_control
+					targetMsg["content"] = []any{
+						map[string]any{
+							"type":          "text",
+							"text":          content,
+							"cache_control": newEphemeral(),
+						},
+					}
+					modified = true
+				}
+			}
+		}
+	}
+
+	if !modified {
+		return body, false
+	}
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return body, false
+	}
+	return result, true
+}
+
+// regionHasCacheControl 检查 tools 或 system 数组中是否已有 cache_control
+func regionHasCacheControl(items []any) bool {
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			if _, has := m["cache_control"]; has {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// messagesHaveCacheControl 检查 messages 中是否有任何 content block 带 cache_control
+func messagesHaveCacheControl(messages []any) bool {
+	for _, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, ok := msgMap["content"].([]any); ok {
+			for _, item := range content {
+				if m, ok := item.(map[string]any); ok {
+					if _, has := m["cache_control"]; has {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // enforceCacheControlLimit 强制执行 cache_control 块数量限制（最多 4 个）
 // 超限时优先从 messages 中移除 cache_control，保护 system 中的缓存控制
 func enforceCacheControlLimit(body []byte) []byte {
@@ -2281,21 +2451,33 @@ func enforceCacheControlLimit(body []byte) []byte {
 	}
 
 	// 清理 thinking 块中的非法 cache_control（thinking 块不支持该字段）
-	removeCacheControlFromThinkingBlocks(data)
+	thinkingCleaned := removeCacheControlFromThinkingBlocks(data)
 
 	// 计算当前 cache_control 块数量
 	count := countCacheControlBlocks(data)
 	if count <= maxCacheControlBlocks {
+		// 即使数量未超限，thinking 块清理也需要序列化返回
+		if thinkingCleaned {
+			result, err := json.Marshal(data)
+			if err != nil {
+				return body
+			}
+			return result
+		}
 		return body
 	}
 
-	// 超限：优先从 messages 中移除，再从 system 中移除
+	// 超限：优先从 messages 中移除，再从 system 中移除，最后从 tools 中移除
 	for count > maxCacheControlBlocks {
 		if removeCacheControlFromMessages(data) {
 			count--
 			continue
 		}
 		if removeCacheControlFromSystem(data) {
+			count--
+			continue
+		}
+		if removeCacheControlFromTools(data) {
 			count--
 			continue
 		}
@@ -2309,10 +2491,21 @@ func enforceCacheControlLimit(body []byte) []byte {
 	return result
 }
 
-// countCacheControlBlocks 统计 system 和 messages 中的 cache_control 块数量
+// countCacheControlBlocks 统计 tools、system 和 messages 中的 cache_control 块数量
 // 注意：thinking 块不支持 cache_control，统计时跳过
 func countCacheControlBlocks(data map[string]any) int {
 	count := 0
+
+	// 统计 tools 中的块
+	if tools, ok := data["tools"].([]any); ok {
+		for _, item := range tools {
+			if m, ok := item.(map[string]any); ok {
+				if _, has := m["cache_control"]; has {
+					count++
+				}
+			}
+		}
+	}
 
 	// 统计 system 中的块
 	if system, ok := data["system"].([]any); ok {
@@ -2412,9 +2605,32 @@ func removeCacheControlFromSystem(data map[string]any) bool {
 	return false
 }
 
+// removeCacheControlFromTools 从 tools 中移除一个 cache_control（从头开始）
+// 作为 enforcement 的最后手段——优先从 messages/system 移除，tools 是最后防线
+// 返回 true 表示成功移除，false 表示没有可移除的
+func removeCacheControlFromTools(data map[string]any) bool {
+	tools, ok := data["tools"].([]any)
+	if !ok {
+		return false
+	}
+
+	for _, item := range tools {
+		if m, ok := item.(map[string]any); ok {
+			if _, has := m["cache_control"]; has {
+				delete(m, "cache_control")
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // removeCacheControlFromThinkingBlocks 强制清理所有 thinking 块中的非法 cache_control
 // thinking 块不支持 cache_control 字段，这个函数确保所有 thinking 块都不含该字段
-func removeCacheControlFromThinkingBlocks(data map[string]any) {
+// 返回 true 表示有清理操作
+func removeCacheControlFromThinkingBlocks(data map[string]any) bool {
+	cleaned := false
+
 	// 清理 system 中的 thinking 块
 	if system, ok := data["system"].([]any); ok {
 		for _, item := range system {
@@ -2422,6 +2638,7 @@ func removeCacheControlFromThinkingBlocks(data map[string]any) {
 				if blockType, _ := m["type"].(string); blockType == "thinking" {
 					if _, has := m["cache_control"]; has {
 						delete(m, "cache_control")
+						cleaned = true
 						log.Printf("[Warning] Removed illegal cache_control from thinking block in system")
 					}
 				}
@@ -2439,6 +2656,7 @@ func removeCacheControlFromThinkingBlocks(data map[string]any) {
 							if blockType, _ := m["type"].(string); blockType == "thinking" {
 								if _, has := m["cache_control"]; has {
 									delete(m, "cache_control")
+									cleaned = true
 									log.Printf("[Warning] Removed illegal cache_control from thinking block in messages[%d].content[%d]", msgIdx, contentIdx)
 								}
 							}
@@ -2448,6 +2666,8 @@ func removeCacheControlFromThinkingBlocks(data map[string]any) {
 			}
 		}
 	}
+
+	return cleaned
 }
 
 // Forward 转发请求到Claude API
@@ -2475,6 +2695,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		body = filterSystemBlocksByPrefix(body)
 	}
 
+	// 自动注入 cache_control 断点以利用 Anthropic prompt cache
+	// cacheInjected=true 表示平台主动注入了，响应中需隐藏 cache tokens
+	body, cacheInjected := injectCacheControlBreakpoints(body)
 	// 强制执行 cache_control 块数量限制（最多 4 个）
 	body = enforceCacheControlLimit(body)
 
@@ -2487,6 +2710,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			body = s.replaceModelInBody(body, mappedModel)
 			reqModel = mappedModel
 			log.Printf("Model mapping applied: %s -> %s (account: %s)", originalModel, mappedModel, account.Name)
+		}
+	}
+
+	// 剥离上游 API 不支持的字段（如 Claude Code v2.1.22+ 引入的 context_management）
+	if gjson.GetBytes(body, "context_management").Exists() {
+		if stripped, err := sjson.DeleteBytes(body, "context_management"); err == nil {
+			body = stripped
 		}
 	}
 
@@ -2844,7 +3074,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	var firstTokenMs *int
 	var clientDisconnect bool
 	if reqStream {
-		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel)
+		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, cacheInjected)
 		if err != nil {
 			if err.Error() == "have error in stream" {
 				return nil, &UpstreamFailoverError{
@@ -2857,7 +3087,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
 	} else {
-		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel)
+		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel, cacheInjected)
 		if err != nil {
 			return nil, err
 		}
@@ -2933,7 +3163,16 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// 2. 重写metadata.user_id（需要指纹中的ClientID和账号的account_uuid）
 			accountUUID := account.GetExtraString("account_uuid")
 			if accountUUID != "" && fp.ClientID != "" {
-				if newBody, err := s.identityService.RewriteUserID(body, account.ID, accountUUID, fp.ClientID); err == nil && len(newBody) > 0 {
+				// 缓存作用域 key：X-Conversation-ID > apiKeyID > sessionUUID（回退）
+				scopeKey := c.GetHeader("X-Conversation-ID")
+				if scopeKey == "" {
+					if val, exists := c.Get("api_key"); exists {
+						if apiKey, ok := val.(*APIKey); ok && apiKey.ID != 0 {
+							scopeKey = fmt.Sprintf("apikey_%d", apiKey.ID)
+						}
+					}
+				}
+				if newBody, err := s.identityService.RewriteUserID(body, account.ID, accountUUID, fp.ClientID, scopeKey); err == nil && len(newBody) > 0 {
 					body = newBody
 				}
 			}
@@ -2995,41 +3234,45 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 }
 
 // getBetaHeader 处理anthropic-beta header
-// 对于OAuth账号，需要确保包含oauth-2025-04-20
+// 对于OAuth账号，需要确保包含 oauth-2025-04-20 和 prompt-caching-scope-2026-01-05
 func (s *GatewayService) getBetaHeader(modelID string, clientBetaHeader string) string {
-	// 如果客户端传了anthropic-beta
+	// 如果客户端传了anthropic-beta，确保必须包含的 beta flags 都在
 	if clientBetaHeader != "" {
-		// 已包含oauth beta则直接返回
-		if strings.Contains(clientBetaHeader, claude.BetaOAuth) {
-			return clientBetaHeader
-		}
+		result := clientBetaHeader
 
-		// 需要添加oauth beta
-		parts := strings.Split(clientBetaHeader, ",")
-		for i, p := range parts {
-			parts[i] = strings.TrimSpace(p)
-		}
+		// 确保包含 oauth beta
+		if !strings.Contains(result, claude.BetaOAuth) {
+			parts := strings.Split(result, ",")
+			for i, p := range parts {
+				parts[i] = strings.TrimSpace(p)
+			}
 
-		// 在claude-code-20250219后面插入oauth beta
-		claudeCodeIdx := -1
-		for i, p := range parts {
-			if p == claude.BetaClaudeCode {
-				claudeCodeIdx = i
-				break
+			// 在claude-code-20250219后面插入oauth beta
+			claudeCodeIdx := -1
+			for i, p := range parts {
+				if p == claude.BetaClaudeCode {
+					claudeCodeIdx = i
+					break
+				}
+			}
+
+			if claudeCodeIdx >= 0 {
+				newParts := make([]string, 0, len(parts)+1)
+				newParts = append(newParts, parts[:claudeCodeIdx+1]...)
+				newParts = append(newParts, claude.BetaOAuth)
+				newParts = append(newParts, parts[claudeCodeIdx+1:]...)
+				result = strings.Join(newParts, ",")
+			} else {
+				result = claude.BetaOAuth + "," + result
 			}
 		}
 
-		if claudeCodeIdx >= 0 {
-			// 在claude-code后面插入
-			newParts := make([]string, 0, len(parts)+1)
-			newParts = append(newParts, parts[:claudeCodeIdx+1]...)
-			newParts = append(newParts, claude.BetaOAuth)
-			newParts = append(newParts, parts[claudeCodeIdx+1:]...)
-			return strings.Join(newParts, ",")
+		// 确保包含 prompt-caching-scope beta（缓存作用域隔离）
+		if !strings.Contains(result, claude.BetaPromptCachingScope) {
+			result = result + "," + claude.BetaPromptCachingScope
 		}
 
-		// 没有claude-code，放在第一位
-		return claude.BetaOAuth + "," + clientBetaHeader
+		return result
 	}
 
 	// 客户端没传，根据模型生成
@@ -3348,7 +3591,7 @@ type streamingResult struct {
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
 }
 
-func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*streamingResult, error) {
+func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, hideCacheUsage bool) (*streamingResult, error) {
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
@@ -3499,23 +3742,29 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				}
 			}
 
-			// 写入客户端（统一处理 data 行和非 data 行）
-			if !clientDisconnected {
-				if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
-					clientDisconnected = true
-					log.Printf("Client disconnected during streaming, continuing to drain upstream for billing")
-				} else {
-					flusher.Flush()
-				}
-			}
-
-			// 无论客户端是否断开，都解析 usage（仅对 data 行）
+			// 无论客户端是否断开，都先解析真实 usage（仅对 data 行）
 			if data != "" {
 				if firstTokenMs == nil && data != "[DONE]" {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 				}
 				s.parseSSEUsage(data, usage)
+			}
+
+			// 隐藏 cache tokens：仅平台注入时合并入 input_tokens 后再发给客户端
+			clientLine := line
+			if hideCacheUsage {
+				clientLine = rewriteCacheUsageInSSELine(line)
+			}
+
+			// 写入客户端（统一处理 data 行和非 data 行）
+			if !clientDisconnected {
+				if _, err := fmt.Fprintf(w, "%s\n", clientLine); err != nil {
+					clientDisconnected = true
+					log.Printf("Client disconnected during streaming, continuing to drain upstream for billing")
+				} else {
+					flusher.Flush()
+				}
 			}
 
 		case <-intervalCh:
@@ -3620,7 +3869,135 @@ func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
 	}
 }
 
-func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
+// ---------------------------------------------------------------------------
+// Cache usage rewrite helpers (隐藏 cache tokens，合并入 input_tokens)
+// ---------------------------------------------------------------------------
+
+// mergeCacheTokensInUsage 在 map[string]any 中合并 cache tokens 到 input_tokens。
+// 同时删除 cache 字段（包括零值），确保客户端看不到 cache 相关信息。
+// 返回 true 表示有修改。
+func mergeCacheTokensInUsage(usageMap map[string]any) bool {
+	if usageMap == nil {
+		return false
+	}
+
+	_, hasCreate := usageMap["cache_creation_input_tokens"]
+	_, hasRead := usageMap["cache_read_input_tokens"]
+	if !hasCreate && !hasRead {
+		return false
+	}
+
+	cacheCreate := intFromAny(usageMap["cache_creation_input_tokens"])
+	cacheRead := intFromAny(usageMap["cache_read_input_tokens"])
+
+	if cacheCreate != 0 || cacheRead != 0 {
+		inputTokens := intFromAny(usageMap["input_tokens"])
+		// 保持 float64 类型一致性（json.Unmarshal 产出 float64）
+		usageMap["input_tokens"] = float64(inputTokens + cacheCreate + cacheRead)
+	}
+	delete(usageMap, "cache_creation_input_tokens")
+	delete(usageMap, "cache_read_input_tokens")
+	return true
+}
+
+// rewriteCacheUsageInJSON 改写 JSON 响应体中的 usage，将 cache tokens 合并入 input_tokens。
+func rewriteCacheUsageInJSON(body []byte) []byte {
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return body
+	}
+	usageMap, ok := data["usage"].(map[string]any)
+	if !ok {
+		return body
+	}
+	if !mergeCacheTokensInUsage(usageMap) {
+		return body
+	}
+	result, err := json.Marshal(data)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+// rewriteCacheUsageInSSELine 改写 SSE data 行中的 usage，将 cache tokens 合并入 input_tokens。
+// 处理 message_start（usage 在 message.usage 中）和 message_delta（usage 在 usage 中）。
+func rewriteCacheUsageInSSELine(line string) string {
+	if !sseDataRe.MatchString(line) {
+		return line
+	}
+	data := sseDataRe.ReplaceAllString(line, "")
+	if data == "" || data == "[DONE]" {
+		return line
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return line
+	}
+
+	modified := false
+	eventType, _ := event["type"].(string)
+
+	switch eventType {
+	case "message_start":
+		if msg, ok := event["message"].(map[string]any); ok {
+			if usageMap, ok := msg["usage"].(map[string]any); ok {
+				if mergeCacheTokensInUsage(usageMap) {
+					modified = true
+				}
+			}
+		}
+	case "message_delta":
+		if usageMap, ok := event["usage"].(map[string]any); ok {
+			if mergeCacheTokensInUsage(usageMap) {
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return line
+	}
+
+	newData, err := json.Marshal(event)
+	if err != nil {
+		return line
+	}
+	return "data: " + string(newData)
+}
+
+// mergeCacheTokensToInput 在 ForwardResult.Usage 中合并 cache tokens 到 input_tokens。
+// 用于确保下游计费按 input 单价计算所有 token。
+func mergeCacheTokensToInput(usage *ClaudeUsage) {
+	if usage == nil {
+		return
+	}
+	usage.InputTokens += usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	usage.CacheCreationInputTokens = 0
+	usage.CacheReadInputTokens = 0
+}
+
+// intFromAny 从 any 中提取 int（兼容 json.Unmarshal 的 float64、json.Number 和原生整数）
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+		return 0
+	case int:
+		return n
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string, hideCacheUsage bool) (*ClaudeUsage, error) {
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
@@ -3665,6 +4042,11 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		if upstreamType := resp.Header.Get("Content-Type"); upstreamType != "" {
 			contentType = upstreamType
 		}
+	}
+
+	// 仅平台注入时隐藏 cache tokens：合并入 input_tokens 后再发给用户
+	if hideCacheUsage {
+		body = rewriteCacheUsageInJSON(body)
 	}
 
 	// 写入响应
@@ -4049,7 +4431,15 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		if err == nil {
 			accountUUID := account.GetExtraString("account_uuid")
 			if accountUUID != "" && fp.ClientID != "" {
-				if newBody, err := s.identityService.RewriteUserID(body, account.ID, accountUUID, fp.ClientID); err == nil && len(newBody) > 0 {
+				scopeKey := c.GetHeader("X-Conversation-ID")
+				if scopeKey == "" {
+					if val, exists := c.Get("api_key"); exists {
+						if apiKey, ok := val.(*APIKey); ok && apiKey.ID != 0 {
+							scopeKey = fmt.Sprintf("apikey_%d", apiKey.ID)
+						}
+					}
+				}
+				if newBody, err := s.identityService.RewriteUserID(body, account.ID, accountUUID, fp.ClientID, scopeKey); err == nil && len(newBody) > 0 {
 					body = newBody
 				}
 			}

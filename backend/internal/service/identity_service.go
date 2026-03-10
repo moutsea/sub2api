@@ -160,9 +160,13 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 // RewriteUserID 重写body中的metadata.user_id
 // 输入格式：user_{clientId}_account__session_{sessionUUID}
 // 输出格式：user_{cachedClientID}_account_{accountUUID}_session_{newHash}
-// RewriteUserID 重写body中的metadata.user_id
+//
+// scopeKey 用于替代原始 sessionUUID 生成缓存作用域 hash：
+//   - 非空时：用 scopeKey 生成 hash（实现按 conversation / apikey 隔离缓存）
+//   - 为空时：回退到原始 sessionUUID（保持旧行为）
+//
 // 使用 json.RawMessage 保留其他字段的原始字节，避免 thinking 块等内容被修改
-func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUID, cachedClientID string) ([]byte, error) {
+func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUID, cachedClientID, scopeKey string) ([]byte, error) {
 	if len(body) == 0 || accountUUID == "" || cachedClientID == "" {
 		return body, nil
 	}
@@ -193,10 +197,16 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 		return body, nil
 	}
 
-	sessionTail := matches[1] // 原始session UUID
+	// 确定用于生成 session hash 的种子：
+	// 优先使用外部提供的 scopeKey（X-Conversation-ID 或 apiKeyID），
+	// 否则回退到客户端原始 sessionUUID
+	hashSource := scopeKey
+	if hashSource == "" {
+		hashSource = matches[1] // 原始 session UUID
+	}
 
-	// 生成新的session hash: SHA256(accountID::sessionTail) -> UUID格式
-	seed := fmt.Sprintf("%d::%s", accountID, sessionTail)
+	// 生成新的session hash: SHA256(accountID::hashSource) -> UUID格式
+	seed := fmt.Sprintf("%d::%s", accountID, hashSource)
 	newSessionHash := generateUUIDFromSeed(seed)
 
 	// 构建新的user_id

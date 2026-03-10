@@ -32,11 +32,12 @@ const (
 
 	// Context window limits for Kiro
 	KiroContextWindowLimit = 200000
-	// Safety margin: trigger pre-check at 85% of the limit
-	// Token estimation has ±10-15% error, so we need a generous margin
-	// to prevent upstream CONTENT_LENGTH_EXCEEDS_THRESHOLD rejections.
-	KiroContextSafetyMargin = 0.85
-	// Effective limit for pre-check (200k * 0.85 = 170k)
+	// Safety margin: trigger pre-check at 78% of the limit
+	// Token estimation has ±10-15% error, CW format transformation adds overhead
+	// (parameter hints, constraint text, history alternation padding), and
+	// upstream may have stricter internal limits. Use generous margin.
+	KiroContextSafetyMargin = 0.78
+	// Effective limit for pre-check (200k * 0.78 = 156k)
 	KiroContextPreCheckLimit = int(float64(KiroContextWindowLimit) * KiroContextSafetyMargin)
 
 	// Input token inflation for client-side context compression trigger
@@ -88,7 +89,88 @@ func EstimateInputTokens(req *ClaudeRequest) int {
 		totalTokens += 10
 	}
 
+	// 8. CW transformation overhead (parameter hints, constraint text, etc.)
+	totalTokens += estimateCWTransformOverhead(req)
+
 	return totalTokens
+}
+
+// estimateCWTransformOverhead estimates additional tokens introduced by the
+// CodeWhisperer format transformation that are NOT present in Claude format:
+//   - Parameter hints appended to each tool description by processTools
+//   - Write/Edit constraint text (~70 tokens per tool)
+//   - tool_choice instruction when required (~50 tokens)
+//   - History alternation filler messages inserted by fixHistoryAlternation
+//   - System prompt wrapping format ("--- SYSTEM PROMPT BEGIN/END ---")
+func estimateCWTransformOverhead(req *ClaudeRequest) int {
+	if req == nil {
+		return 0
+	}
+
+	overhead := 0
+
+	// Parameter hints: processTools adds "[Required: name (type), ...] [Optional: ...]"
+	// to each tool description. Estimate ~3 tokens per schema property.
+	for _, tool := range req.Tools {
+		if tool.InputSchema != nil {
+			if props, ok := tool.InputSchema["properties"].(map[string]any); ok {
+				overhead += len(props)*3 + 5 // properties + hint structure overhead
+			}
+		}
+		// Write/Edit tools get extra constraint + instruction text (~70 tokens each)
+		// Actual: ~280 chars = ~65-75 tokens per tool
+		if tool.Name == "Write" || tool.Name == "Edit" {
+			overhead += 70
+		}
+	}
+
+	// tool_choice=required adds a CRITICAL INSTRUCTION paragraph (~50 tokens)
+	// Actual: ~195 chars = ~48 tokens
+	if isToolChoiceRequiredForEstimation(req.ToolChoice) {
+		overhead += 50
+	}
+
+	// History alternation filler messages: fixHistoryAlternation inserts
+	// "Continue" (user) and "I understand." (assistant) messages to ensure
+	// proper user/assistant alternation. Estimate ~6 tokens per filler.
+	// Rough heuristic: check for adjacent same-role message pairs.
+	if len(req.Messages) > 1 {
+		fillerCount := 0
+		for i := 1; i < len(req.Messages); i++ {
+			if req.Messages[i].Role == req.Messages[i-1].Role {
+				fillerCount++
+			}
+		}
+		// Also account for potential start/end padding
+		if len(req.Messages) > 0 && req.Messages[0].Role == "assistant" {
+			fillerCount++
+		}
+		overhead += fillerCount * 6
+	}
+
+	// System prompt wrapping when no history: "--- SYSTEM PROMPT BEGIN/END ---" (~15 tokens)
+	if len(req.Messages) <= 1 && req.System != nil {
+		overhead += 15
+	}
+
+	return overhead
+}
+
+// isToolChoiceRequiredForEstimation checks if tool_choice is "required"
+// Duplicated from request_transformer to avoid import cycle.
+func isToolChoiceRequiredForEstimation(toolChoice any) bool {
+	if toolChoice == nil {
+		return false
+	}
+	switch tc := toolChoice.(type) {
+	case string:
+		return tc == "required"
+	case map[string]any:
+		if tcType, ok := tc["type"].(string); ok {
+			return tcType == "required"
+		}
+	}
+	return false
 }
 
 // estimateToolDocTokens estimates the extra tokens from tool documentation
@@ -190,7 +272,7 @@ func estimateContentBlockTokens(block any) int {
 		return 10
 
 	case "image":
-		return ImageTokenEstimate
+		return estimateImageBlockTokens(blockMap)
 
 	case "document":
 		return 500
@@ -226,6 +308,9 @@ func estimateTypedContentBlockTokens(block *ContentBlock) int {
 		return 10
 
 	case "image":
+		if block.Source != nil && block.Source.Data != "" {
+			return estimateImageDataTokens(len(block.Source.Data))
+		}
 		return ImageTokenEstimate
 
 	case "tool_use":
@@ -398,6 +483,34 @@ func estimateToolsTokens(tools []ClaudeTool) int {
 	return totalTokens
 }
 
+// estimateImageBlockTokens estimates tokens for an image content block (map[string]any).
+// If the image has base64 data, estimate based on actual data size.
+// Otherwise fall back to the fixed ImageTokenEstimate.
+func estimateImageBlockTokens(blockMap map[string]any) int {
+	if source, ok := blockMap["source"].(map[string]any); ok {
+		if data, ok := source["data"].(string); ok && data != "" {
+			return estimateImageDataTokens(len(data))
+		}
+	}
+	return ImageTokenEstimate
+}
+
+// estimateImageDataTokens estimates tokens based on base64 data length.
+// base64 encodes 3 bytes into 4 chars, so raw bytes ≈ len * 3/4.
+// In CW JSON serialization, the base64 string is embedded as-is,
+// so the serialized cost is approximately len(base64) bytes.
+// We use a conservative ratio: 1 token per 4 bytes of base64 data,
+// with a minimum of ImageTokenEstimate to avoid underestimating small images.
+func estimateImageDataTokens(base64Len int) int {
+	// Each base64 char ≈ 1 byte in JSON serialization
+	// Conservative: 4 bytes per token (same as CharsPerToken)
+	estimated := base64Len / CharsPerToken
+	if estimated < ImageTokenEstimate {
+		return ImageTokenEstimate
+	}
+	return estimated
+}
+
 // estimateTextTokens estimates tokens for plain text
 // Uses official Anthropic tokenizer for accurate counting
 func estimateTextTokens(text string) int {
@@ -466,6 +579,9 @@ func EstimateCache(req *ClaudeRequest) CacheEstimation {
 // estimateFixedTokens calculates the token count for parts of a request that
 // don't change during message truncation: system prompt + tools + CW overhead.
 // This avoids redundant recomputation when trying multiple truncation points.
+// Note: CW transformation overhead is included here as a conservative estimate.
+// Some CW overhead (alternation padding) is technically message-dependent, but
+// including it in fixed tokens leads to more aggressive truncation which is desired.
 func estimateFixedTokens(req *ClaudeRequest) int {
 	if req == nil {
 		return 0
@@ -486,6 +602,9 @@ func estimateFixedTokens(req *ClaudeRequest) int {
 	if req.System != nil {
 		tokens += 10
 	}
+
+	// CW transformation overhead (parameter hints, constraint text, etc.)
+	tokens += estimateCWTransformOverhead(req)
 
 	return tokens
 }

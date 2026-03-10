@@ -183,6 +183,16 @@ func isClaudeBuiltinWebSearch(tool kiro.ClaudeTool) bool {
 func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, claudeReq *kiro.ClaudeRequest) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-WebSearch] account=%s", account.Name)
 
+	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5
+	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model); ok {
+		log.Printf("%s free_tier_model_remap: %s -> %s", prefix, claudeReq.Model, remapped)
+		claudeReq.Model = remapped
+		// 同步更新 body 中的 model 字段
+		if newBody, err := json.Marshal(claudeReq); err == nil {
+			body = newBody
+		}
+	}
+
 	// Check if WebSearch is enabled
 	if !IsWebSearchEnabled() {
 		// WebSearch not enabled, filter out Claude's built-in web_search tools and use normal forward
@@ -438,6 +448,10 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	// Get profile ARN
 	profileArn := account.GetKiroProfileArn()
 
+	// Resolve URL images and compress before CW transformation
+	kiro.ResolveURLImagesInRequest(claudeReq)
+	kiro.CompressImagesInRequest(claudeReq)
+
 	// Transform to CodeWhisperer format
 	// Note: web_search tools are converted to standard toolSpecification format in TransformClaudeToCodeWhisperer
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
@@ -454,8 +468,8 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	// Request routing always uses us-east-1 regardless of account's token region
 	endpoint := "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
 
-	// Generate machine ID for User-Agent headers
-	machineID := kiro.GenerateMachineID(account.GetKiroRefreshToken())
+	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
+	machineID := s.resolveMachineID(account)
 	kiroVersion := "1.6.0"
 	awsHost := "q.us-east-1.amazonaws.com"
 
@@ -478,11 +492,8 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
 
-	// Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	// Proxy URL (Free-tier: random from pool; others: account-bound)
+	proxyURL := s.resolveProxyURL(ctx, account)
 
 	// Execute request
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)

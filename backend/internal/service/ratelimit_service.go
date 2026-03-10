@@ -38,7 +38,7 @@ const geminiPrecheckCacheTTL = time.Minute
 
 const (
 	defaultRateLimitFallback = 5 * time.Minute
-	openAI429Fallback        = 30 * time.Second
+	openAI429Fallback        = 60 * time.Second
 )
 
 // NewRateLimitService 创建RateLimitService实例
@@ -429,18 +429,34 @@ func (s *RateLimitService) parseResetTime(account *Account, headers http.Header)
 		return now.Add(defaultRateLimitFallback), "default:5m"
 	}
 
-	// OpenAI: Retry-After / x-ratelimit-reset-* 优先。
+	// OpenAI: 收集所有可解析的重置时间，取最大值（最长等待）
 	if platform == PlatformOpenAI {
+		type resetCandidate struct {
+			resetAt time.Time
+			source  string
+		}
+		var candidates []resetCandidate
+
 		if resetAt, ok := parseRetryAfter(headers.Get("retry-after"), now); ok {
-			return resetAt, "header:retry-after"
+			candidates = append(candidates, resetCandidate{resetAt, "header:retry-after"})
 		}
 		if resetAt, ok := parseOpenAIReset(headers.Get("x-ratelimit-reset-requests"), now); ok {
-			return resetAt, "header:x-ratelimit-reset-requests"
+			candidates = append(candidates, resetCandidate{resetAt, "header:x-ratelimit-reset-requests"})
 		}
 		if resetAt, ok := parseOpenAIReset(headers.Get("x-ratelimit-reset-tokens"), now); ok {
-			return resetAt, "header:x-ratelimit-reset-tokens"
+			candidates = append(candidates, resetCandidate{resetAt, "header:x-ratelimit-reset-tokens"})
 		}
-		return now.Add(openAI429Fallback), "default:openai-30s"
+
+		if len(candidates) > 0 {
+			best := candidates[0]
+			for _, c := range candidates[1:] {
+				if c.resetAt.After(best.resetAt) {
+					best = c
+				}
+			}
+			return best.resetAt, best.source
+		}
+		return now.Add(openAI429Fallback), "default:openai-60s"
 	}
 
 	// Unknown/other: 通用优先级（Retry-After -> OpenAI reset -> Anthropic reset）
@@ -498,6 +514,14 @@ func parseOpenAIReset(raw string, now time.Time) (time.Time, bool) {
 			d = 0
 		}
 		return now.Add(d), true
+	}
+
+	// ISO 8601 绝对时间: "2024-01-01T00:00:00Z"
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		if t.Before(now) {
+			return now, true
+		}
+		return t, true
 	}
 
 	// 兼容纯数字:

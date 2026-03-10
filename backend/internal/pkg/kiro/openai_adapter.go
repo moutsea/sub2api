@@ -207,13 +207,26 @@ func convertOpenAIContentToClaude(content any) any {
 			case "image_url":
 				if imageURL, ok := partMap["image_url"].(map[string]any); ok {
 					if url, ok := imageURL["url"].(string); ok {
-						blocks = append(blocks, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type": "url",
-								"url":  url,
-							},
-						})
+						if mediaType, data, ok := parseDataURL(url); ok {
+							// data:image/png;base64,... → Claude base64 source
+							blocks = append(blocks, map[string]any{
+								"type": "image",
+								"source": map[string]any{
+									"type":       "base64",
+									"media_type": mediaType,
+									"data":       data,
+								},
+							})
+						} else {
+							// HTTP/HTTPS URL → keep as URL source (resolved later by ResolveURLImagesInRequest)
+							blocks = append(blocks, map[string]any{
+								"type": "image",
+								"source": map[string]any{
+									"type": "url",
+									"url":  url,
+								},
+							})
+						}
 					}
 				}
 			default:
@@ -311,4 +324,49 @@ func extractOpenAIContentText(content any) string {
 		return strings.Join(parts, "")
 	}
 	return ""
+}
+
+// parseDataURL parses a data URL (e.g., "data:image/png;base64,iVBOR...")
+// and returns the media type and base64 data.
+// Returns ok=false if the URL is not a data URL.
+func parseDataURL(url string) (mediaType, data string, ok bool) {
+	// Format: data:[<mediatype>][;base64],<data>
+	if !strings.HasPrefix(url, "data:") {
+		return "", "", false
+	}
+
+	// Find the comma separator between metadata and data
+	commaIdx := strings.Index(url, ",")
+	if commaIdx == -1 {
+		return "", "", false
+	}
+
+	metadata := url[5:commaIdx] // skip "data:"
+	data = url[commaIdx+1:]
+
+	if data == "" {
+		return "", "", false
+	}
+
+	// Check if it's base64 encoded
+	if !strings.HasSuffix(metadata, ";base64") {
+		return "", "", false
+	}
+
+	// Extract media type (everything before ";base64")
+	mediaType = strings.TrimSuffix(metadata, ";base64")
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+
+	// Normalize URL-safe base64 to standard base64
+	// Some generators use - and _ instead of + and /
+	data = strings.NewReplacer("-", "+", "_", "/").Replace(data)
+
+	// Add padding if missing
+	if mod := len(data) % 4; mod != 0 {
+		data += strings.Repeat("=", 4-mod)
+	}
+
+	return mediaType, data, true
 }

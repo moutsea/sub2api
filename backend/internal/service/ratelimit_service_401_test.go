@@ -172,7 +172,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429DefaultFallback(t *testin
 
 	require.False(t, shouldDisable)
 	require.Equal(t, 1, repo.setRateLimitedCall)
-	require.WithinDuration(t, start.Add(30*time.Second), repo.lastRateLimitReset, 2*time.Second)
+	require.WithinDuration(t, start.Add(60*time.Second), repo.lastRateLimitReset, 2*time.Second)
 }
 
 func TestRateLimitService_HandleUpstreamError_Anthropic429UsesResetHeader(t *testing.T) {
@@ -254,7 +254,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429UsesOpenAIResetHeader(t *
 	require.WithinDuration(t, start.Add(1500*time.Millisecond), repo.lastRateLimitReset, 800*time.Millisecond)
 }
 
-func TestRateLimitService_HandleUpstreamError_OpenAI429HeaderPrecedence(t *testing.T) {
+func TestRateLimitService_HandleUpstreamError_OpenAI429TakesMaxResetTime(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
@@ -263,6 +263,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429HeaderPrecedence(t *testi
 		Type:     AccountTypeAPIKey,
 	}
 
+	// Retry-After=2s, x-ratelimit-reset-requests=1500ms → max is 2s (Retry-After)
 	start := time.Now()
 	headers := http.Header{
 		"Retry-After":                []string{"2"},
@@ -279,4 +280,33 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429HeaderPrecedence(t *testi
 	require.False(t, shouldDisable)
 	require.Equal(t, 1, repo.setRateLimitedCall)
 	require.WithinDuration(t, start.Add(2*time.Second), repo.lastRateLimitReset, 1500*time.Millisecond)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI429MaxFromNonRetryAfterHeader(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       207,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	// Retry-After=1s, x-ratelimit-reset-tokens=5s → max is 5s (tokens header wins)
+	start := time.Now()
+	headers := http.Header{
+		"Retry-After":              []string{"1"},
+		"X-Ratelimit-Reset-Tokens": []string{"5s"},
+	}
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"error":{"message":"Rate limit reached"}}`),
+	)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 1, repo.setRateLimitedCall)
+	// Should pick 5s (max), not 1s
+	require.WithinDuration(t, start.Add(5*time.Second), repo.lastRateLimitReset, 1500*time.Millisecond)
 }

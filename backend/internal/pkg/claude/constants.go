@@ -10,19 +10,20 @@ const (
 	BetaInterleavedThinking      = "interleaved-thinking-2025-05-14"
 	BetaFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
 	BetaContext1M                = "context-1m-2025-08-07"
+	BetaPromptCachingScope       = "prompt-caching-scope-2026-01-05"
 )
 
 // DefaultBetaHeader Claude Code 客户端默认的 anthropic-beta header
-const DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+const DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming + "," + BetaPromptCachingScope
 
 // HaikuBetaHeader Haiku 模型使用的 anthropic-beta header（不需要 claude-code beta）
-const HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking
+const HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking + "," + BetaPromptCachingScope
 
 // APIKeyBetaHeader API-key 账号建议使用的 anthropic-beta header（不包含 oauth）
-const APIKeyBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+const APIKeyBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming + "," + BetaPromptCachingScope
 
 // APIKeyHaikuBetaHeader Haiku 模型在 API-key 账号下使用的 anthropic-beta header（不包含 oauth / claude-code）
-const APIKeyHaikuBetaHeader = BetaInterleavedThinking
+const APIKeyHaikuBetaHeader = BetaInterleavedThinking + "," + BetaPromptCachingScope
 
 // DefaultHeaders 是 Claude Code 客户端默认请求头。
 var DefaultHeaders = map[string]string{

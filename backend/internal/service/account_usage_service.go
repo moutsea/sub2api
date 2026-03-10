@@ -101,6 +101,7 @@ type UsageCache struct {
 	antigravityCache sync.Map // accountID -> *antigravityUsageCache
 	kiroCreditsCache sync.Map // accountID -> *kiroCreditsCache
 	quotaUnhealthy   sync.Map // accountID -> time.Time (标记时间)
+	openaiQuotaReset sync.Map // accountID (int64) → time.Time (resetAt) — OpenAI 额度已满标记
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -134,6 +135,35 @@ func (c *UsageCache) GetUnhealthyAccountIDs() []int64 {
 		return true
 	})
 	return ids
+}
+
+// IsOpenAIQuotaAvailable 检查 OpenAI 账号额度是否可用
+// 如果不在 map 中或 resetAt 已过期则返回 true，过期时自动清除
+func (c *UsageCache) IsOpenAIQuotaAvailable(accountID int64) bool {
+	v, ok := c.openaiQuotaReset.Load(accountID)
+	if !ok {
+		return true
+	}
+	resetAt, ok := v.(time.Time)
+	if !ok {
+		c.openaiQuotaReset.Delete(accountID)
+		return true
+	}
+	if time.Now().After(resetAt) {
+		c.openaiQuotaReset.Delete(accountID)
+		return true
+	}
+	return false
+}
+
+// SetOpenAIQuotaReset 标记 OpenAI 账号额度已满，在 resetAt 之前不再选中
+func (c *UsageCache) SetOpenAIQuotaReset(accountID int64, resetAt time.Time) {
+	c.openaiQuotaReset.Store(accountID, resetAt)
+}
+
+// ClearOpenAIQuotaReset 清除 OpenAI 账号的额度已满标记
+func (c *UsageCache) ClearOpenAIQuotaReset(accountID int64) {
+	c.openaiQuotaReset.Delete(accountID)
 }
 
 // InvalidateAntigravityCache 使指定账号的 Antigravity 缓存失效
@@ -178,6 +208,17 @@ func (c *UsageCache) GetKiroAvailableCredits(accountID int64) float64 {
 		}
 	}
 	return -1 // 缓存未命中，返回 -1 表示无法获取
+}
+
+// GetKiroSubscriptionType 获取 Kiro 账号的订阅类型
+// 返回订阅类型字符串（如 "KIRO_FREE"、"KIRO_ENTERPRISE_POWER" 等），缓存未命中返回空字符串
+func (c *UsageCache) GetKiroSubscriptionType(accountID int64) string {
+	if cached, ok := c.kiroCreditsCache.Load(accountID); ok {
+		if cache, ok := cached.(*kiroCreditsCache); ok && cache.creditsInfo != nil {
+			return cache.creditsInfo.SubscriptionType
+		}
+	}
+	return ""
 }
 
 // WindowStats 窗口期统计
@@ -496,7 +537,7 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 		proxyURL = account.Proxy.URL()
 	}
 
-	// 4. 调用 API 获取积分信息（usage API 固定使用 us-east-1）
+	// 4. 调用 API 获取积分信息（Q 服务仅部署在 us-east-1 和 eu-central-1，固定使用 us-east-1）
 	fetcher := kiro.NewUsageLimitsFetcher(nil) // Use default HTTP client
 	limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL)
 	if err != nil {

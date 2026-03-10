@@ -41,17 +41,29 @@ var codexModelMap = map[string]string{
 	"gpt-5.2-codex-medium":      "gpt-5.2-codex",
 	"gpt-5.2-codex-high":        "gpt-5.2-codex",
 	"gpt-5.2-codex-xhigh":       "gpt-5.2-codex",
-	"gpt-5.3":                   "gpt-5.3",
-	"gpt-5.3-none":              "gpt-5.3",
-	"gpt-5.3-low":               "gpt-5.3",
-	"gpt-5.3-medium":            "gpt-5.3",
-	"gpt-5.3-high":              "gpt-5.3",
-	"gpt-5.3-xhigh":             "gpt-5.3",
-	"gpt-5.3-codex":             "gpt-5.3-codex",
-	"gpt-5.3-codex-low":         "gpt-5.3-codex",
-	"gpt-5.3-codex-medium":      "gpt-5.3-codex",
-	"gpt-5.3-codex-high":        "gpt-5.3-codex",
-	"gpt-5.3-codex-xhigh":       "gpt-5.3-codex",
+	// gpt-5.3 系列在 ChatGPT OAuth 端已不可用，统一映射到 gpt-5.2 系列。
+	"gpt-5.3":                   "gpt-5.2",
+	"gpt-5.3-none":              "gpt-5.2",
+	"gpt-5.3-low":               "gpt-5.2",
+	"gpt-5.3-medium":            "gpt-5.2",
+	"gpt-5.3-high":              "gpt-5.2",
+	"gpt-5.3-xhigh":             "gpt-5.2",
+	"gpt-5.3-codex":             "gpt-5.2-codex",
+	"gpt-5.3-codex-low":         "gpt-5.2-codex",
+	"gpt-5.3-codex-medium":      "gpt-5.2-codex",
+	"gpt-5.3-codex-high":        "gpt-5.2-codex",
+	"gpt-5.3-codex-xhigh":       "gpt-5.2-codex",
+	"gpt-5.4":                   "gpt-5.4",
+	"gpt-5.4-none":              "gpt-5.4",
+	"gpt-5.4-low":               "gpt-5.4",
+	"gpt-5.4-medium":            "gpt-5.4",
+	"gpt-5.4-high":              "gpt-5.4",
+	"gpt-5.4-xhigh":             "gpt-5.4",
+	"gpt-5.4-codex":             "gpt-5.4-codex",
+	"gpt-5.4-codex-low":         "gpt-5.4-codex",
+	"gpt-5.4-codex-medium":      "gpt-5.4-codex",
+	"gpt-5.4-codex-high":        "gpt-5.4-codex",
+	"gpt-5.4-codex-xhigh":       "gpt-5.4-codex",
 	"gpt-5.1-codex-mini":        "gpt-5.1-codex-mini",
 	"gpt-5.1-codex-mini-medium": "gpt-5.1-codex-mini",
 	"gpt-5.1-codex-mini-high":   "gpt-5.1-codex-mini",
@@ -183,7 +195,7 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 
 func normalizeCodexModel(model string) string {
 	if model == "" {
-		return "gpt-5.3-codex"
+		return "gpt-5.4-codex"
 	}
 
 	modelID := model
@@ -198,11 +210,18 @@ func normalizeCodexModel(model string) string {
 
 	normalized := strings.ToLower(modelID)
 
+	if strings.Contains(normalized, "gpt-5.4-codex") || strings.Contains(normalized, "gpt 5.4 codex") {
+		return "gpt-5.4-codex"
+	}
+	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
+		return "gpt-5.4"
+	}
+	// gpt-5.3 系列不再可用，回退到 gpt-5.2
 	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
-		return "gpt-5.3-codex"
+		return "gpt-5.2-codex"
 	}
 	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
-		return "gpt-5.3"
+		return "gpt-5.2"
 	}
 	if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
 		return "gpt-5.2-codex"
@@ -228,20 +247,24 @@ func normalizeCodexModel(model string) string {
 		return "gpt-5.1"
 	}
 	if strings.Contains(normalized, "codex") {
-		return "gpt-5.3-codex"
+		return "gpt-5.4-codex"
 	}
 	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.3-codex"
+		return "gpt-5.4-codex"
 	}
 
-	return "gpt-5.3-codex"
+	return "gpt-5.4-codex"
 }
 
 // extractCodexModelEffort extracts the reasoning effort suffix from the original model name
 // by comparing it with the normalized model name.
 // e.g. ("gpt-5.3-codex-xhigh", "gpt-5.3-codex") → "xhigh"
-//      ("gpt-5.2-high", "gpt-5.2") → "high"
-//      ("gpt-5.1-codex", "gpt-5.1-codex") → "" (no effort suffix)
+//
+//	("gpt-5.2-high", "gpt-5.2") → "high"
+//	("gpt-5.1-codex", "gpt-5.1-codex") → "" (no effort suffix)
+//
+// Also handles cross-version normalization (e.g. 5.3→5.2) by matching the effort
+// suffix directly from the original model name when the prefix check fails.
 func extractCodexModelEffort(originalModel, normalizedModel string) string {
 	if originalModel == "" || normalizedModel == "" || originalModel == normalizedModel {
 		return ""
@@ -249,26 +272,82 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 	original := strings.ToLower(originalModel)
 	normalized := strings.ToLower(normalizedModel)
 
-	// The effort suffix is the part after the normalized model name + "-"
-	if !strings.HasPrefix(original, normalized+"-") {
-		// Try stripping path prefix (e.g. "provider/gpt-5.3-codex-xhigh")
-		if idx := strings.LastIndex(original, "/"); idx >= 0 {
-			original = original[idx+1:]
-		}
-		if !strings.HasPrefix(original, normalized+"-") {
-			return ""
-		}
+	// Try stripping path prefix (e.g. "provider/gpt-5.3-codex-xhigh")
+	if idx := strings.LastIndex(original, "/"); idx >= 0 {
+		original = original[idx+1:]
 	}
-
-	suffix := original[len(normalized)+1:]
 
 	validEfforts := map[string]bool{
 		"none": true, "low": true, "medium": true, "high": true, "xhigh": true,
 	}
-	if validEfforts[suffix] {
-		return suffix
+
+	// Primary: the effort suffix is the part after the normalized model name + "-"
+	if strings.HasPrefix(original, normalized+"-") {
+		suffix := original[len(normalized)+1:]
+		if validEfforts[suffix] {
+			return suffix
+		}
 	}
+
+	// Fallback: when normalization changes the version (e.g. 5.3→5.2),
+	// the prefix won't match. Extract effort from the trailing segment directly.
+	if lastDash := strings.LastIndex(original, "-"); lastDash >= 0 {
+		suffix := original[lastDash+1:]
+		if validEfforts[suffix] {
+			return suffix
+		}
+	}
+
 	return ""
+}
+
+// stripCodexModelSuffix removes the "-codex" segment from GPT model names.
+// ChatGPT OAuth endpoint (chatgpt.com/backend-api/codex/responses) no longer
+// accepts models with the "-codex" suffix; the base model name must be used instead.
+// e.g. "gpt-5.3-codex" → "gpt-5.3", "gpt-5.1-codex-max" → "gpt-5.1-max"
+// Non-GPT models are returned unchanged.
+func stripCodexModelSuffix(model string) string {
+	if !strings.HasPrefix(model, "gpt-") {
+		return model
+	}
+	return strings.Replace(model, "-codex", "", 1)
+}
+
+// oauthModelFallbackVersion is the safe model version for non-Plus OAuth accounts.
+const oauthModelFallbackVersion = "gpt-5.2"
+
+// getOAuthModelFallback returns a downgraded model for OAuth accounts when the
+// upstream rejects a model (e.g. Free accounts cannot use gpt-5.4).
+// Returns "" if no fallback is available (model is already the fallback or lower).
+func getOAuthModelFallback(currentModel string) string {
+	lower := strings.ToLower(currentModel)
+
+	// 已经是 5.2 或更低版本，无需回退
+	if strings.Contains(lower, "gpt-5.2") || strings.Contains(lower, "gpt-5.1") ||
+		strings.Contains(lower, "gpt-5-") || lower == "gpt-5" {
+		return ""
+	}
+
+	// gpt-5.4 / gpt-5.3 → gpt-5.2 (保留 -codex 后缀结构以便下游 strip)
+	if strings.Contains(lower, "codex") {
+		return "gpt-5.2-codex"
+	}
+	return oauthModelFallbackVersion
+}
+
+// isModelNotSupportedError checks if an upstream error message indicates
+// a model is not supported/available for the account.
+func isModelNotSupportedError(errorMessage string) bool {
+	if errorMessage == "" {
+		return false
+	}
+	lower := strings.ToLower(errorMessage)
+	return (strings.Contains(lower, "model") || strings.Contains(lower, "gpt-")) &&
+		(strings.Contains(lower, "not supported") ||
+			strings.Contains(lower, "not available") ||
+			strings.Contains(lower, "not found") ||
+			strings.Contains(lower, "does not exist") ||
+			strings.Contains(lower, "is not supported"))
 }
 
 func getNormalizedCodexModel(modelID string) string {

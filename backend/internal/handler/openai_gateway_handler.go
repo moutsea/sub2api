@@ -295,7 +295,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					return
 				}
 				if failoverErr.StatusCode == http.StatusTooManyRequests {
-					// 429 仅受全局上限约束，允许更多切换。
+					// 429: 清除 sticky session，避免下次请求仍路由到同一账号
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
 					totalSwitchCount++
 					log.Printf("Account %d: upstream 429, rate-limit failover (total=%d/%d)", account.ID, totalSwitchCount, maxTotalSwitches)
 				} else {
@@ -560,7 +561,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					return
 				}
 				if failoverErr.StatusCode == http.StatusTooManyRequests {
-					// 429 仅受全局上限约束，允许更多切换。
+					// 429: 清除 sticky session，避免下次请求仍路由到同一账号
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
 					totalSwitchCount++
 					log.Printf("Account %d: upstream 429, rate-limit failover (total=%d/%d)", account.ID, totalSwitchCount, maxTotalSwitches)
 				} else {
