@@ -247,14 +247,8 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 		nonStreamReq := *currentReq
 		nonStreamReq.Stream = false
 
-		// Marshal request
-		reqBody, err := json.Marshal(nonStreamReq)
-		if err != nil {
-			return nil, fmt.Errorf("marshal request: %w", err)
-		}
-
 		// Execute CodeWhisperer request
-		resp, err := s.executeCodeWhispererRequest(ctx, c, account, reqBody, &nonStreamReq)
+		resp, err := s.executeCodeWhispererRequest(ctx, c, account, &nonStreamReq)
 		if err != nil {
 			return nil, err
 		}
@@ -352,13 +346,8 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 		nonStreamReq := *currentReq
 		nonStreamReq.Stream = false
 
-		reqBody, err := json.Marshal(nonStreamReq)
-		if err != nil {
-			return nil, fmt.Errorf("marshal request: %w", err)
-		}
-
 		// Execute CodeWhisperer request
-		resp, err := s.executeCodeWhispererRequest(ctx, c, account, reqBody, &nonStreamReq)
+		resp, err := s.executeCodeWhispererRequest(ctx, c, account, &nonStreamReq)
 		if err != nil {
 			log.Printf("%s stream iteration=%d execute error: %v", prefix, iteration, err)
 			return nil, err
@@ -437,13 +426,13 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 	return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 }
 
-// maxWebSearchRequestBodySize is the safe body size limit for CW requests in the
-// agentic loop. Matches the limit used in Forward() (800KB, upstream hard limit ~810KB).
-const maxWebSearchRequestBodySize = 800 * 1024
-
 // executeCodeWhispererRequest executes a CodeWhisperer request with endpoint failover,
 // 401 token refresh, and 429/529 retry — mirroring the resilience of Forward().
-func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c *gin.Context, account *Account, reqBody []byte, claudeReq *kiro.ClaudeRequest) (*http.Response, error) {
+//
+// Note: ResolveURLImagesInRequest and CompressImagesInRequest modify claudeReq in-place.
+// This is intentional — images only need to be resolved/compressed once, and subsequent
+// agentic loop iterations reuse the already-processed version.
+func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest) (*http.Response, error) {
 	prefix := "[kiro-WebSearch]"
 
 	// Get access token
@@ -455,7 +444,8 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	// Get profile ARN
 	profileArn := account.GetKiroProfileArn()
 
-	// Resolve URL images and compress before CW transformation
+	// Resolve URL images and compress before CW transformation.
+	// These modify claudeReq in-place (intentional — avoids redundant processing in subsequent iterations).
 	kiro.ResolveURLImagesInRequest(claudeReq)
 	kiro.CompressImagesInRequest(claudeReq)
 
@@ -471,10 +461,10 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("marshal cw request: %w", err)
 	}
 
-	// P1 fix: check body size and truncate if needed (CW hard limit ~810KB)
-	if len(cwReqBody) > maxWebSearchRequestBodySize {
-		log.Printf("%s body_oversized size=%d limit=%d, attempting truncation", prefix, len(cwReqBody), maxWebSearchRequestBodySize)
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxWebSearchRequestBodySize)
+	// Body size check and truncation (CW hard limit ~810KB, same as Forward())
+	if len(cwReqBody) > kiroMaxCWRequestBodySize {
+		log.Printf("%s body_oversized size=%d limit=%d, attempting truncation", prefix, len(cwReqBody), kiroMaxCWRequestBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, kiroMaxCWRequestBodySize)
 		if truncErr != nil {
 			log.Printf("%s body_truncation_failed error=%v", prefix, truncErr)
 			return nil, fmt.Errorf("request body too large (%d bytes) and truncation failed: %w", len(cwReqBody), truncErr)
@@ -482,6 +472,12 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		log.Printf("%s body_truncated original=%d new=%d", prefix, len(cwReqBody), len(truncatedBody))
 		cwReq = truncatedReq
 		cwReqBody = truncatedBody
+	}
+
+	// Final safety check: if still too large after truncation, reject (defense-in-depth)
+	if len(cwReqBody) > kiroMaxCWRequestBodySize {
+		log.Printf("%s body_still_too_large after truncation size=%d limit=%d", prefix, len(cwReqBody), kiroMaxCWRequestBodySize)
+		return nil, fmt.Errorf("request body still too large (%d bytes) after truncation", len(cwReqBody))
 	}
 
 	// Build endpoint list (primary + fallback) — same as Forward()
@@ -498,7 +494,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	var lastErr error
 	tokenRefreshed := false
 
-	for _, ep := range endpoints {
+	for epIdx, ep := range endpoints {
 		for attempt := 1; attempt <= kiroMaxRetries; attempt++ {
 			// Check context cancellation
 			select {
@@ -530,6 +526,15 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 
 			resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 			if err != nil {
+				safeErr := sanitizeUpstreamErrorMessage(err.Error())
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:    account.Platform,
+					AccountID:   account.ID,
+					AccountName: account.Name,
+					Kind:        "request_error",
+					Message:     safeErr,
+				})
+
 				if attempt < kiroMaxRetries {
 					log.Printf("%s endpoint=%s attempt=%d/%d request_error=%v, retrying", prefix, ep.Name, attempt, kiroMaxRetries, err)
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
@@ -545,20 +550,31 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			// Handle 401: refresh token once, then retry on same endpoint
 			if resp.StatusCode == http.StatusUnauthorized {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				resp.Body.Close()
+				_ = resp.Body.Close()
+
+				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-amzn-requestid"),
+					Kind:               "http_error",
+					Message:            upstreamMsg,
+				})
 
 				if tokenRefreshed || s.tokenProvider == nil {
-					log.Printf("%s endpoint=%s status=401 token_already_refreshed, trying next endpoint", prefix, ep.Name)
-					lastErr = fmt.Errorf("endpoint %s: 401 after token refresh", ep.Name)
+					log.Printf("%s endpoint=%s status=401 token_already_refreshed, trying next endpoint msg=%s", prefix, ep.Name, upstreamMsg)
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 					break // try next endpoint
 				}
 
-				log.Printf("%s endpoint=%s status=401 refreshing token... body=%s", prefix, ep.Name, truncateForLog(respBody, 200))
+				log.Printf("%s endpoint=%s status=401 refreshing token... msg=%s", prefix, ep.Name, upstreamMsg)
 				s.tokenProvider.InvalidateToken(account.ID)
 				newToken, refreshErr := s.tokenProvider.GetAccessToken(ctx, account)
 				if refreshErr != nil {
 					log.Printf("%s endpoint=%s token_refresh_failed error=%v", prefix, ep.Name, refreshErr)
-					lastErr = fmt.Errorf("endpoint %s: token refresh failed: %w", ep.Name, refreshErr)
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 					break // try next endpoint
 				}
 				accessToken = newToken
@@ -570,33 +586,80 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			// Handle 429: try next endpoint
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				resp.Body.Close()
+				_ = resp.Body.Close()
+
+				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-amzn-requestid"),
+					Kind:               "account_rate_limited",
+					Message:            upstreamMsg,
+				})
 				log.Printf("%s endpoint=%s status=429, trying next endpoint", prefix, ep.Name)
-				lastErr = fmt.Errorf("endpoint %s: 429 rate limited", ep.Name)
+				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 				break // try next endpoint
 			}
 
 			// Handle 529: try next endpoint
 			if resp.StatusCode == 529 {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				resp.Body.Close()
+				_ = resp.Body.Close()
+
+				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-amzn-requestid"),
+					Kind:               "http_error",
+					Message:            upstreamMsg,
+				})
 				log.Printf("%s endpoint=%s status=529 overloaded, trying next endpoint", prefix, ep.Name)
-				lastErr = fmt.Errorf("endpoint %s: 529 overloaded", ep.Name)
+				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 				break // try next endpoint
 			}
 
 			// Handle other non-OK statuses (400, 403, 5xx etc.)
 			if resp.StatusCode != http.StatusOK {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				resp.Body.Close()
+				_ = resp.Body.Close()
+
+				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
-				log.Printf("%s endpoint=%s status=%d body=%s", prefix, ep.Name, resp.StatusCode, truncateForLog(respBody, 500))
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-amzn-requestid"),
+					Kind:               "http_error",
+					Message:            upstreamMsg,
+				})
+				log.Printf("%s endpoint=%s status=%d msg=%s", prefix, ep.Name, resp.StatusCode, upstreamMsg)
 
 				// 400 is deterministic — both endpoints will reject, no point failing over
 				if resp.StatusCode == http.StatusBadRequest {
-					return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, truncateForLog(respBody, 200))
+					// Check for context-too-long errors
+					msgLower := strings.ToLower(upstreamMsg)
+					if strings.Contains(msgLower, "input too long") ||
+						strings.Contains(msgLower, "is too long") ||
+						strings.Contains(msgLower, "too large") ||
+						strings.Contains(msgLower, "context") ||
+						strings.Contains(msgLower, "exceeds") ||
+						strings.Contains(msgLower, "maximum") ||
+						strings.Contains(msgLower, "content_length") {
+						return nil, &ContextTooLongError{
+							EstimatedTokens: 0,
+							Limit:           kiro.KiroContextWindowLimit,
+						}
+					}
+					return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, upstreamMsg)
 				}
 
 				// Other server errors: retry
@@ -607,18 +670,23 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 					}
 					continue
 				}
-				lastErr = fmt.Errorf("endpoint %s: status %d", ep.Name, resp.StatusCode)
+				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 				break // try next endpoint
 			}
 
 			// Success
 			return resp, nil
 		}
+
+		// Log endpoint switch (if not the last endpoint)
+		if epIdx < len(endpoints)-1 {
+			log.Printf("%s switching from endpoint=%s to next endpoint", prefix, ep.Name)
+		}
 	}
 
 	// All endpoints exhausted
 	if lastErr != nil {
-		return nil, fmt.Errorf("all endpoints failed: %w", lastErr)
+		return nil, lastErr
 	}
 	return nil, fmt.Errorf("all endpoints failed")
 }

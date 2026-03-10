@@ -25,6 +25,11 @@ const (
 	kiroMaxRetries     = 3
 	kiroRetryBaseDelay = 1 * time.Second
 	kiroRetryMaxDelay  = 16 * time.Second
+
+	// kiroMaxCWRequestBodySize is the safe body size limit for CodeWhisperer requests.
+	// Both AWSQ and CW endpoints reject requests with body > ~810KB.
+	// Used by Forward() and executeCodeWhispererRequest (WebSearch agentic loop).
+	kiroMaxCWRequestBodySize = 800 * 1024 // 800 KB
 )
 
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
@@ -387,13 +392,11 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Check request body size and truncate history if needed.
 	// Both AWSQ and CodeWhisperer reject requests with body > ~810KB.
-	// Use 800KB as safe limit with margin.
-	const maxRequestBodySize = 800 * 1024 // 800 KB (upstream hard limit ~810KB)
-	if len(reqBody) > maxRequestBodySize {
+	if len(reqBody) > kiroMaxCWRequestBodySize {
 		log.Printf("%s status=request_body_oversized body_size=%d limit=%d, attempting history truncation",
-			prefix, len(reqBody), maxRequestBodySize)
+			prefix, len(reqBody), kiroMaxCWRequestBodySize)
 
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxRequestBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, kiroMaxCWRequestBodySize)
 		if truncErr != nil {
 			log.Printf("%s status=body_truncation_failed error=%v", prefix, truncErr)
 			return nil, &ContextTooLongError{
@@ -409,9 +412,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Final safety check: if still too large after truncation, reject
-	if len(reqBody) > maxRequestBodySize {
+	if len(reqBody) > kiroMaxCWRequestBodySize {
 		log.Printf("%s status=request_still_too_large after truncation body_size=%d limit=%d",
-			prefix, len(reqBody), maxRequestBodySize)
+			prefix, len(reqBody), kiroMaxCWRequestBodySize)
 		return nil, &ContextTooLongError{
 			EstimatedTokens: estimatedTokens,
 			Limit:           kiro.KiroContextWindowLimit,
