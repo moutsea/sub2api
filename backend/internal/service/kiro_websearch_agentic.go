@@ -437,8 +437,15 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 	return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 }
 
-// executeCodeWhispererRequest executes a CodeWhisperer request
+// maxWebSearchRequestBodySize is the safe body size limit for CW requests in the
+// agentic loop. Matches the limit used in Forward() (800KB, upstream hard limit ~810KB).
+const maxWebSearchRequestBodySize = 800 * 1024
+
+// executeCodeWhispererRequest executes a CodeWhisperer request with endpoint failover,
+// 401 token refresh, and 429/529 retry — mirroring the resilience of Forward().
 func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c *gin.Context, account *Account, reqBody []byte, claudeReq *kiro.ClaudeRequest) (*http.Response, error) {
+	prefix := "[kiro-WebSearch]"
+
 	// Get access token
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
@@ -453,7 +460,6 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	kiro.CompressImagesInRequest(claudeReq)
 
 	// Transform to CodeWhisperer format
-	// Note: web_search tools are converted to standard toolSpecification format in TransformClaudeToCodeWhisperer
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
 	if err != nil {
 		return nil, fmt.Errorf("transform request: %w", err)
@@ -465,49 +471,154 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("marshal cw request: %w", err)
 	}
 
-	// Request routing always uses us-east-1 regardless of account's token region
-	endpoint := "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
+	// P1 fix: check body size and truncate if needed (CW hard limit ~810KB)
+	if len(cwReqBody) > maxWebSearchRequestBodySize {
+		log.Printf("%s body_oversized size=%d limit=%d, attempting truncation", prefix, len(cwReqBody), maxWebSearchRequestBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxWebSearchRequestBodySize)
+		if truncErr != nil {
+			log.Printf("%s body_truncation_failed error=%v", prefix, truncErr)
+			return nil, fmt.Errorf("request body too large (%d bytes) and truncation failed: %w", len(cwReqBody), truncErr)
+		}
+		log.Printf("%s body_truncated original=%d new=%d", prefix, len(cwReqBody), len(truncatedBody))
+		cwReq = truncatedReq
+		cwReqBody = truncatedBody
+	}
+
+	// Build endpoint list (primary + fallback) — same as Forward()
+	endpoints := getKiroEndpoints(account)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account)
 	kiroVersion := "1.6.0"
-	awsHost := "q.us-east-1.amazonaws.com"
-
-	// Create HTTP request
-	upstreamReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(cwReqBody))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	// Set headers
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
-	upstreamReq.Header.Set("Accept", "text/event-stream")
-	upstreamReq.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
-	upstreamReq.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
-	upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-	upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-	upstreamReq.Header.Set("Host", awsHost)
-	upstreamReq.Header.Set("Connection", "close")
-	upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
-	upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
 	proxyURL := s.resolveProxyURL(ctx, account)
 
-	// Execute request
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	if err != nil {
-		return nil, fmt.Errorf("upstream request failed: %w", err)
+	// Endpoint failover loop with retries — mirrors Forward() resilience
+	var lastErr error
+	tokenRefreshed := false
+
+	for _, ep := range endpoints {
+		for attempt := 1; attempt <= kiroMaxRetries; attempt++ {
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+
+			upstreamReq, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(cwReqBody))
+			if err != nil {
+				return nil, fmt.Errorf("create request: %w", err)
+			}
+
+			// Set headers
+			upstreamReq.Header.Set("Content-Type", "application/json")
+			upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
+			upstreamReq.Header.Set("Accept", "text/event-stream")
+			upstreamReq.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
+			upstreamReq.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
+			upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+			upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
+			upstreamReq.Header.Set("Host", ep.Host)
+			upstreamReq.Header.Set("Connection", "close")
+			upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+			upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
+			if ep.AmzTarget != "" {
+				upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
+			}
+
+			resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+			if err != nil {
+				if attempt < kiroMaxRetries {
+					log.Printf("%s endpoint=%s attempt=%d/%d request_error=%v, retrying", prefix, ep.Name, attempt, kiroMaxRetries, err)
+					if !sleepKiroBackoffWithContext(ctx, attempt) {
+						return nil, ctx.Err()
+					}
+					continue
+				}
+				log.Printf("%s endpoint=%s retries_exhausted error=%v", prefix, ep.Name, err)
+				lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
+				break // try next endpoint
+			}
+
+			// Handle 401: refresh token once, then retry on same endpoint
+			if resp.StatusCode == http.StatusUnauthorized {
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+				resp.Body.Close()
+
+				if tokenRefreshed || s.tokenProvider == nil {
+					log.Printf("%s endpoint=%s status=401 token_already_refreshed, trying next endpoint", prefix, ep.Name)
+					lastErr = fmt.Errorf("endpoint %s: 401 after token refresh", ep.Name)
+					break // try next endpoint
+				}
+
+				log.Printf("%s endpoint=%s status=401 refreshing token... body=%s", prefix, ep.Name, truncateForLog(respBody, 200))
+				s.tokenProvider.InvalidateToken(account.ID)
+				newToken, refreshErr := s.tokenProvider.GetAccessToken(ctx, account)
+				if refreshErr != nil {
+					log.Printf("%s endpoint=%s token_refresh_failed error=%v", prefix, ep.Name, refreshErr)
+					lastErr = fmt.Errorf("endpoint %s: token refresh failed: %w", ep.Name, refreshErr)
+					break // try next endpoint
+				}
+				accessToken = newToken
+				tokenRefreshed = true
+				log.Printf("%s endpoint=%s token_refreshed, retrying", prefix, ep.Name)
+				continue // retry same endpoint with new token
+			}
+
+			// Handle 429: try next endpoint
+			if resp.StatusCode == http.StatusTooManyRequests {
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+				resp.Body.Close()
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+				log.Printf("%s endpoint=%s status=429, trying next endpoint", prefix, ep.Name)
+				lastErr = fmt.Errorf("endpoint %s: 429 rate limited", ep.Name)
+				break // try next endpoint
+			}
+
+			// Handle 529: try next endpoint
+			if resp.StatusCode == 529 {
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+				resp.Body.Close()
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+				log.Printf("%s endpoint=%s status=529 overloaded, trying next endpoint", prefix, ep.Name)
+				lastErr = fmt.Errorf("endpoint %s: 529 overloaded", ep.Name)
+				break // try next endpoint
+			}
+
+			// Handle other non-OK statuses (400, 403, 5xx etc.)
+			if resp.StatusCode != http.StatusOK {
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+				resp.Body.Close()
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+				log.Printf("%s endpoint=%s status=%d body=%s", prefix, ep.Name, resp.StatusCode, truncateForLog(respBody, 500))
+
+				// 400 is deterministic — both endpoints will reject, no point failing over
+				if resp.StatusCode == http.StatusBadRequest {
+					return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, truncateForLog(respBody, 200))
+				}
+
+				// Other server errors: retry
+				if attempt < kiroMaxRetries {
+					log.Printf("%s endpoint=%s status=%d retrying %d/%d", prefix, ep.Name, resp.StatusCode, attempt, kiroMaxRetries)
+					if !sleepKiroBackoffWithContext(ctx, attempt) {
+						return nil, ctx.Err()
+					}
+					continue
+				}
+				lastErr = fmt.Errorf("endpoint %s: status %d", ep.Name, resp.StatusCode)
+				break // try next endpoint
+			}
+
+			// Success
+			return resp, nil
+		}
 	}
 
-	// Check status
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		log.Printf("[kiro-WebSearch] upstream error status=%d response=%s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, string(respBody))
+	// All endpoints exhausted
+	if lastErr != nil {
+		return nil, fmt.Errorf("all endpoints failed: %w", lastErr)
 	}
-
-	return resp, nil
+	return nil, fmt.Errorf("all endpoints failed")
 }
