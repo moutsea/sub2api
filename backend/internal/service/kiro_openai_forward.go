@@ -113,12 +113,11 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	// 7. Body size check and truncation
-	const maxRequestBodySize = 800 * 1024
-	if len(reqBody) > maxRequestBodySize {
+	if len(reqBody) > kiroMaxCWRequestBodySize {
 		log.Printf("%s status=request_body_oversized body_size=%d limit=%d, attempting truncation",
-			prefix, len(reqBody), maxRequestBodySize)
+			prefix, len(reqBody), kiroMaxCWRequestBodySize)
 
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxRequestBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, kiroMaxCWRequestBodySize)
 		if truncErr != nil {
 			return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
 				"Input context too long. Please reduce context length.")
@@ -127,7 +126,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		reqBody = truncatedBody
 	}
 
-	if len(reqBody) > maxRequestBodySize {
+	if len(reqBody) > kiroMaxCWRequestBodySize {
 		return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
 			"Input context too long. Please reduce context length.")
 	}
