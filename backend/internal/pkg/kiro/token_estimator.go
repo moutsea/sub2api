@@ -532,11 +532,42 @@ func InflateInputTokens(actualTokens int) int {
 
 // CacheEstimation holds the breakdown of cacheable vs non-cacheable tokens
 // for predicting Anthropic prompt cache behavior.
+//
+// Real Claude prompt caching uses multiple cache breakpoints. On a cache hit,
+// the previously-cached prefix is reported as cache_read, while the new tokens
+// added since the last request are reported as cache_creation. Both fields
+// coexist in the same response.
 type CacheEstimation struct {
 	CacheableTokens     int  // system + tools + history (except last msg)
+	StableTokens        int  // system + tools only (always cached once warm)
+	HistoryTokens       int  // history messages (except last msg)
 	NonCacheableTokens  int  // last message only
 	TotalInputTokens    int  // sum of above
 	MeetsCacheThreshold bool // >= MinCacheableTokens (1024)
+}
+
+// SplitCacheTokens computes cache_read and cache_creation token counts
+// based on the previous cacheable token count from CacheTracker.
+//
+// Real Claude behavior: on a cache hit the previously-cached prefix is
+// cache_read, and the newly-added tokens since last request are cache_creation.
+// On a cache miss everything goes to cache_creation.
+func (ce CacheEstimation) SplitCacheTokens(cacheResult CacheResult) (cacheRead, cacheCreation int) {
+	if !ce.MeetsCacheThreshold {
+		return 0, 0
+	}
+	if !cacheResult.Hit {
+		// First request or TTL expired: everything is cache_creation
+		return 0, ce.CacheableTokens
+	}
+	// Cache hit: previous tokens are cache_read, delta is cache_creation
+	prevTokens := cacheResult.PrevTokens
+	if prevTokens > ce.CacheableTokens {
+		prevTokens = ce.CacheableTokens
+	}
+	cacheRead = prevTokens
+	cacheCreation = ce.CacheableTokens - prevTokens
+	return cacheRead, cacheCreation
 }
 
 // EstimateCache separates cacheable from non-cacheable tokens.
@@ -550,17 +581,22 @@ func EstimateCache(req *ClaudeRequest) CacheEstimation {
 
 	result := CacheEstimation{}
 
-	// 1. System prompt - cacheable
-	result.CacheableTokens += estimateSystemTokens(req.System)
+	// 1. System prompt - stable (always cached once warm)
+	systemTokens := estimateSystemTokens(req.System)
+	result.StableTokens += systemTokens
+	result.CacheableTokens += systemTokens
 
-	// 2. Tools - cacheable
-	result.CacheableTokens += estimateToolsTokens(req.Tools)
+	// 2. Tools - stable (always cached once warm)
+	toolsTokens := estimateToolsTokens(req.Tools)
+	result.StableTokens += toolsTokens
+	result.CacheableTokens += toolsTokens
 
-	// 3. Messages - all except last are cacheable
+	// 3. Messages - all except last are cacheable (history)
 	msgCount := len(req.Messages)
 	for i, msg := range req.Messages {
 		tokens := estimateMessageTokens(msg)
 		if i < msgCount-1 {
+			result.HistoryTokens += tokens
 			result.CacheableTokens += tokens
 		} else {
 			result.NonCacheableTokens += tokens

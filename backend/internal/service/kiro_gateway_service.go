@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -79,10 +80,11 @@ type KiroGatewayService struct {
 	httpUpstream     HTTPUpstream
 	settingService   *SettingService
 	usageCache       *UsageCache
-	proxyRepo        ProxyRepository // proxy pool data source for Free-tier rotation
-	proxyPool        []Proxy         // cached active proxy list
-	proxyPoolMu      sync.RWMutex    // protects proxyPool
-	proxyPoolUpdated time.Time       // cache timestamp
+	proxyRepo        ProxyRepository    // proxy pool data source for Free-tier rotation
+	proxyPool        []Proxy            // cached active proxy list
+	proxyPoolMu      sync.RWMutex       // protects proxyPool
+	proxyPoolUpdated time.Time          // cache timestamp
+	freeTierSF       singleflight.Group // dedup concurrent subscription type fetches per account
 }
 
 // NewKiroGatewayService creates a new KiroGatewayService
@@ -161,8 +163,8 @@ func (s *KiroGatewayService) getActiveProxyPool(ctx context.Context) []Proxy {
 // resolveMachineID returns the machine ID for a request.
 // For Free-tier (non-apikey) accounts, randomly generates a new machine ID
 // with freeTierMachineIDRotatePercent probability.
-func (s *KiroGatewayService) resolveMachineID(account *Account) string {
-	if s.isKiroFreeTier(account.ID) && !account.IsKiroApiKey() {
+func (s *KiroGatewayService) resolveMachineID(account *Account, freeTier bool) string {
+	if freeTier && !account.IsKiroApiKey() {
 		if rand.IntN(100) < freeTierMachineIDRotatePercent {
 			mid := kiro.GenerateRandomMachineID()
 			log.Printf("[kiro-freeTier] account=%s using random machine_id=%s...%s",
@@ -176,14 +178,14 @@ func (s *KiroGatewayService) resolveMachineID(account *Account) string {
 // resolveProxyURL returns the proxy URL for a request.
 // For Free-tier (non-apikey) accounts, randomly selects from the active proxy pool.
 // Falls back to account-bound proxy if pool is empty.
-func (s *KiroGatewayService) resolveProxyURL(ctx context.Context, account *Account) string {
+func (s *KiroGatewayService) resolveProxyURL(ctx context.Context, account *Account, freeTier bool) string {
 	// Default: account-bound proxy
 	defaultProxy := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		defaultProxy = account.Proxy.URL()
 	}
 
-	if !s.isKiroFreeTier(account.ID) || account.IsKiroApiKey() {
+	if !freeTier || account.IsKiroApiKey() {
 		return defaultProxy
 	}
 
@@ -199,36 +201,122 @@ func (s *KiroGatewayService) resolveProxyURL(ctx context.Context, account *Accou
 	return chosenURL
 }
 
-// isKiroFreeTier 判断 Kiro 账号是否为 Free 订阅类型
-// Free 账号不支持 Opus 模型，需要自动降级为 Sonnet
-func (s *KiroGatewayService) isKiroFreeTier(accountID int64) bool {
-	if s.usageCache == nil {
-		return false // 缓存不可用时默认允许（不误杀）
+// isKiroFreeTier 判断 Kiro 账号是否为 Free 订阅类型。
+// apikey 账号不存在等级概念，直接返回 false。
+// 只读 Extra 和缓存，不触发同步 HTTP 调用。cache miss 时异步触发 fetch，当前请求返回 false（fail-open）。
+func (s *KiroGatewayService) isKiroFreeTier(account *Account) bool {
+	if account.IsKiroApiKey() {
+		return false
 	}
-	subType := s.usageCache.GetKiroSubscriptionType(accountID)
+
+	// 1. 从 account.Extra 读取（持久化，零开销）
+	subType := account.GetExtraString("kiro_subscription_type")
+
+	// 2. 从缓存读取
+	if subType == "" && s.usageCache != nil {
+		subType = s.usageCache.GetKiroSubscriptionType(account.ID)
+	}
+
+	// 3. cache miss → 异步触发 fetch（不阻塞当前请求）
 	if subType == "" {
-		return false // 订阅类型未知时默认允许
+		s.triggerAsyncSubscriptionFetch(account)
+		return false
 	}
+
 	return strings.Contains(strings.ToUpper(subType), "FREE")
 }
 
+// triggerAsyncSubscriptionFetch 异步拉取订阅类型，用 singleflight 合并同一账号的并发请求。
+// 结果写入 usageCache 和数据库（通过独立 account 副本，不 mutate 共享指针）。
+func (s *KiroGatewayService) triggerAsyncSubscriptionFetch(account *Account) {
+	if s.tokenProvider == nil {
+		return
+	}
+	accountID := account.ID
+	accountName := account.Name
+	sfKey := fmt.Sprintf("kiro_sub_%d", accountID)
+
+	// Capture proxy URL before goroutine to avoid reading shared account fields async
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	go func() {
+		_, _, _ = s.freeTierSF.Do(sfKey, func() (any, error) {
+			// Double-check cache inside singleflight to avoid redundant fetches
+			if s.usageCache != nil {
+				if cached := s.usageCache.GetKiroSubscriptionType(accountID); cached != "" {
+					return cached, nil
+				}
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
+			if err != nil || accessToken == "" {
+				return nil, fmt.Errorf("get access token: %w", err)
+			}
+
+			fetcher := kiro.NewUsageLimitsFetcher(nil)
+			limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL)
+			if err != nil {
+				log.Printf("[kiro-freeTier] async fetch failed for account %s: %v", accountName, err)
+				return nil, err
+			}
+
+			creditsInfo := kiro.ExtractCreditsInfo(limits)
+			if creditsInfo == nil || creditsInfo.SubscriptionType == "" {
+				return nil, fmt.Errorf("no subscription type in response")
+			}
+
+			subType := creditsInfo.SubscriptionType
+
+			// Write to cache only (not shared account.Extra)
+			if s.usageCache != nil {
+				s.usageCache.StoreKiroCredits(accountID, &KiroCreditsInfo{
+					AvailableCredits: creditsInfo.AvailableCredits,
+					UsedCredits:      creditsInfo.UsedCredits,
+					TotalCredits:     creditsInfo.TotalCredits,
+					DaysUntilReset:   creditsInfo.DaysUntilReset,
+					NextResetAt:      creditsInfo.NextResetAt,
+					UserEmail:        creditsInfo.UserEmail,
+					SubscriptionType: subType,
+				})
+			}
+
+			// Persist to DB via atomic JSONB merge (avoid read-modify-write race)
+			persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer persistCancel()
+			if err := s.accountRepo.UpdateExtra(persistCtx, accountID, map[string]any{
+				"kiro_subscription_type": subType,
+			}); err != nil {
+				log.Printf("[kiro-freeTier] failed to persist subscription type for account %s: %v", accountName, err)
+			}
+
+			return subType, nil
+		})
+	}()
+}
+
 // remapModelForFreeTier 对 Free 订阅类型的账号，将不支持的模型自动降级到 Sonnet 4.5
-// Free 账号仅支持 Sonnet 4.5 及以下，不支持 Opus 和 Sonnet 4.6
+// Free 账号仅支持 Sonnet 4.5 和 Haiku 4.5，其余模型一律重定向到 Sonnet 4.5
 // 返回 (映射后的模型名, 是否发生了映射)
-func (s *KiroGatewayService) remapModelForFreeTier(account *Account, model string) (string, bool) {
-	if !s.isKiroFreeTier(account.ID) {
+func (s *KiroGatewayService) remapModelForFreeTier(account *Account, model string, freeTier bool) (string, bool) {
+	if !freeTier {
 		return model, false
 	}
 	modelLower := strings.ToLower(model)
-	// Opus 系列 → Sonnet 4.5
-	if strings.Contains(modelLower, "opus") {
-		return "claude-sonnet-4-5", true
+	// 白名单：Sonnet 4.5 系列和 Haiku 4.5 系列直接放行
+	if strings.Contains(modelLower, "sonnet-4-5") || strings.Contains(modelLower, "sonnet-4.5") {
+		return model, false
 	}
-	// Sonnet 4.6 系列 → Sonnet 4.5（匹配 sonnet-4-6、sonnet-4-6-1m 等，不匹配 sonnet-4-5）
-	if strings.Contains(modelLower, "sonnet-4-6") || strings.Contains(modelLower, "sonnet-4.6") {
-		return "claude-sonnet-4-5", true
+	if strings.Contains(modelLower, "haiku-4-5") || strings.Contains(modelLower, "haiku-4.5") {
+		return model, false
 	}
-	return model, false
+	// 其余所有模型（opus、sonnet-4-6、sonnet-4、sonnet-3.x、未知模型等）→ Sonnet 4.5
+	return "claude-sonnet-4-5", true
 }
 
 // IsModelSupported checks if the model is supported by Kiro
@@ -262,8 +350,18 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		}
 	}
 
+	// Deduplicate tool_use IDs (Claude API requires globally unique IDs)
+	if kiro.DeduplicateToolUseIDsInClaudeMessages(claudeReq.Messages) {
+		log.Printf("%s deduplicated tool_use ids in request", prefix)
+		if newBody, err := json.Marshal(claudeReq); err == nil {
+			body = newBody
+		}
+	}
+
+	freeTier := s.isKiroFreeTier(account)
+
 	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5
-	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model); ok {
+	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model, freeTier); ok {
 		log.Printf("%s free_tier_model_remap: %s -> %s", prefix, claudeReq.Model, remapped)
 		claudeReq.Model = remapped
 		// 同步更新 body 中的 model 字段
@@ -277,21 +375,17 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Cache estimation for billing
 	cacheEstimation := kiro.EstimateCache(claudeReq)
-	var cacheHit bool
+	var cacheResult kiro.CacheResult
 	if cacheEstimation.MeetsCacheThreshold {
-		// Generate cache key from system + tools
-		systemText := kiro.ExtractSystemPromptText(claudeReq.System)
-		toolsJSON := ""
-		if len(claudeReq.Tools) > 0 {
-			if toolsBytes, err := json.Marshal(claudeReq.Tools); err == nil {
-				toolsJSON = string(toolsBytes)
-			}
-		}
-		cacheKey := kiro.GenerateCacheKey(systemText, toolsJSON)
-		cacheHit = kiro.GlobalCacheTracker.CheckAndMark(cacheKey)
-		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d meets_threshold=%v cache_hit=%v",
+		// Generate cache key from stable conversation ID (IP + UA + API key or client-provided session/conversation ID).
+		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
+		// so it needs a client-session identifier, not a content fingerprint.
+		cacheKey := kiro.GenerateStableConversationID(c)
+		cacheResult = kiro.GlobalCacheTracker.CheckAndMark(cacheKey, cacheEstimation.CacheableTokens)
+		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v prev_tokens=%d cache_key=%s",
 			prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
-			cacheEstimation.MeetsCacheThreshold, cacheHit)
+			cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
+			cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.PrevTokens, cacheKey)
 	}
 
 	// Pre-check: Estimate input tokens and truncate if exceeding context limit.
@@ -350,15 +444,23 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
-	proxyURL := s.resolveProxyURL(ctx, account)
+	proxyURL := s.resolveProxyURL(ctx, account, freeTier)
 
 	// apikey accounts: direct Claude API passthrough (no CodeWhisperer transform)
 	if account.IsKiroApiKey() {
+		// Override X-Session-ID with content-based fingerprint for apikey accounts.
+		// This ensures CacheTracker and any downstream logic that reads X-Session-ID
+		// uses a stable, content-based identifier instead of whatever the client sent.
+		callerKey := kiro.ExtractAPIKey(c)
+		if contentSessionID := kiro.GenerateContentBasedConversationID(callerKey, claudeReq.Model, claudeReq.Messages); contentSessionID != "" {
+			c.Request.Header.Set("X-Session-ID", contentSessionID)
+		}
+
 		// 自动注入 cache_control 断点 + 限制最多 4 个
 		// cacheInjected=true 表示平台注入了，需隐藏响应中的 cache tokens
 		body, cacheInjected := injectCacheControlBreakpoints(body)
 		body = enforceCacheControlLimit(body)
-		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheHit, cacheInjected)
+		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheResult, cacheInjected)
 	}
 
 	// Resolve URL-based images to base64 (CW only supports base64).
@@ -427,7 +529,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	endpoints := getKiroEndpoints(account)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
-	machineID := s.resolveMachineID(account)
+	machineID := s.resolveMachineID(account, freeTier)
 	kiroVersion := "1.6.0"
 
 	// Endpoint loop: try each endpoint, with retries per endpoint
@@ -698,15 +800,8 @@ endpointDone:
 	var firstTokenMs *int
 	var usageFromUpstream bool
 
-	// Calculate cache tokens to pass to handlers
-	var cacheCreationTokens, cacheReadTokens int
-	if cacheEstimation.MeetsCacheThreshold {
-		if cacheHit {
-			cacheReadTokens = cacheEstimation.CacheableTokens
-		} else {
-			cacheCreationTokens = cacheEstimation.CacheableTokens
-		}
-	}
+	// Calculate cache tokens to pass to handlers (cache_read + cache_creation coexist)
+	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult)
 
 	if claudeReq.Stream {
 		// Streaming response
@@ -731,28 +826,34 @@ endpointDone:
 	}
 
 	// Apply cache token estimation only when upstream did not provide token usage.
-	// Note: According to Anthropic's definition:
-	// - input_tokens = non-cached input tokens (does NOT include cache_read_input_tokens)
-	// - cache_read_input_tokens = tokens read from cache
-	// - Total input = input_tokens + cache_read_input_tokens
+	// Real Claude behavior: cache_read and cache_creation coexist.
+	// cache_read = previously-cached prefix tokens, cache_creation = newly-added tokens.
+	// input_tokens = total - cache_read - cache_creation (non-cached portion).
 	if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-		if cacheHit {
-			// Cache hit: attribute cacheable tokens to cache_read
-			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
-			// Subtract cached tokens from input_tokens to match Anthropic's definition
-			usage.InputTokens -= cacheEstimation.CacheableTokens
-			if usage.InputTokens < 0 {
-				usage.InputTokens = 0
-			}
-		} else {
-			// Cache miss: attribute cacheable tokens to cache_creation
-			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
-			usage.InputTokens -= cacheEstimation.CacheableTokens
-			if usage.InputTokens < 0 {
-				usage.InputTokens = 0
-			}
+		usage.CacheReadInputTokens = cacheReadTokens
+		usage.CacheCreationInputTokens = cacheCreationTokens
+		usage.InputTokens -= (cacheReadTokens + cacheCreationTokens)
+		if usage.InputTokens < 0 {
+			usage.InputTokens = 0
 		}
 	}
+
+	// NOTE: cache_rate_adjustment 暂时注释，共存模型下不再需要挪 cache_read 到 input
+	// if !usageFromUpstream && usage.CacheReadInputTokens > 0 {
+	// 	totalInput := usage.InputTokens + usage.CacheReadInputTokens
+	// 	if totalInput > 0 {
+	// 		cacheHitRate := float64(usage.CacheReadInputTokens) * 100.0 / float64(totalInput)
+	// 		if cacheHitRate >= 60.0 {
+	// 			tier := int((cacheHitRate-60.0)/10.0) + 1
+	// 			adjustPct := float64(tier) * 0.05
+	// 			adjustTokens := int(float64(usage.CacheReadInputTokens) * adjustPct)
+	// 			if adjustTokens > 0 {
+	// 				usage.CacheReadInputTokens -= adjustTokens
+	// 				usage.InputTokens += adjustTokens
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	// CW 路径未注入 cache_control，透传真实 usage，不合并 cache tokens
 
@@ -873,7 +974,15 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	}
 
 	for {
-		// Check timeout
+		// Check client disconnect
+		select {
+		case <-c.Request.Context().Done():
+			log.Printf("Stream context cancelled (kiro): %v", c.Request.Context().Err())
+			goto finishStream
+		default:
+		}
+
+		// Check stream data interval timeout
 		if intervalTicker != nil {
 			select {
 			case <-intervalTicker.C:
@@ -937,10 +1046,15 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 
 		if err != nil {
 			if err == io.EOF {
+				if !parser.MessageStopped() {
+					log.Printf("Stream EOF without stop event (kiro): duration=%v parse_errors=%d message_stopped=%v",
+						time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
+				}
 				break
 			}
+			log.Printf("Stream read error (kiro): %v", err)
 			sendErrorEvent("stream_read_error")
-			return nil, err
+			goto finishStream
 		}
 	}
 
@@ -962,6 +1076,17 @@ finishStream:
 	// This allows BuildFinalEvents to calculate accurate input_tokens
 	if contextPct > 0 {
 		converter.SetContextPercentage(contextPct)
+	}
+
+	// When upstream provides real token usage, override converter's local estimates
+	// so that SSE output to downstream matches the values used for billing.
+	if tokenUsage != nil {
+		converter.SetUpstreamUsage(
+			tokenUsage.InputTokens,
+			tokenUsage.OutputTokens,
+			tokenUsage.CacheCreationInputTokens,
+			tokenUsage.CacheReadInputTokens,
+		)
 	}
 
 	// Send final events
@@ -1058,8 +1183,15 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 		parsedResp.CacheReadTokens = cacheReadTokens
 	}
 
+	// When upstream provides real token usage, use upstream input_tokens (+ cache)
+	// so that the JSON response to downstream matches the values used for billing.
+	responseInputTokens := accurateInputTokens
+	if usageFromUpstream {
+		responseInputTokens = parsedResp.InputTokens + parsedResp.CacheCreationTokens + parsedResp.CacheReadTokens
+	}
+
 	// Build Claude response with accurate input tokens
-	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, accurateInputTokens, parsedResp)
+	claudeResp := kiro.BuildClaudeNonStreamResponse(messageID, originalModel, responseInputTokens, parsedResp)
 
 	// Inject web search blocks (server_tool_use + web_search_tool_result) if present
 	if wsEvents := GetWebSearchEvents(c); len(wsEvents) > 0 {
@@ -1434,6 +1566,12 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	if testModel == "" {
 		testModel = "claude-3-5-sonnet-20241022"
 	}
+
+	testFreeTier := s.isKiroFreeTier(account)
+	if remapped, ok := s.remapModelForFreeTier(account, testModel, testFreeTier); ok {
+		log.Printf("[kiro-TestConnection] free_tier_model_remap: %s -> %s", testModel, remapped)
+		testModel = remapped
+	}
 	testClaudeReq := &kiro.ClaudeRequest{
 		Model: testModel,
 		Messages: []kiro.ClaudeMessage{
@@ -1457,13 +1595,13 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	}
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
-	proxyURL := s.resolveProxyURL(ctx, account)
+	proxyURL := s.resolveProxyURL(ctx, account, testFreeTier)
 
 	// Build endpoint list (test connection: small request)
 	endpoints := getKiroEndpoints(account)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
-	machineID := s.resolveMachineID(account)
+	machineID := s.resolveMachineID(account, testFreeTier)
 	kiroVersion := "1.6.0"
 
 	// Try each endpoint
@@ -1495,9 +1633,9 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
 
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}
@@ -1530,7 +1668,8 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 
 // buildClaudeAPIHTTPRequest constructs an HTTP request for the Claude API with standard headers.
 // Used by forwardClaudeAPIRequest and its signature-error retry paths to avoid duplicating header setup.
-func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targetURL, apiKey string, body []byte) (*http.Request, error) {
+// sessionID: if non-empty, sets the session_id header for upstream prompt cache optimization.
+func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targetURL, apiKey string, body []byte, sessionID string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -1539,6 +1678,9 @@ func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targ
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	if sessionID != "" {
+		req.Header.Set("session_id", sessionID)
+	}
 	return req, nil
 }
 
@@ -1549,7 +1691,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	claudeReq *kiro.ClaudeRequest, body []byte,
 	apiKey, proxyURL, originalModel string,
 	startTime time.Time,
-	cacheEstimation kiro.CacheEstimation, cacheHit bool,
+	cacheEstimation kiro.CacheEstimation, cacheResult kiro.CacheResult,
 	hideCacheUsage bool,
 ) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-apikey-Forward] account=%s", account.Name)
@@ -1560,12 +1702,15 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}
 	targetURL := strings.TrimRight(baseURL, "/") + "/v1/messages"
 
-	req, err := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, body)
+	// Read stable session_id from X-Session-ID header (set by apikey branch in Forward()).
+	stableSessionID := c.GetHeader("X-Session-ID")
+
+	req, err := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, body, stableSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	log.Printf("%s url=%s model=%s stream=%v body_size=%d", prefix, targetURL, originalModel, claudeReq.Stream, len(body))
+	log.Printf("%s url=%s model=%s stream=%v body_size=%d session_id=%s", prefix, targetURL, originalModel, claudeReq.Stream, len(body), stableSessionID)
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
@@ -1596,7 +1741,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			// Stage 1: filter thinking blocks (thinking→text, remove redacted_thinking, disable thinking)
 			time.Sleep(500 * time.Millisecond)
 			filteredBody := FilterThinkingBlocksForRetry(body)
-			if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody); buildErr == nil {
+			if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody, stableSessionID); buildErr == nil {
 				if retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency); retryErr == nil {
 					if retryResp.StatusCode < 400 {
 						log.Printf("%s signature error retry succeeded (thinking downgraded)", prefix)
@@ -1613,7 +1758,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 								log.Printf("%s signature retry still failing and tool-related, retrying with tool blocks downgraded", prefix)
 								time.Sleep(500 * time.Millisecond)
 								filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body)
-								if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody2); buildErr2 == nil {
+								if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody2, stableSessionID); buildErr2 == nil {
 									if retryResp2, retryErr2 := s.httpUpstream.Do(retryReq2, proxyURL, account.ID, account.Concurrency); retryErr2 == nil {
 										if retryResp2.StatusCode < 400 {
 											log.Printf("%s signature error retry succeeded (tools downgraded)", prefix)
@@ -1787,19 +1932,14 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		}
 
 		// Apply cache estimation only when upstream did not provide token usage.
+		// Real Claude behavior: cache_read and cache_creation coexist.
 		if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-			if cacheHit {
-				usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
-				usage.InputTokens -= cacheEstimation.CacheableTokens
-				if usage.InputTokens < 0 {
-					usage.InputTokens = 0
-				}
-			} else {
-				usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
-				usage.InputTokens -= cacheEstimation.CacheableTokens
-				if usage.InputTokens < 0 {
-					usage.InputTokens = 0
-				}
+			cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult)
+			usage.CacheReadInputTokens = cacheRead
+			usage.CacheCreationInputTokens = cacheCreation
+			usage.InputTokens -= (cacheRead + cacheCreation)
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
 			}
 		}
 
@@ -1850,19 +1990,14 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}
 
 	// Apply cache estimation only when upstream did not provide token usage.
+	// Real Claude behavior: cache_read and cache_creation coexist.
 	if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-		if cacheHit {
-			usage.CacheReadInputTokens = cacheEstimation.CacheableTokens
-			usage.InputTokens -= cacheEstimation.CacheableTokens
-			if usage.InputTokens < 0 {
-				usage.InputTokens = 0
-			}
-		} else {
-			usage.CacheCreationInputTokens = cacheEstimation.CacheableTokens
-			usage.InputTokens -= cacheEstimation.CacheableTokens
-			if usage.InputTokens < 0 {
-				usage.InputTokens = 0
-			}
+		cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult)
+		usage.CacheReadInputTokens = cacheRead
+		usage.CacheCreationInputTokens = cacheCreation
+		usage.InputTokens -= (cacheRead + cacheCreation)
+		if usage.InputTokens < 0 {
+			usage.InputTokens = 0
 		}
 	}
 

@@ -1176,22 +1176,183 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			t.Error("should not modify when no tool_use blocks exist")
 		}
 	})
+}
 
-	t.Run("roundtrip JSON preserves cleanup", func(t *testing.T) {
+func TestDeduplicateToolUseIDsInClaudeMessages(t *testing.T) {
+	t.Run("no duplicates", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "do something"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "ok"},
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/a.go"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "file content"},
+			}},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t2", "name": "write_file", "input": map[string]any{"path": "/b.go"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t2", "content": "ok"},
+			}},
+		}
+		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		if modified {
+			t.Error("expected no modification when no duplicates exist")
+		}
+	})
+
+	t.Run("duplicate tool_use in same message", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "do something"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "ok"},
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/a.go"}},
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/b.go"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "file content"},
+			}},
+		}
+		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification when duplicate tool_use exists in same message")
+		}
+
+		// Check that only one tool_use remains
+		content, ok := messages[1].Content.([]any)
+		if !ok {
+			t.Fatal("expected content to be []any")
+		}
+		toolUseCount := 0
+		for _, block := range content {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if blockMap["type"] == "tool_use" {
+				toolUseCount++
+			}
+		}
+		if toolUseCount != 1 {
+			t.Errorf("expected 1 tool_use after dedup, got %d", toolUseCount)
+		}
+		// Text block + 1 tool_use = 2 blocks
+		if len(content) != 2 {
+			t.Errorf("expected 2 blocks (text + tool_use), got %d", len(content))
+		}
+	})
+
+	t.Run("duplicate tool_use across messages", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "step 1"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/a.go"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "content a"},
+			}},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "now again"},
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{"path": "/c.go"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "content c"},
+			}},
+		}
+		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification when duplicate tool_use exists across messages")
+		}
+
+		// First assistant message should keep t1
+		content1, _ := messages[1].Content.([]any)
+		if len(content1) != 1 {
+			t.Fatalf("messages[1] should have 1 block, got %d", len(content1))
+		}
+		bm1, _ := content1[0].(map[string]any)
+		if bm1["type"] != "tool_use" || bm1["id"] != "t1" {
+			t.Errorf("expected tool_use t1 in messages[1], got type=%v id=%v", bm1["type"], bm1["id"])
+		}
+
+		// Second assistant message should have t1 removed, text kept
+		content3, _ := messages[3].Content.([]any)
+		if len(content3) != 1 {
+			t.Fatalf("messages[3] should have 1 block (text only), got %d", len(content3))
+		}
+		bm3, _ := content3[0].(map[string]any)
+		if bm3["type"] != "text" {
+			t.Errorf("expected only text block in messages[3], got type=%v", bm3["type"])
+		}
+	})
+
+	t.Run("removes orphan tool_result after dedup", func(t *testing.T) {
+		messages := []ClaudeMessage{
+			{Role: "user", Content: "step 1"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "result 1"},
+			}},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "result 2"},
+			}},
+		}
+		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		if !modified {
+			t.Fatal("expected modification")
+		}
+
+		// The second assistant message's tool_use t1 is a duplicate, so it gets removed.
+		// After dedup, the second user message has a tool_result for t1 but the only
+		// remaining tool_use t1 is in messages[1]. The tool_result in messages[4] still
+		// references t1 which exists in messages[1], so it should be kept by
+		// cleanOrphanToolResultsInClaudeMessages (it only removes results with NO
+		// matching tool_use anywhere).
+		// But the second assistant message (messages[3]) should be backfilled.
+		content3, _ := messages[3].Content.([]any)
+		if len(content3) != 1 {
+			t.Fatalf("messages[3] should have 1 placeholder block, got %d", len(content3))
+		}
+		bm, _ := content3[0].(map[string]any)
+		if bm["type"] != "text" {
+			t.Errorf("expected placeholder text block, got type=%v", bm["type"])
+		}
+	})
+
+	t.Run("empty messages", func(t *testing.T) {
+		modified := DeduplicateToolUseIDsInClaudeMessages(nil)
+		if modified {
+			t.Error("expected no modification for nil messages")
+		}
+		modified = DeduplicateToolUseIDsInClaudeMessages([]ClaudeMessage{})
+		if modified {
+			t.Error("expected no modification for empty messages")
+		}
+	})
+
+	t.Run("roundtrip JSON preserves dedup", func(t *testing.T) {
 		req := &ClaudeRequest{
 			Model: "claude-sonnet-4-6",
 			Messages: []ClaudeMessage{
-				{Role: "user", Content: "do something"},
+				{Role: "user", Content: "go"},
 				{Role: "assistant", Content: []any{
 					map[string]any{"type": "tool_use", "id": "t1", "name": "cmd", "input": map[string]any{"cmd": "ls"}},
+					map[string]any{"type": "tool_use", "id": "t1", "name": "cmd", "input": map[string]any{"cmd": "pwd"}},
 				}},
-				{Role: "user", Content: "cancelled"},
+				{Role: "user", Content: []any{
+					map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+				}},
 			},
 			MaxTokens: 1024,
 			Stream:    true,
 		}
 
-		modified := CleanOrphanToolUsesInClaudeMessages(req.Messages)
+		modified := DeduplicateToolUseIDsInClaudeMessages(req.Messages)
 		if !modified {
 			t.Fatal("expected modification")
 		}
@@ -1202,12 +1363,12 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			t.Fatalf("json.Marshal failed: %v", err)
 		}
 
-		// Parse back and verify no tool_use blocks
 		var parsed ClaudeRequest
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			t.Fatalf("json.Unmarshal failed: %v", err)
 		}
 
+		// Count tool_use blocks in assistant messages
 		for _, msg := range parsed.Messages {
 			if msg.Role != "assistant" {
 				continue
@@ -1216,15 +1377,70 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			if !ok {
 				continue
 			}
+			toolUseCount := 0
 			for _, block := range content {
 				bm, ok := block.(map[string]any)
 				if !ok {
 					continue
 				}
 				if bm["type"] == "tool_use" {
-					t.Error("tool_use should not exist after cleanup + roundtrip")
+					toolUseCount++
 				}
+			}
+			if toolUseCount > 1 {
+				t.Errorf("expected at most 1 tool_use after dedup + roundtrip, got %d", toolUseCount)
 			}
 		}
 	})
+}
+
+func TestCleanOrphanToolUsesInClaudeMessages_RoundtripJSON(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "do something"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "t1", "name": "cmd", "input": map[string]any{"cmd": "ls"}},
+			}},
+			{Role: "user", Content: "cancelled"},
+		},
+		MaxTokens: 1024,
+		Stream:    true,
+	}
+
+	modified := CleanOrphanToolUsesInClaudeMessages(req.Messages)
+	if !modified {
+		t.Fatal("expected modification")
+	}
+
+	// Re-serialize and verify valid JSON
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	// Parse back and verify no tool_use blocks
+	var parsed ClaudeRequest
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	for _, msg := range parsed.Messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		content, ok := msg.Content.([]any)
+		if !ok {
+			continue
+		}
+		for _, block := range content {
+			bm, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if bm["type"] == "tool_use" {
+				t.Error("tool_use should not exist after cleanup + roundtrip")
+			}
+		}
+	}
 }

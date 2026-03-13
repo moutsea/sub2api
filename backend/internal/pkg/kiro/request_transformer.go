@@ -99,15 +99,35 @@ type TransformContext struct {
 // NewTransformContext creates a new transformation context
 // If ginCtx is provided, generates stable conversation IDs based on client characteristics
 // for better cache hit rates on AWS CodeWhisperer.
-func NewTransformContext(model string, ginCtx *gin.Context) *TransformContext {
+// If claudeReq is provided, uses content-based fingerprinting (model + first user message)
+// to generate ConversationID, which improves cache hits when the upstream client (e.g. OpenClaw)
+// sends frequently-changing sessionIds.
+func NewTransformContext(model string, ginCtx *gin.Context, claudeReq ...*ClaudeRequest) *TransformContext {
 	modelID := GetModelID(model)
 
 	var convID, agentContID string
-	if ginCtx != nil {
+
+	// Priority for ConversationID:
+	// 1. Content-based fingerprint (apikey + model + first meaningful user message) — best for cache hits
+	// 2. Client-based fingerprint (IP + UA + Key) — fallback when no request content available
+	// 3. Random UUID — fallback when no context at all
+	if len(claudeReq) > 0 && claudeReq[0] != nil && len(claudeReq[0].Messages) > 0 {
+		apiKey := ""
+		if ginCtx != nil {
+			apiKey = extractAPIKey(ginCtx)
+		}
+		convID = GenerateContentBasedConversationID(apiKey, model, claudeReq[0].Messages)
+	}
+	if convID == "" && ginCtx != nil {
 		convID = GenerateStableConversationID(ginCtx)
+	}
+	if convID == "" {
+		convID = uuid.New().String()
+	}
+
+	if ginCtx != nil {
 		agentContID = GenerateStableAgentContinuationID(ginCtx)
 	} else {
-		convID = uuid.New().String()
 		agentContID = uuid.New().String()
 	}
 
@@ -160,8 +180,8 @@ func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string,
 		return nil, fmt.Errorf("messages cannot be empty")
 	}
 
-	// Create transformation context with stable IDs if ginCtx is provided
-	ctx := NewTransformContext(claudeReq.Model, ginCtx)
+	// Create transformation context with content-based IDs for better cache hits
+	ctx := NewTransformContext(claudeReq.Model, ginCtx, claudeReq)
 	if ctx.ModelID == "" {
 		return nil, fmt.Errorf("unsupported model: %s", claudeReq.Model)
 	}
@@ -524,8 +544,28 @@ func isOnlyOpenBrace(msg *UnifiedMessage) bool {
 func mergeMessages(target, source *UnifiedMessage) {
 	target.TextParts = append(target.TextParts, source.TextParts...)
 	target.Images = append(target.Images, source.Images...)
-	target.ToolUses = append(target.ToolUses, source.ToolUses...)
-	target.ToolResults = append(target.ToolResults, source.ToolResults...)
+	// Deduplicate ToolUses by ID to prevent duplicate tool_use IDs in merged messages
+	seenToolUseIDs := make(map[string]bool, len(target.ToolUses))
+	for _, tu := range target.ToolUses {
+		seenToolUseIDs[tu.ID] = true
+	}
+	for _, tu := range source.ToolUses {
+		if tu.ID == "" || !seenToolUseIDs[tu.ID] {
+			target.ToolUses = append(target.ToolUses, tu)
+			seenToolUseIDs[tu.ID] = true
+		}
+	}
+	// Deduplicate ToolResults by ToolUseID to prevent duplicate tool_result blocks
+	seenToolResultIDs := make(map[string]bool, len(target.ToolResults))
+	for _, tr := range target.ToolResults {
+		seenToolResultIDs[tr.ToolUseID] = true
+	}
+	for _, tr := range source.ToolResults {
+		if tr.ToolUseID == "" || !seenToolResultIDs[tr.ToolUseID] {
+			target.ToolResults = append(target.ToolResults, tr)
+			seenToolResultIDs[tr.ToolUseID] = true
+		}
+	}
 	if source.Thinking != nil {
 		target.Thinking = source.Thinking
 	}
@@ -812,10 +852,15 @@ func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *His
 		Content: text,
 	}
 
-	// Add tool_uses
+	// Add tool_uses (deduplicate by ID to prevent Claude API 400 errors)
 	if msg.HasToolUses() {
+		seen := make(map[string]bool)
 		toolUses := make([]ToolUseEntry, 0, len(msg.ToolUses))
 		for _, tu := range msg.ToolUses {
+			if tu.ID != "" && seen[tu.ID] {
+				continue // skip duplicate tool_use ID
+			}
+			seen[tu.ID] = true
 			ctx.RegisterToolUse(tu.ID, tu.Name)
 			toolUses = append(toolUses, ToolUseEntry{
 				ToolUseID: tu.ID,

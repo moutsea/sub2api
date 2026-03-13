@@ -25,8 +25,8 @@ const (
 
 // WebSearchEvent records a single web search execution for response injection
 type WebSearchEvent struct {
-	ID      string              // tool_use ID (server_tool_use)
-	Query   string              // search query
+	ID      string                // tool_use ID (server_tool_use)
+	Query   string                // search query
 	Results []WebSearchResultItem // search results
 }
 
@@ -183,8 +183,10 @@ func isClaudeBuiltinWebSearch(tool kiro.ClaudeTool) bool {
 func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, claudeReq *kiro.ClaudeRequest) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-WebSearch] account=%s", account.Name)
 
+	freeTier := s.isKiroFreeTier(account)
+
 	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5
-	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model); ok {
+	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model, freeTier); ok {
 		log.Printf("%s free_tier_model_remap: %s -> %s", prefix, claudeReq.Model, remapped)
 		claudeReq.Model = remapped
 		// 同步更新 body 中的 model 字段
@@ -434,6 +436,7 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 // agentic loop iterations reuse the already-processed version.
 func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest) (*http.Response, error) {
 	prefix := "[kiro-WebSearch]"
+	execFreeTier := s.isKiroFreeTier(account)
 
 	// Get access token
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
@@ -484,11 +487,11 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	endpoints := getKiroEndpoints(account)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
-	machineID := s.resolveMachineID(account)
+	machineID := s.resolveMachineID(account, execFreeTier)
 	kiroVersion := "1.6.0"
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
-	proxyURL := s.resolveProxyURL(ctx, account)
+	proxyURL := s.resolveProxyURL(ctx, account, execFreeTier)
 
 	// Endpoint failover loop with retries — mirrors Forward() resilience
 	var lastErr error

@@ -221,6 +221,14 @@ func (c *UsageCache) GetKiroSubscriptionType(accountID int64) string {
 	return ""
 }
 
+// StoreKiroCredits stores Kiro credits info into cache for the given account.
+func (c *UsageCache) StoreKiroCredits(accountID int64, info *KiroCreditsInfo) {
+	c.kiroCreditsCache.Store(accountID, &kiroCreditsCache{
+		creditsInfo: info,
+		timestamp:   time.Now(),
+	})
+}
+
 // WindowStats 窗口期统计
 //
 // cost: 账号口径费用（total_cost * account_rate_multiplier）
@@ -568,6 +576,19 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 		creditsInfo: localCreditsInfo,
 		timestamp:   time.Now(),
 	})
+
+	// 8. 回写 subscription_type 到数据库（原子 JSONB merge，避免并发覆盖）
+	if creditsInfo.SubscriptionType != "" && account.GetExtraString("kiro_subscription_type") != creditsInfo.SubscriptionType {
+		go func(accountID int64, subType string) {
+			bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer bgCancel()
+			if err := s.accountRepo.UpdateExtra(bgCtx, accountID, map[string]any{
+				"kiro_subscription_type": subType,
+			}); err != nil {
+				log.Printf("[AccountUsage] failed to persist kiro_subscription_type for account %d: %v", accountID, err)
+			}
+		}(account.ID, creditsInfo.SubscriptionType)
+	}
 
 	return &UsageInfo{
 		UpdatedAt:   &now,

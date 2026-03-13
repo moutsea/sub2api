@@ -36,6 +36,9 @@
         <p class="text-sm font-medium text-gray-700 dark:text-dark-200">
           <span class="text-primary-600 dark:text-primary-400">内部系统</span>，需要测试联系：<span class="font-semibold text-gray-900 dark:text-white">liangtangjhz</span>
         </p>
+        <p class="text-sm font-medium text-gray-700 dark:text-dark-200">
+          自助余额兑换：<a href="https://fe.dtyuedan.cn/shop/WFGIXZEL" target="_blank" rel="noopener noreferrer" class="font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 underline">https://fe.dtyuedan.cn/shop/WFGIXZEL</a>
+        </p>
       </div>
     </div>
 

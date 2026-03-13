@@ -511,6 +511,78 @@ func cleanOrphanToolResultsInClaudeMessages(messages []ClaudeMessage) bool {
 	return modified
 }
 
+// DeduplicateToolUseIDsInClaudeMessages removes duplicate tool_use blocks across all
+// assistant messages, keeping only the first occurrence of each tool_use ID globally.
+// After removing duplicates, it also cleans up any orphaned tool_result blocks that
+// reference the removed tool_use IDs.
+//
+// Claude API requires globally unique tool_use IDs. Clients may send duplicate IDs
+// due to conversation history merging, retry logic, or client-side bugs.
+//
+// Returns true if any modification was made.
+func DeduplicateToolUseIDsInClaudeMessages(messages []ClaudeMessage) bool {
+	if len(messages) == 0 {
+		return false
+	}
+
+	// Track all seen tool_use IDs globally across all assistant messages
+	seenIDs := make(map[string]bool)
+	modified := false
+
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+
+		content, ok := messages[i].Content.([]any)
+		if !ok {
+			continue
+		}
+
+		newContent := make([]any, 0, len(content))
+		contentModified := false
+
+		for _, block := range content {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				newContent = append(newContent, block)
+				continue
+			}
+
+			blockType, _ := blockMap["type"].(string)
+			if blockType == "tool_use" {
+				if id, ok := blockMap["id"].(string); ok && id != "" {
+					if seenIDs[id] {
+						// Duplicate — skip this block
+						contentModified = true
+						log.Printf("[kiro] removed duplicate tool_use id=%s from assistant message", id)
+						continue
+					}
+					seenIDs[id] = true
+				}
+			}
+
+			newContent = append(newContent, block)
+		}
+
+		if contentModified {
+			modified = true
+			if len(newContent) == 0 {
+				// Backfill empty content to avoid sending message with no content blocks
+				newContent = []any{map[string]any{"type": "text", "text": "I understand."}}
+			}
+			messages[i].Content = newContent
+		}
+	}
+
+	// After dedup, clean orphaned tool_results that reference removed tool_use IDs
+	if modified {
+		cleanOrphanToolResultsInClaudeMessages(messages)
+	}
+
+	return modified
+}
+
 // CleanOrphanToolUsesInClaudeMessages validates tool_use/tool_result pairing across
 // Claude-format messages and removes orphaned tool_use blocks that have no matching
 // tool_result in any subsequent user message.

@@ -31,6 +31,8 @@ type awsPayload struct {
 	MessageMetadataEvent map[string]any  `json:"messageMetadataEvent"`
 	MetadataEvent        map[string]any  `json:"metadataEvent"`
 	TokenUsage           map[string]any  `json:"tokenUsage"`
+	Message              *string         `json:"message"`
+	ExceptionType        *string         `json:"__type"`
 }
 
 // toolAccumulator tracks state for a tool use block
@@ -104,6 +106,10 @@ func (p *AwsEventStreamParser) ParseErrorCount() int {
 // SawToolUse returns whether any tool use was seen
 func (p *AwsEventStreamParser) SawToolUse() bool {
 	return p.sawToolUse
+}
+
+func (p *AwsEventStreamParser) MessageStopped() bool {
+	return p.messageStopped
 }
 
 func (p *AwsEventStreamParser) nextIndex() uint32 {
@@ -210,7 +216,12 @@ func (p *AwsEventStreamParser) parseBuffer() []StreamEvent {
 
 		jsonBytes, endPos, ok := extractJSONObject(p.buffer, start)
 		if !ok {
-			break
+			nextStart := p.findJSONStart(start + 1)
+			if nextStart < 0 {
+				break
+			}
+			pos = start + 1
+			continue
 		}
 
 		parsed, err := p.parseJSONEvent(jsonBytes)
@@ -246,6 +257,8 @@ var jsonStartPatterns = [][]byte{
 	[]byte(`{"metadataEvent":`),
 	[]byte(`{"tokenUsage":`),
 	[]byte(`{"unit":`),
+	[]byte(`{"message":`),
+	[]byte(`{"Message":`),
 }
 
 func (p *AwsEventStreamParser) findJSONStart(from int) int {
@@ -595,7 +608,21 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		return events, nil
 	}
 
-	// 5) usage / context usage (nested and flat)
+	// 5) AWS EventStream exception (mid-stream error from upstream)
+	if payload.ExceptionType != nil && payload.Message != nil {
+		errType := *payload.ExceptionType
+		errMsg := *payload.Message
+		log.Printf("[kiro-parser] upstream exception: type=%s message=%s", errType, errMsg)
+		p.parseErrorCount++
+		events = append(events, StreamEvent{
+			Type:         EventError,
+			ErrorType:    errType,
+			ErrorMessage: errMsg,
+		})
+		return events, nil
+	}
+
+	// 6) usage / context usage (nested and flat)
 	credits := 0.0
 	ctxPct := 0.0
 	hasTokenUsage := false
@@ -935,6 +962,18 @@ func (c *StreamEventConverter) SetCacheTokens(cacheCreation, cacheRead int) {
 	c.cacheReadTokens = cacheRead
 }
 
+func (c *StreamEventConverter) SetUpstreamUsage(inputTokens, outputTokens, cacheCreation, cacheRead int) {
+	upstreamTotal := inputTokens + cacheCreation + cacheRead
+	if upstreamTotal > 0 {
+		c.inputTokens = upstreamTotal
+	}
+	if outputTokens > 0 {
+		c.totalOutputTokens = outputTokens
+	}
+	c.cacheCreationTokens = cacheCreation
+	c.cacheReadTokens = cacheRead
+}
+
 // SetContentBlockOffset sets the starting index offset for content blocks.
 // Used when web search blocks are injected before the CW response stream.
 func (c *StreamEventConverter) SetContentBlockOffset(offset int) {
@@ -1239,16 +1278,18 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 		})
 	}
 
-	// Estimate output tokens
-	outputTokens := 0
-	if resp.Text != "" {
-		outputTokens += (len(resp.Text) + 3) / 4
-	}
-	for _, tool := range resp.ToolCalls {
-		outputTokens += (len(tool.Name) + len(tool.ArgumentsRaw) + 3) / 4
-	}
-	if outputTokens < 1 && len(content) > 0 {
-		outputTokens = 1
+	// Output tokens: prefer upstream value, fall back to local estimate
+	outputTokens := resp.OutputTokens
+	if outputTokens <= 0 {
+		if resp.Text != "" {
+			outputTokens += (len(resp.Text) + 3) / 4
+		}
+		for _, tool := range resp.ToolCalls {
+			outputTokens += (len(tool.Name) + len(tool.ArgumentsRaw) + 3) / 4
+		}
+		if outputTokens < 1 && len(content) > 0 {
+			outputTokens = 1
+		}
 	}
 
 	stopReason := "end_turn"

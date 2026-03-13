@@ -33,8 +33,10 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	// Ensure stream is set (Kiro always uses streaming internally)
 	wantStream := claudeReq.Stream
 
+	freeTier := s.isKiroFreeTier(account)
+
 	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5
-	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model); ok {
+	if remapped, ok := s.remapModelForFreeTier(account, claudeReq.Model, freeTier); ok {
 		log.Printf("%s free_tier_model_remap: %s -> %s", prefix, claudeReq.Model, remapped)
 		claudeReq.Model = remapped
 	}
@@ -49,17 +51,13 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	// 2. Cache estimation
 	cacheEstimation := kiro.EstimateCache(claudeReq)
-	var cacheHit bool
+	var cacheResult kiro.CacheResult
 	if cacheEstimation.MeetsCacheThreshold {
-		systemText := kiro.ExtractSystemPromptText(claudeReq.System)
-		toolsJSON := ""
-		if len(claudeReq.Tools) > 0 {
-			if toolsBytes, err := json.Marshal(claudeReq.Tools); err == nil {
-				toolsJSON = string(toolsBytes)
-			}
-		}
-		cacheKey := kiro.GenerateCacheKey(systemText, toolsJSON)
-		cacheHit = kiro.GlobalCacheTracker.CheckAndMark(cacheKey)
+		// Use stable conversation ID (IP + UA + API key) as cache key.
+		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
+		// so it needs a client-session identifier, not a content fingerprint.
+		cacheKey := kiro.GenerateStableConversationID(c)
+		cacheResult = kiro.GlobalCacheTracker.CheckAndMark(cacheKey, cacheEstimation.CacheableTokens)
 	}
 
 	// 3. Token pre-check and truncation
@@ -88,7 +86,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
-	proxyURL := s.resolveProxyURL(ctx, account)
+	proxyURL := s.resolveProxyURL(ctx, account, freeTier)
 
 	// 5. Resolve URL images to base64 (CW only supports base64)
 	if kiro.ResolveURLImagesInRequest(claudeReq) {
@@ -135,7 +133,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	// 7. Endpoint loop (reuse existing pattern)
 	endpoints := getKiroEndpoints(account)
-	machineID := s.resolveMachineID(account)
+	machineID := s.resolveMachineID(account, freeTier)
 	kiroVersion := "1.6.0"
 
 	var resp *http.Response
@@ -275,14 +273,8 @@ endpointDone:
 	inputTokens := kiro.EstimateInputTokens(claudeReq)
 	toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
 
-	var cacheCreationTokens, cacheReadTokens int
-	if cacheEstimation.MeetsCacheThreshold {
-		if cacheHit {
-			cacheReadTokens = cacheEstimation.CacheableTokens
-		} else {
-			cacheCreationTokens = cacheEstimation.CacheableTokens
-		}
-	}
+	// Calculate cache tokens (cache_read + cache_creation coexist)
+	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult)
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int
