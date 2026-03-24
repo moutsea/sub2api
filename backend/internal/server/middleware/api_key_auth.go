@@ -100,6 +100,11 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			}
 		}
 
+		if apiKey.IsQuotaExceeded() {
+			AbortWithError(c, 429, "API_KEY_QUOTA_EXCEEDED", "API key usage quota exceeded. Please contact the key owner to increase the limit or reset usage.")
+			return
+		}
+
 		// 检查关联的用户
 		if apiKey.User == nil {
 			AbortWithError(c, 401, "USER_NOT_FOUND", "User associated with API key not found")

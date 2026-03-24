@@ -27,16 +27,18 @@ type AdminUser struct {
 }
 
 type APIKey struct {
-	ID          int64     `json:"id"`
-	UserID      int64     `json:"user_id"`
-	Key         string    `json:"key"`
-	Name        string    `json:"name"`
-	GroupID     *int64    `json:"group_id"`
-	Status      string    `json:"status"`
-	IPWhitelist []string  `json:"ip_whitelist"`
-	IPBlacklist []string  `json:"ip_blacklist"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            int64     `json:"id"`
+	UserID        int64     `json:"user_id"`
+	Key           string    `json:"key"`
+	Name          string    `json:"name"`
+	GroupID       *int64    `json:"group_id"`
+	Status        string    `json:"status"`
+	IPWhitelist   []string  `json:"ip_whitelist"`
+	IPBlacklist   []string  `json:"ip_blacklist"`
+	QuotaLimitUSD *float64  `json:"quota_limit_usd"`
+	QuotaUsedUSD  float64   `json:"quota_used_usd"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 
 	User  *User  `json:"user,omitempty"`
 	Group *Group `json:"group,omitempty"`
@@ -341,10 +343,10 @@ type AdminUserSubscription struct {
 }
 
 type BulkAssignResult struct {
-	SuccessCount  int                `json:"success_count"`
-	FailedCount   int                `json:"failed_count"`
+	SuccessCount  int                     `json:"success_count"`
+	FailedCount   int                     `json:"failed_count"`
 	Subscriptions []AdminUserSubscription `json:"subscriptions"`
-	Errors        []string           `json:"errors"`
+	Errors        []string                `json:"errors"`
 }
 
 // PromoCode 注册优惠码

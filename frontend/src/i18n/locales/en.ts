@@ -49,8 +49,8 @@ export default {
     switchToLight: 'Switch to Light Mode',
     switchToDark: 'Switch to Dark Mode',
     dashboard: 'Dashboard',
-    login: 'Login',
-    getStarted: 'Get Started',
+    login: 'Login / Register',
+    getStarted: 'Login / Register',
     goToDashboard: 'Go to Dashboard',
     keyQuery: 'Key Query',
     tags: {
@@ -69,15 +69,9 @@ export default {
       balanceQuotaDesc:
         'Token-based billing with precise usage tracking. Manage quotas and recharge with redeem codes.'
     },
-    providers: {
-      title: 'Supported Providers',
-      description: 'Unified API interface for AI services',
-      supported: 'Supported',
-      soon: 'Soon',
-      claude: 'Claude',
-      gemini: 'Gemini',
-      antigravity: 'Antigravity',
-      more: 'More'
+    cta: {
+      title: 'Ready to Get Started?',
+      description: 'Log in now and experience the powerful AI API gateway service.'
     },
     footer: {
       allRightsReserved: 'All rights reserved.'
@@ -401,6 +395,15 @@ export default {
     groupChangedSuccess: 'Group changed successfully',
     failedToChangeGroup: 'Failed to change group',
     groupRequired: 'Please select a group',
+    bulkSelectAll: 'Select all',
+    bulkSelected: '{count} selected',
+    bulkChangeGroup: 'Change Group',
+    bulkApply: 'Apply',
+    bulkClearSelection: 'Clear selection',
+    bulkUpdateGroupSuccess: 'Bulk group update: {success} succeeded, {failed} failed',
+    bulkUpdateGroupFailed: 'Failed to bulk update group',
+    bulkSelectGroup: 'Select target group',
+    bulkNoGroup: 'No Group',
     usage: 'Usage',
     today: 'Today',
     total: 'Total',
@@ -459,6 +462,16 @@ export default {
     ipBlacklistHint: 'One IP or CIDR per line. These IPs will be blocked from using this key.',
     ipRestrictionEnabled: 'IP restriction enabled',
     ccSwitchNotInstalled: 'CC-Switch is not installed or the protocol handler is not registered. Please install CC-Switch first or manually copy the API key.',
+    quotaLimit: 'Quota Limit',
+    quotaLimitLabel: 'Usage Quota (USD)',
+    quotaLimitPlaceholder: 'e.g. 10.00',
+    quotaLimitHint: 'Set a spending cap for this key. Leave empty for unlimited.',
+    quotaUsage: 'Quota',
+    quotaExceeded: 'Quota Exceeded',
+    resetQuota: 'Reset',
+    resetQuotaConfirm: 'Reset accumulated usage for this key?',
+    resetQuotaSuccess: 'Quota usage reset successfully',
+    unlimited: 'Unlimited',
     ccsClientSelect: {
       title: 'Select Client',
       description: 'Please select the client type to import to CC-Switch:',
@@ -1718,6 +1731,9 @@ export default {
         batchImportPartial: 'Import completed: {success} succeeded, {fail} failed',
         fileReadError: 'Failed to read file',
         multipleFilesSupported: 'Multiple files supported',
+        loadingExistingEmails: 'Loading existing account emails...',
+        emailFilterEnabled: 'Email filter enabled, {count} existing emails found',
+        emailFilteredCount: '{count} accounts filtered by existing email',
       },
       // Re-Auth Modal
       reAuthorizeAccount: 'Re-Authorize Account',

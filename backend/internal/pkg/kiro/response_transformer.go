@@ -706,7 +706,17 @@ type ClaudeSSEEvent struct {
 }
 
 // BuildClaudeMessageStart builds a message_start event
-func BuildClaudeMessageStart(messageID string, model string, inputTokens int) ClaudeSSEEvent {
+func BuildClaudeMessageStart(messageID string, model string, inputTokens, cacheCreationTokens, cacheReadTokens int) ClaudeSSEEvent {
+	usage := map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": 0,
+	}
+	if cacheCreationTokens > 0 {
+		usage["cache_creation_input_tokens"] = cacheCreationTokens
+	}
+	if cacheReadTokens > 0 {
+		usage["cache_read_input_tokens"] = cacheReadTokens
+	}
 	return ClaudeSSEEvent{
 		EventType: "message_start",
 		Data: map[string]any{
@@ -719,10 +729,7 @@ func BuildClaudeMessageStart(messageID string, model string, inputTokens int) Cl
 				"model":         model,
 				"stop_reason":   nil,
 				"stop_sequence": nil,
-				"usage": map[string]any{
-					"input_tokens":  inputTokens,
-					"output_tokens": 0,
-				},
+				"usage":         usage,
 			},
 		},
 	}
@@ -965,13 +972,16 @@ func (c *StreamEventConverter) SetCacheTokens(cacheCreation, cacheRead int) {
 func (c *StreamEventConverter) SetUpstreamUsage(inputTokens, outputTokens, cacheCreation, cacheRead int) {
 	upstreamTotal := inputTokens + cacheCreation + cacheRead
 	if upstreamTotal > 0 {
+		// Upstream provided real usage — override all local estimates,
+		// including cache tokens (even if 0) to avoid stale local values
+		// inflating the subtraction in BuildFinalEvents.
 		c.inputTokens = upstreamTotal
+		c.cacheCreationTokens = cacheCreation
+		c.cacheReadTokens = cacheRead
 	}
 	if outputTokens > 0 {
 		c.totalOutputTokens = outputTokens
 	}
-	c.cacheCreationTokens = cacheCreation
-	c.cacheReadTokens = cacheRead
 }
 
 // SetContentBlockOffset sets the starting index offset for content blocks.
@@ -1101,10 +1111,20 @@ func (c *StreamEventConverter) handleBlockStop(e StreamEvent) []ClaudeSSEEvent {
 
 // BuildInitialEvents builds the initial SSE events for a stream
 func (c *StreamEventConverter) BuildInitialEvents() []ClaudeSSEEvent {
-	// Use inflated input tokens to trigger client-side context compression earlier
-	inflatedTokens := InflateInputTokens(c.inputTokens)
+	// Subtract cache tokens to match Anthropic's definition (input_tokens excludes cache)
+	inputTokens := c.inputTokens
+	if c.cacheReadTokens > 0 {
+		inputTokens -= c.cacheReadTokens
+	}
+	if c.cacheCreationTokens > 0 {
+		inputTokens -= c.cacheCreationTokens
+	}
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	inflatedTokens := InflateInputTokens(inputTokens)
 	return []ClaudeSSEEvent{
-		BuildClaudeMessageStart(c.messageID, c.model, inflatedTokens),
+		BuildClaudeMessageStart(c.messageID, c.model, inflatedTokens, c.cacheCreationTokens, c.cacheReadTokens),
 		BuildClaudePing(),
 	}
 }
@@ -1252,7 +1272,7 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 
 // BuildClaudeNonStreamResponse builds a complete Claude response from parsed data
 func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp *CompleteResponse) map[string]any {
-	var content []map[string]any
+	content := make([]map[string]any, 0)
 
 	if resp.Text != "" {
 		content = append(content, map[string]any{

@@ -36,11 +36,13 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
-	Name        string   `json:"name"`
-	GroupID     *int64   `json:"group_id"`
-	Status      string   `json:"status" binding:"omitempty,oneof=active inactive"`
-	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
+	Name          string   `json:"name"`
+	GroupID       *int64   `json:"group_id"`
+	Status        string   `json:"status" binding:"omitempty,oneof=active inactive"`
+	IPWhitelist   []string `json:"ip_whitelist"`
+	IPBlacklist   []string `json:"ip_blacklist"`
+	QuotaLimitUSD *float64 `json:"quota_limit_usd"`
+	ClearQuota    bool     `json:"clear_quota"`
 }
 
 // List handles listing user's API keys with pagination
@@ -151,8 +153,10 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 	}
 
 	svcReq := service.UpdateAPIKeyRequest{
-		IPWhitelist: req.IPWhitelist,
-		IPBlacklist: req.IPBlacklist,
+		IPWhitelist:   req.IPWhitelist,
+		IPBlacklist:   req.IPBlacklist,
+		QuotaLimitUSD: req.QuotaLimitUSD,
+		ClearQuota:    req.ClearQuota,
 	}
 	if req.Name != "" {
 		svcReq.Name = &req.Name
@@ -193,6 +197,57 @@ func (h *APIKeyHandler) Delete(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "API key deleted successfully"})
+}
+
+func (h *APIKeyHandler) ResetQuota(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	keyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid key ID")
+		return
+	}
+
+	if err := h.apiKeyService.ResetQuota(c.Request.Context(), keyID, subject.UserID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Quota usage reset successfully"})
+}
+
+// BulkUpdateGroupRequest represents the bulk update group request payload
+type BulkUpdateGroupRequest struct {
+	KeyIDs  []int64 `json:"key_ids" binding:"required,min=1"`
+	GroupID *int64  `json:"group_id"` // null = remove group
+}
+
+// BulkUpdateGroup handles bulk updating API key groups
+// PUT /api/v1/keys/bulk-update-group
+func (h *APIKeyHandler) BulkUpdateGroup(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	var req BulkUpdateGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	success, failed, err := h.apiKeyService.BulkUpdateGroup(c.Request.Context(), subject.UserID, req.KeyIDs, req.GroupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{"success": success, "failed": failed})
 }
 
 // GetAvailableGroups 获取用户可以绑定的分组列表

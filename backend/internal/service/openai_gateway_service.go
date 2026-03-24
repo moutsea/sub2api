@@ -97,6 +97,8 @@ type OpenAIGatewayService struct {
 	toolCorrector       *CodexToolCorrector
 	tempAPIKeyRepo      TempAPIKeyRepository
 	usageCache          *UsageCache
+	apiKeyRepo          APIKeyRepository
+	apiKeyCacheInval    APIKeyAuthCacheInvalidator
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -117,6 +119,8 @@ func NewOpenAIGatewayService(
 	openAITokenProvider *OpenAITokenProvider,
 	tempAPIKeyRepo TempAPIKeyRepository,
 	usageCache *UsageCache,
+	apiKeyRepo APIKeyRepository,
+	apiKeyCacheInval APIKeyAuthCacheInvalidator,
 ) *OpenAIGatewayService {
 	return &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -136,6 +140,8 @@ func NewOpenAIGatewayService(
 		toolCorrector:       NewCodexToolCorrector(),
 		tempAPIKeyRepo:      tempAPIKeyRepo,
 		usageCache:          usageCache,
+		apiKeyRepo:          apiKeyRepo,
+		apiKeyCacheInval:    apiKeyCacheInval,
 	}
 }
 
@@ -1707,6 +1713,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 
+	if cost.ActualCost > 0 && apiKey.QuotaLimitUSD != nil && s.apiKeyRepo != nil {
+		if err := s.apiKeyRepo.IncrementQuotaUsed(ctx, apiKey.ID, cost.ActualCost); err != nil {
+			log.Printf("Increment API key quota used failed: %v", err)
+		} else if s.apiKeyCacheInval != nil && apiKey.Key != "" {
+			s.apiKeyCacheInval.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+		}
+	}
+
 	// Schedule batch update for account last_used_at
 	s.deferredService.ScheduleLastUsedUpdate(account.ID)
 
@@ -2419,8 +2433,8 @@ func (s *OpenAIGatewayService) parseCCUsage(data string, usage *OpenAIUsage) {
 	}
 	var resp struct {
 		Usage *struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
 			PromptTokensDetails *struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`

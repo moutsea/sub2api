@@ -89,6 +89,10 @@ func init() {
 	apikey.DefaultStatus = apikeyDescStatus.Default.(string)
 	// apikey.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	apikey.StatusValidator = apikeyDescStatus.Validators[0].(func(string) error)
+	// apikeyDescQuotaUsedUsd is the schema descriptor for quota_used_usd field.
+	apikeyDescQuotaUsedUsd := apikeyFields[8].Descriptor()
+	// apikey.DefaultQuotaUsedUsd holds the default value on creation for the quota_used_usd field.
+	apikey.DefaultQuotaUsedUsd = apikeyDescQuotaUsedUsd.Default.(float64)
 	accountMixin := schema.Account{}.Mixin()
 	accountMixinHooks1 := accountMixin[1].Hooks()
 	account.Hooks[0] = accountMixinHooks1[0]

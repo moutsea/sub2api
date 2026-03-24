@@ -296,6 +296,8 @@ export interface ApiKey {
   status: 'active' | 'inactive'
   ip_whitelist: string[]
   ip_blacklist: string[]
+  quota_limit_usd: number | null
+  quota_used_usd: number
   created_at: string
   updated_at: string
   group?: Group
@@ -315,6 +317,8 @@ export interface UpdateApiKeyRequest {
   status?: 'active' | 'inactive'
   ip_whitelist?: string[]
   ip_blacklist?: string[]
+  quota_limit_usd?: number | null
+  clear_quota?: boolean
 }
 
 // ==================== Temp API Key Types ====================

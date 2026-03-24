@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -24,6 +25,7 @@ var (
 	ErrAPIKeyInvalidChars = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
 	ErrAPIKeyRateLimited  = infraerrors.TooManyRequests("API_KEY_RATE_LIMITED", "too many failed attempts, please try again later")
 	ErrInvalidIPPattern   = infraerrors.BadRequest("INVALID_IP_PATTERN", "invalid IP or CIDR pattern")
+	ErrInvalidQuotaLimit  = infraerrors.BadRequest("INVALID_QUOTA_LIMIT", "quota limit must be a positive number")
 )
 
 const (
@@ -51,6 +53,8 @@ type APIKeyRepository interface {
 	CountByGroupID(ctx context.Context, groupID int64) (int64, error)
 	ListKeysByUserID(ctx context.Context, userID int64) ([]string, error)
 	ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error)
+	IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error
+	ResetQuotaUsed(ctx context.Context, id int64) error
 }
 
 // APIKeyCache defines cache operations for API key service
@@ -85,11 +89,13 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest 更新API Key请求
 type UpdateAPIKeyRequest struct {
-	Name        *string  `json:"name"`
-	GroupID     *int64   `json:"group_id"`
-	Status      *string  `json:"status"`
-	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单（空数组清空）
-	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单（空数组清空）
+	Name          *string  `json:"name"`
+	GroupID       *int64   `json:"group_id"`
+	Status        *string  `json:"status"`
+	IPWhitelist   []string `json:"ip_whitelist"`
+	IPBlacklist   []string `json:"ip_blacklist"`
+	QuotaLimitUSD *float64 `json:"quota_limit_usd"`
+	ClearQuota    bool     `json:"clear_quota"`
 }
 
 // APIKeyService API Key服务
@@ -335,6 +341,11 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
 			}
+			if apiKey.IsQuotaExceeded() {
+				log.Printf("[QuotaDebug] source=cache api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
+					apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
+					func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+			}
 			return apiKey, nil
 		}
 	}
@@ -351,6 +362,11 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
 			}
+			if apiKey.IsQuotaExceeded() {
+				log.Printf("[QuotaDebug] source=singleflight api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
+					apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
+					func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+			}
 			return apiKey, nil
 		}
 	} else {
@@ -362,6 +378,11 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
 			}
+			if apiKey.IsQuotaExceeded() {
+				log.Printf("[QuotaDebug] source=db_fresh api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
+					apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
+					func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+			}
 			return apiKey, nil
 		}
 	}
@@ -371,6 +392,11 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	apiKey.Key = key
+	if apiKey.IsQuotaExceeded() {
+		log.Printf("[QuotaDebug] source=db_fallback api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
+			apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
+			func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+	}
 	return apiKey, nil
 }
 
@@ -436,6 +462,15 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	apiKey.IPWhitelist = req.IPWhitelist
 	apiKey.IPBlacklist = req.IPBlacklist
 
+	if req.ClearQuota {
+		apiKey.QuotaLimitUSD = nil
+	} else if req.QuotaLimitUSD != nil {
+		if *req.QuotaLimitUSD < 0 {
+			return nil, fmt.Errorf("%w: quota_limit_usd must be non-negative", ErrInvalidQuotaLimit)
+		}
+		apiKey.QuotaLimitUSD = req.QuotaLimitUSD
+	}
+
 	if err := s.apiKeyRepo.Update(ctx, apiKey); err != nil {
 		return nil, fmt.Errorf("update api key: %w", err)
 	}
@@ -443,6 +478,21 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
 
 	return apiKey, nil
+}
+
+func (s *APIKeyService) ResetQuota(ctx context.Context, id int64, userID int64) error {
+	apiKey, err := s.apiKeyRepo.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get api key: %w", err)
+	}
+	if apiKey.UserID != userID {
+		return ErrInsufficientPerms
+	}
+	if err := s.apiKeyRepo.ResetQuotaUsed(ctx, id); err != nil {
+		return fmt.Errorf("reset quota: %w", err)
+	}
+	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+	return nil
 }
 
 // Delete 删除API Key
@@ -461,11 +511,13 @@ func (s *APIKeyService) Delete(ctx context.Context, id int64, userID int64) erro
 	if s.cache != nil {
 		_ = s.cache.DeleteCreateAttemptCount(ctx, userID)
 	}
-	s.InvalidateAuthCacheByKey(ctx, key)
 
 	if err := s.apiKeyRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete api key: %w", err)
 	}
+
+	// 先删 DB 后失效缓存，避免并发请求在窗口期回源 DB 重填缓存
+	s.InvalidateAuthCacheByKey(ctx, key)
 
 	return nil
 }
@@ -559,6 +611,53 @@ func (s *APIKeyService) canUserBindGroupInternal(user *User, group *Group, subsc
 	}
 	// 标准类型分组：使用原有逻辑
 	return user.CanBindGroup(group.ID, group.IsExclusive)
+}
+
+// BulkUpdateGroup 批量更新 API Key 分组
+func (s *APIKeyService) BulkUpdateGroup(ctx context.Context, userID int64, keyIDs []int64, groupID *int64) (success int, failed int, err error) {
+	if len(keyIDs) == 0 {
+		return 0, 0, nil
+	}
+
+	// 验证分组权限（如果指定了分组）
+	if groupID != nil {
+		user, err := s.userRepo.GetByID(ctx, userID)
+		if err != nil {
+			return 0, 0, fmt.Errorf("get user: %w", err)
+		}
+		group, err := s.groupRepo.GetByID(ctx, *groupID)
+		if err != nil {
+			return 0, 0, fmt.Errorf("get group: %w", err)
+		}
+		if !s.canUserBindGroup(ctx, user, group) {
+			return 0, 0, ErrGroupNotAllowed
+		}
+	}
+
+	// 验证所有权：只处理属于该用户的 key
+	validIDs, err := s.apiKeyRepo.VerifyOwnership(ctx, userID, keyIDs)
+	if err != nil {
+		return 0, 0, fmt.Errorf("verify ownership: %w", err)
+	}
+	failed = len(keyIDs) - len(validIDs)
+
+	// 逐个更新分组
+	for _, id := range validIDs {
+		apiKey, err := s.apiKeyRepo.GetByID(ctx, id)
+		if err != nil {
+			failed++
+			continue
+		}
+		apiKey.GroupID = groupID
+		if err := s.apiKeyRepo.Update(ctx, apiKey); err != nil {
+			failed++
+			continue
+		}
+		s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+		success++
+	}
+
+	return success, failed, nil
 }
 
 func (s *APIKeyService) SearchAPIKeys(ctx context.Context, userID int64, keyword string, limit int) ([]APIKey, error) {

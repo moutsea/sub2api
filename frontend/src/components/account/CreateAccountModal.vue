@@ -279,6 +279,20 @@
             </label>
           </div>
 
+          <!-- Email filter status -->
+          <div v-if="openaiEmailFilterLoading" class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20" role="status">
+            <div class="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-400">
+              <Icon name="refresh" size="sm" class="animate-spin" />
+              <span>{{ t('admin.accounts.openaiImport.loadingExistingEmails') }}</span>
+            </div>
+          </div>
+          <div v-else-if="existingOpenaiEmails.size > 0" class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
+            <div class="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-400">
+              <Icon name="infoCircle" size="sm" />
+              <span>{{ t('admin.accounts.openaiImport.emailFilterEnabled', { count: existingOpenaiEmails.size }) }}</span>
+            </div>
+          </div>
+
           <!-- Uploaded Files List -->
           <div v-if="openaiUploadedFiles.length > 0" class="space-y-2">
             <label class="input-label">{{ t('admin.accounts.openaiImport.uploadedFiles') }}</label>
@@ -335,7 +349,7 @@
           <button
             type="button"
             class="btn btn-secondary w-full"
-            :disabled="!openaiBatchJson.trim() && openaiUploadedFiles.length === 0"
+            :disabled="openaiEmailFilterLoading || (!openaiBatchJson.trim() && openaiUploadedFiles.length === 0)"
             @click="parseOpenaiBatchJson"
           >
             {{ t('admin.accounts.openaiImport.parseJson') }}
@@ -2157,6 +2171,8 @@ const openaiIsDragging = ref(false)
 const openaiParsedAccounts = ref<Array<{ email?: string; password?: string; accessToken: string; refreshToken: string }>>([])
 const openaiParseError = ref('')
 const openaiUploadedFiles = ref<Array<{ name: string; accountCount: number; accounts: Array<{ email?: string; password?: string; accessToken: string; refreshToken: string }> }>>([])
+const existingOpenaiEmails = ref<Set<string>>(new Set())
+const openaiEmailFilterLoading = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
 const geminiAIStudioOAuthEnabled = ref(false)
@@ -2347,6 +2363,8 @@ watch(
       openaiParsedAccounts.value = []
       openaiParseError.value = ''
       openaiUploadedFiles.value = []
+      existingOpenaiEmails.value = new Set()
+      openaiEmailFilterLoading.value = false
     }
     // Reset OAuth states
     oauth.resetState()
@@ -2372,6 +2390,13 @@ watch(
   },
   { immediate: true }
 )
+
+// Load existing OpenAI emails when switching to batch mode
+watch(openaiInputMode, (mode) => {
+  if (mode === 'batch') {
+    loadExistingOpenaiEmails()
+  }
+})
 
 const handleSelectGeminiOAuthType = (oauthType: 'code_assist' | 'google_one' | 'ai_studio') => {
   if (oauthType === 'ai_studio' && !geminiAIStudioOAuthEnabled.value) {
@@ -2586,6 +2611,8 @@ const resetForm = () => {
   openaiParsedAccounts.value = []
   openaiParseError.value = ''
   openaiUploadedFiles.value = []
+  existingOpenaiEmails.value = new Set()
+  openaiEmailFilterLoading.value = false
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -2771,6 +2798,7 @@ const parseKiroBatchJson = () => {
 
 const handleOpenaiFileDrop = (e: DragEvent) => {
   openaiIsDragging.value = false
+  if (openaiEmailFilterLoading.value) return
   const files = e.dataTransfer?.files
   if (files) {
     for (const file of Array.from(files)) {
@@ -2782,6 +2810,7 @@ const handleOpenaiFileDrop = (e: DragEvent) => {
 }
 
 const handleOpenaiFileSelect = (e: Event) => {
+  if (openaiEmailFilterLoading.value) return
   const input = e.target as HTMLInputElement
   if (input.files) {
     for (const file of Array.from(input.files)) {
@@ -2801,6 +2830,27 @@ const readOpenaiJsonFile = (file: File) => {
     openaiParseError.value = t('admin.accounts.openaiImport.fileReadError')
   }
   reader.readAsText(file)
+}
+
+const loadExistingOpenaiEmails = async () => {
+  existingOpenaiEmails.value = new Set()
+  openaiEmailFilterLoading.value = true
+  try {
+    // Fetch all openai accounts (use large page size to get all)
+    const res = await adminAPI.accounts.list(1, 9999, { platform: 'openai' })
+    const emails = new Set<string>()
+    for (const account of res.items) {
+      const email = (account.credentials as Record<string, unknown>)?.email
+      if (email && typeof email === 'string') {
+        emails.add(email.toLowerCase())
+      }
+    }
+    existingOpenaiEmails.value = emails
+  } catch {
+    // Silently fail - filter just won't work
+  } finally {
+    openaiEmailFilterLoading.value = false
+  }
 }
 
 const parseOpenaiJsonFileContent = (fileName: string, jsonText: string) => {
@@ -2842,6 +2892,7 @@ const parseOpenaiJsonFileContent = (fileName: string, jsonText: string) => {
     ...openaiParsedAccounts.value.map(a => a.refreshToken)
   ])
   let skippedCount = 0
+  let emailFilteredCount = 0
 
   for (const item of items) {
     const at = item?.access_token || item?.accessToken
@@ -2851,9 +2902,15 @@ const parseOpenaiJsonFileContent = (fileName: string, jsonText: string) => {
         skippedCount++
         continue
       }
+      // Filter by email: skip accounts whose email already exists in the database
+      const email = item?.email as string | undefined
+      if (email && existingOpenaiEmails.value.has(email.toLowerCase())) {
+        emailFilteredCount++
+        continue
+      }
       existingTokens.add(rt)
       newAccounts.push({
-        email: item?.email,
+        email,
         password: item?.password,
         accessToken: at,
         refreshToken: rt,
@@ -2861,7 +2918,9 @@ const parseOpenaiJsonFileContent = (fileName: string, jsonText: string) => {
     }
   }
 
-  if (newAccounts.length === 0 && skippedCount === 0) {
+  const totalSkipped = skippedCount + emailFilteredCount
+
+  if (newAccounts.length === 0 && totalSkipped === 0) {
     openaiParseError.value = t('admin.accounts.openaiImport.noValidAccounts')
     return
   }
@@ -2874,10 +2933,19 @@ const parseOpenaiJsonFileContent = (fileName: string, jsonText: string) => {
     })
   }
 
-  if (skippedCount > 0 && newAccounts.length > 0) {
-    openaiParseError.value = t('admin.accounts.openaiImport.someAccountsDuplicate', { added: newAccounts.length, skipped: skippedCount })
-  } else if (skippedCount > 0 && newAccounts.length === 0) {
-    openaiParseError.value = t('admin.accounts.openaiImport.allAccountsDuplicate', { count: skippedCount })
+  // Build feedback message
+  const messages: string[] = []
+  if (skippedCount > 0) {
+    messages.push(t('admin.accounts.openaiImport.someAccountsDuplicate', { added: newAccounts.length, skipped: skippedCount }))
+  }
+  if (emailFilteredCount > 0) {
+    messages.push(t('admin.accounts.openaiImport.emailFilteredCount', { count: emailFilteredCount }))
+  }
+
+  if (newAccounts.length === 0 && totalSkipped > 0) {
+    openaiParseError.value = messages.length > 0 ? messages.join('；') : t('admin.accounts.openaiImport.allAccountsDuplicate', { count: totalSkipped })
+  } else if (messages.length > 0) {
+    openaiParseError.value = messages.join('；')
   }
 
   // Update combined parsed accounts
@@ -2901,6 +2969,7 @@ const refreshOpenaiParsedAccounts = () => {
 }
 
 const parseOpenaiBatchJson = () => {
+  if (openaiEmailFilterLoading.value) return
   openaiParseError.value = ''
 
   const jsonText = openaiBatchJson.value.trim()

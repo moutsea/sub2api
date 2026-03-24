@@ -73,6 +73,10 @@ type APIKeyMutation struct {
 	appendip_whitelist []string
 	ip_blacklist       *[]string
 	appendip_blacklist []string
+	quota_limit_usd    *float64
+	addquota_limit_usd *float64
+	quota_used_usd     *float64
+	addquota_used_usd  *float64
 	clearedFields      map[string]struct{}
 	user               *int64
 	cleareduser        bool
@@ -628,6 +632,132 @@ func (m *APIKeyMutation) ResetIPBlacklist() {
 	delete(m.clearedFields, apikey.FieldIPBlacklist)
 }
 
+// SetQuotaLimitUsd sets the "quota_limit_usd" field.
+func (m *APIKeyMutation) SetQuotaLimitUsd(f float64) {
+	m.quota_limit_usd = &f
+	m.addquota_limit_usd = nil
+}
+
+// QuotaLimitUsd returns the value of the "quota_limit_usd" field in the mutation.
+func (m *APIKeyMutation) QuotaLimitUsd() (r float64, exists bool) {
+	v := m.quota_limit_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldQuotaLimitUsd returns the old "quota_limit_usd" field's value of the APIKey entity.
+// If the APIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *APIKeyMutation) OldQuotaLimitUsd(ctx context.Context) (v *float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldQuotaLimitUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldQuotaLimitUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldQuotaLimitUsd: %w", err)
+	}
+	return oldValue.QuotaLimitUsd, nil
+}
+
+// AddQuotaLimitUsd adds f to the "quota_limit_usd" field.
+func (m *APIKeyMutation) AddQuotaLimitUsd(f float64) {
+	if m.addquota_limit_usd != nil {
+		*m.addquota_limit_usd += f
+	} else {
+		m.addquota_limit_usd = &f
+	}
+}
+
+// AddedQuotaLimitUsd returns the value that was added to the "quota_limit_usd" field in this mutation.
+func (m *APIKeyMutation) AddedQuotaLimitUsd() (r float64, exists bool) {
+	v := m.addquota_limit_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearQuotaLimitUsd clears the value of the "quota_limit_usd" field.
+func (m *APIKeyMutation) ClearQuotaLimitUsd() {
+	m.quota_limit_usd = nil
+	m.addquota_limit_usd = nil
+	m.clearedFields[apikey.FieldQuotaLimitUsd] = struct{}{}
+}
+
+// QuotaLimitUsdCleared returns if the "quota_limit_usd" field was cleared in this mutation.
+func (m *APIKeyMutation) QuotaLimitUsdCleared() bool {
+	_, ok := m.clearedFields[apikey.FieldQuotaLimitUsd]
+	return ok
+}
+
+// ResetQuotaLimitUsd resets all changes to the "quota_limit_usd" field.
+func (m *APIKeyMutation) ResetQuotaLimitUsd() {
+	m.quota_limit_usd = nil
+	m.addquota_limit_usd = nil
+	delete(m.clearedFields, apikey.FieldQuotaLimitUsd)
+}
+
+// SetQuotaUsedUsd sets the "quota_used_usd" field.
+func (m *APIKeyMutation) SetQuotaUsedUsd(f float64) {
+	m.quota_used_usd = &f
+	m.addquota_used_usd = nil
+}
+
+// QuotaUsedUsd returns the value of the "quota_used_usd" field in the mutation.
+func (m *APIKeyMutation) QuotaUsedUsd() (r float64, exists bool) {
+	v := m.quota_used_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldQuotaUsedUsd returns the old "quota_used_usd" field's value of the APIKey entity.
+// If the APIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *APIKeyMutation) OldQuotaUsedUsd(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldQuotaUsedUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldQuotaUsedUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldQuotaUsedUsd: %w", err)
+	}
+	return oldValue.QuotaUsedUsd, nil
+}
+
+// AddQuotaUsedUsd adds f to the "quota_used_usd" field.
+func (m *APIKeyMutation) AddQuotaUsedUsd(f float64) {
+	if m.addquota_used_usd != nil {
+		*m.addquota_used_usd += f
+	} else {
+		m.addquota_used_usd = &f
+	}
+}
+
+// AddedQuotaUsedUsd returns the value that was added to the "quota_used_usd" field in this mutation.
+func (m *APIKeyMutation) AddedQuotaUsedUsd() (r float64, exists bool) {
+	v := m.addquota_used_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetQuotaUsedUsd resets all changes to the "quota_used_usd" field.
+func (m *APIKeyMutation) ResetQuotaUsedUsd() {
+	m.quota_used_usd = nil
+	m.addquota_used_usd = nil
+}
+
 // ClearUser clears the "user" edge to the User entity.
 func (m *APIKeyMutation) ClearUser() {
 	m.cleareduser = true
@@ -770,7 +900,7 @@ func (m *APIKeyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *APIKeyMutation) Fields() []string {
-	fields := make([]string, 0, 10)
+	fields := make([]string, 0, 12)
 	if m.created_at != nil {
 		fields = append(fields, apikey.FieldCreatedAt)
 	}
@@ -801,6 +931,12 @@ func (m *APIKeyMutation) Fields() []string {
 	if m.ip_blacklist != nil {
 		fields = append(fields, apikey.FieldIPBlacklist)
 	}
+	if m.quota_limit_usd != nil {
+		fields = append(fields, apikey.FieldQuotaLimitUsd)
+	}
+	if m.quota_used_usd != nil {
+		fields = append(fields, apikey.FieldQuotaUsedUsd)
+	}
 	return fields
 }
 
@@ -829,6 +965,10 @@ func (m *APIKeyMutation) Field(name string) (ent.Value, bool) {
 		return m.IPWhitelist()
 	case apikey.FieldIPBlacklist:
 		return m.IPBlacklist()
+	case apikey.FieldQuotaLimitUsd:
+		return m.QuotaLimitUsd()
+	case apikey.FieldQuotaUsedUsd:
+		return m.QuotaUsedUsd()
 	}
 	return nil, false
 }
@@ -858,6 +998,10 @@ func (m *APIKeyMutation) OldField(ctx context.Context, name string) (ent.Value, 
 		return m.OldIPWhitelist(ctx)
 	case apikey.FieldIPBlacklist:
 		return m.OldIPBlacklist(ctx)
+	case apikey.FieldQuotaLimitUsd:
+		return m.OldQuotaLimitUsd(ctx)
+	case apikey.FieldQuotaUsedUsd:
+		return m.OldQuotaUsedUsd(ctx)
 	}
 	return nil, fmt.Errorf("unknown APIKey field %s", name)
 }
@@ -937,6 +1081,20 @@ func (m *APIKeyMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetIPBlacklist(v)
 		return nil
+	case apikey.FieldQuotaLimitUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetQuotaLimitUsd(v)
+		return nil
+	case apikey.FieldQuotaUsedUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetQuotaUsedUsd(v)
+		return nil
 	}
 	return fmt.Errorf("unknown APIKey field %s", name)
 }
@@ -945,6 +1103,12 @@ func (m *APIKeyMutation) SetField(name string, value ent.Value) error {
 // this mutation.
 func (m *APIKeyMutation) AddedFields() []string {
 	var fields []string
+	if m.addquota_limit_usd != nil {
+		fields = append(fields, apikey.FieldQuotaLimitUsd)
+	}
+	if m.addquota_used_usd != nil {
+		fields = append(fields, apikey.FieldQuotaUsedUsd)
+	}
 	return fields
 }
 
@@ -953,6 +1117,10 @@ func (m *APIKeyMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *APIKeyMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case apikey.FieldQuotaLimitUsd:
+		return m.AddedQuotaLimitUsd()
+	case apikey.FieldQuotaUsedUsd:
+		return m.AddedQuotaUsedUsd()
 	}
 	return nil, false
 }
@@ -962,6 +1130,20 @@ func (m *APIKeyMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *APIKeyMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case apikey.FieldQuotaLimitUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddQuotaLimitUsd(v)
+		return nil
+	case apikey.FieldQuotaUsedUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddQuotaUsedUsd(v)
+		return nil
 	}
 	return fmt.Errorf("unknown APIKey numeric field %s", name)
 }
@@ -981,6 +1163,9 @@ func (m *APIKeyMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(apikey.FieldIPBlacklist) {
 		fields = append(fields, apikey.FieldIPBlacklist)
+	}
+	if m.FieldCleared(apikey.FieldQuotaLimitUsd) {
+		fields = append(fields, apikey.FieldQuotaLimitUsd)
 	}
 	return fields
 }
@@ -1007,6 +1192,9 @@ func (m *APIKeyMutation) ClearField(name string) error {
 		return nil
 	case apikey.FieldIPBlacklist:
 		m.ClearIPBlacklist()
+		return nil
+	case apikey.FieldQuotaLimitUsd:
+		m.ClearQuotaLimitUsd()
 		return nil
 	}
 	return fmt.Errorf("unknown APIKey nullable field %s", name)
@@ -1045,6 +1233,12 @@ func (m *APIKeyMutation) ResetField(name string) error {
 		return nil
 	case apikey.FieldIPBlacklist:
 		m.ResetIPBlacklist()
+		return nil
+	case apikey.FieldQuotaLimitUsd:
+		m.ResetQuotaLimitUsd()
+		return nil
+	case apikey.FieldQuotaUsedUsd:
+		m.ResetQuotaUsedUsd()
 		return nil
 	}
 	return fmt.Errorf("unknown APIKey field %s", name)

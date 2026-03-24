@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -373,26 +374,13 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	originalModel := claudeReq.Model
 	mappedModel := kiro.GetModelID(originalModel)
 
-	// Cache estimation for billing
-	cacheEstimation := kiro.EstimateCache(claudeReq)
-	var cacheResult kiro.CacheResult
-	if cacheEstimation.MeetsCacheThreshold {
-		// Generate cache key from stable conversation ID (IP + UA + API key or client-provided session/conversation ID).
-		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
-		// so it needs a client-session identifier, not a content fingerprint.
-		cacheKey := kiro.GenerateStableConversationID(c)
-		cacheResult = kiro.GlobalCacheTracker.CheckAndMark(cacheKey, cacheEstimation.CacheableTokens)
-		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v prev_tokens=%d cache_key=%s",
-			prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
-			cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
-			cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.PrevTokens, cacheKey)
-	}
-
 	// Pre-check: Estimate input tokens and truncate if exceeding context limit.
 	// Upstream has two limits: token count (~200k) AND body size (~810KB).
 	// This handles the token limit; body size is checked after serialization.
 	// Unlike before, truncation failure does NOT reject the request — we let
 	// the body size check and upstream handle edge cases.
+	// NOTE: Truncation MUST happen before cache estimation so that CacheableTokens
+	// reflects the actual (possibly truncated) request, not the oversized original.
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
 	if estimatedTokens > kiro.KiroContextPreCheckLimit {
 		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
@@ -434,6 +422,24 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		}
 	}
 
+	// Cache estimation for billing — computed AFTER truncation so that
+	// CacheableTokens reflects the actual request sent upstream, not the
+	// oversized original. Without this ordering, a 250K request truncated
+	// to 150K would still report cache_creation ≈ 240K.
+	cacheEstimation := kiro.EstimateCache(claudeReq)
+	var cacheResult kiro.CacheResult
+	if cacheEstimation.MeetsCacheThreshold {
+		// Generate cache key from stable conversation ID (IP + UA + API key or client-provided session/conversation ID).
+		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
+		// so it needs a client-session identifier, not a content fingerprint.
+		cacheKey := kiro.GenerateStableConversationID(c)
+		cacheResult = kiro.GlobalCacheTracker.CheckAndMark(cacheKey, cacheEstimation.CacheableTokens)
+		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v prev_tokens=%d cache_key=%s",
+			prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
+			cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
+			cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.PrevTokens, cacheKey)
+	}
+
 	// Get access token
 	if s.tokenProvider == nil {
 		return nil, errors.New("kiro token provider not configured")
@@ -456,11 +462,13 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			c.Request.Header.Set("X-Session-ID", contentSessionID)
 		}
 
-		// 自动注入 cache_control 断点 + 限制最多 4 个
-		// cacheInjected=true 表示平台注入了，需隐藏响应中的 cache tokens
-		body, cacheInjected := injectCacheControlBreakpoints(body)
+		// apikey 渠道：不注入 cache_control，避免上游通过注入模式识别代理行为。
+		// 仅剥离不支持的字段，保留用户自带的 cache_control 原样透传。
+		body = stripUnsupportedClaudeFields(body)
 		body = enforceCacheControlLimit(body)
-		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheResult, cacheInjected)
+		// 确保 metadata.user_id 格式合规（缺失或格式不对时基于 apiKey 生成确定性值）
+		body = claude.EnsureMetadataUserID(body, accessToken)
+		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheResult, false)
 	}
 
 	// Resolve URL-based images to base64 (CW only supports base64).
@@ -801,7 +809,8 @@ endpointDone:
 	var usageFromUpstream bool
 
 	// Calculate cache tokens to pass to handlers (cache_read + cache_creation coexist)
-	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult)
+	// CW path: cap to 200K context window
+	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.KiroContextWindowLimit)
 
 	if claudeReq.Stream {
 		// Streaming response
@@ -1241,7 +1250,7 @@ func buildWebSearchSSEEvents(evt WebSearchEvent, startIndex int) []kiro.ClaudeSS
 	resultIndex := startIndex + 1
 
 	// Build search result content blocks
-	var resultContent []map[string]any
+	resultContent := make([]map[string]any, 0)
 	for _, r := range evt.Results {
 		item := map[string]any{
 			"type":  "web_search_result",
@@ -1334,7 +1343,7 @@ func injectWebSearchContentBlocks(resp map[string]any, events []WebSearchEvent) 
 		})
 
 		// web_search_tool_result block
-		var resultContent []map[string]any
+		resultContent := make([]map[string]any, 0)
 		for _, r := range evt.Results {
 			item := map[string]any{
 				"type":  "web_search_result",
@@ -1669,7 +1678,10 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 // buildClaudeAPIHTTPRequest constructs an HTTP request for the Claude API with standard headers.
 // Used by forwardClaudeAPIRequest and its signature-error retry paths to avoid duplicating header setup.
 // sessionID: if non-empty, sets the session_id header for upstream prompt cache optimization.
-func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targetURL, apiKey string, body []byte, sessionID string) (*http.Request, error) {
+// anthropicBeta: if non-empty, sets the anthropic-beta header (passthrough from downstream).
+// retryCount: sets X-Stainless-Retry-Count to match real SDK retry behavior (0 for first attempt).
+// fingerprint: pre-generated request headers (from NewRequestHeaders) to ensure OS/Arch consistency across retries.
+func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targetURL, apiKey string, body []byte, sessionID, anthropicBeta string, retryCount int, fingerprint map[string]string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -1680,6 +1692,17 @@ func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targ
 	req.Header.Set("anthropic-version", "2023-06-01")
 	if sessionID != "" {
 		req.Header.Set("session_id", sessionID)
+	}
+	if anthropicBeta != "" {
+		req.Header.Set("anthropic-beta", anthropicBeta)
+	}
+	// Apply Claude Code CLI client fingerprint headers
+	for key, value := range fingerprint {
+		req.Header.Set(key, value)
+	}
+	// Override retry count to match real SDK behavior (increments on each retry)
+	if retryCount > 0 {
+		req.Header.Set("X-Stainless-Retry-Count", strconv.Itoa(retryCount))
 	}
 	return req, nil
 }
@@ -1704,8 +1727,12 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 
 	// Read stable session_id from X-Session-ID header (set by apikey branch in Forward()).
 	stableSessionID := c.GetHeader("X-Session-ID")
+	anthropicBeta := c.GetHeader("anthropic-beta")
 
-	req, err := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, body, stableSessionID)
+	// Generate fingerprint once per request — OS/Arch stays consistent across retries
+	fingerprint := claude.NewRequestHeaders()
+
+	req, err := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, body, stableSessionID, anthropicBeta, 0, fingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -1741,7 +1768,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			// Stage 1: filter thinking blocks (thinking→text, remove redacted_thinking, disable thinking)
 			time.Sleep(500 * time.Millisecond)
 			filteredBody := FilterThinkingBlocksForRetry(body)
-			if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody, stableSessionID); buildErr == nil {
+			if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody, stableSessionID, anthropicBeta, 1, fingerprint); buildErr == nil {
 				if retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency); retryErr == nil {
 					if retryResp.StatusCode < 400 {
 						log.Printf("%s signature error retry succeeded (thinking downgraded)", prefix)
@@ -1758,7 +1785,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 								log.Printf("%s signature retry still failing and tool-related, retrying with tool blocks downgraded", prefix)
 								time.Sleep(500 * time.Millisecond)
 								filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body)
-								if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody2, stableSessionID); buildErr2 == nil {
+								if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody2, stableSessionID, anthropicBeta, 2, fingerprint); buildErr2 == nil {
 									if retryResp2, retryErr2 := s.httpUpstream.Do(retryReq2, proxyURL, account.ID, account.Concurrency); retryErr2 == nil {
 										if retryResp2.StatusCode < 400 {
 											log.Printf("%s signature error retry succeeded (tools downgraded)", prefix)
@@ -1934,7 +1961,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		// Apply cache estimation only when upstream did not provide token usage.
 		// Real Claude behavior: cache_read and cache_creation coexist.
 		if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-			cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult)
+			cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult, 0)
 			usage.CacheReadInputTokens = cacheRead
 			usage.CacheCreationInputTokens = cacheCreation
 			usage.InputTokens -= (cacheRead + cacheCreation)
@@ -1992,7 +2019,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	// Apply cache estimation only when upstream did not provide token usage.
 	// Real Claude behavior: cache_read and cache_creation coexist.
 	if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-		cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult)
+		cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult, 0)
 		usage.CacheReadInputTokens = cacheRead
 		usage.CacheCreationInputTokens = cacheCreation
 		usage.InputTokens -= (cacheRead + cacheCreation)
@@ -2267,6 +2294,10 @@ func (s *KiroGatewayService) testClaudeAPIConnection(ctx context.Context, accoun
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	// Apply Claude Code CLI client fingerprint headers (with randomized OS/Arch)
+	for key, value := range claude.NewRequestHeaders() {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {

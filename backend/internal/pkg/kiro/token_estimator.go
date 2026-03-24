@@ -32,12 +32,12 @@ const (
 
 	// Context window limits for Kiro
 	KiroContextWindowLimit = 200000
-	// Safety margin: trigger pre-check at 78% of the limit
+	// Safety margin: trigger pre-check at 82.5% of the limit
 	// Token estimation has ±10-15% error, CW format transformation adds overhead
 	// (parameter hints, constraint text, history alternation padding), and
-	// upstream may have stricter internal limits. Use generous margin.
-	KiroContextSafetyMargin = 0.78
-	// Effective limit for pre-check (200k * 0.78 = 156k)
+	// upstream may have stricter internal limits.
+	KiroContextSafetyMargin = 0.825
+	// Effective limit for pre-check (200k * 0.825 = 165k)
 	KiroContextPreCheckLimit = int(float64(KiroContextWindowLimit) * KiroContextSafetyMargin)
 
 	// Input token inflation for client-side context compression trigger
@@ -552,13 +552,21 @@ type CacheEstimation struct {
 // Real Claude behavior: on a cache hit the previously-cached prefix is
 // cache_read, and the newly-added tokens since last request are cache_creation.
 // On a cache miss everything goes to cache_creation.
-func (ce CacheEstimation) SplitCacheTokens(cacheResult CacheResult) (cacheRead, cacheCreation int) {
+//
+// contextLimit caps the total cache tokens to the upstream context window size.
+// Pass KiroContextWindowLimit (200K) for CW paths, or 0 to disable capping
+// (e.g. apikey paths where upstream supports 1M context).
+func (ce CacheEstimation) SplitCacheTokens(cacheResult CacheResult, contextLimit int) (cacheRead, cacheCreation int) {
 	if !ce.MeetsCacheThreshold {
 		return 0, 0
 	}
 	if !cacheResult.Hit {
 		// First request or TTL expired: everything is cache_creation
-		return 0, ce.CacheableTokens
+		cacheCreation = ce.CacheableTokens
+		if contextLimit > 0 && cacheCreation > contextLimit {
+			cacheCreation = contextLimit
+		}
+		return 0, cacheCreation
 	}
 	// Cache hit: previous tokens are cache_read, delta is cache_creation
 	prevTokens := cacheResult.PrevTokens
@@ -567,6 +575,24 @@ func (ce CacheEstimation) SplitCacheTokens(cacheResult CacheResult) (cacheRead, 
 	}
 	cacheRead = prevTokens
 	cacheCreation = ce.CacheableTokens - prevTokens
+
+	// Apply context limit cap when specified
+	if contextLimit > 0 {
+		if cacheRead > contextLimit {
+			cacheRead = contextLimit
+		}
+		if cacheCreation > contextLimit {
+			cacheCreation = contextLimit
+		}
+		// Total cache tokens (read + creation) also cannot exceed context limit
+		if cacheRead+cacheCreation > contextLimit {
+			// Prefer preserving cache_creation (more expensive), trim cache_read
+			cacheRead = contextLimit - cacheCreation
+			if cacheRead < 0 {
+				cacheRead = 0
+			}
+		}
+	}
 	return cacheRead, cacheCreation
 }
 

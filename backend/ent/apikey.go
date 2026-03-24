@@ -40,6 +40,10 @@ type APIKey struct {
 	IPWhitelist []string `json:"ip_whitelist,omitempty"`
 	// Blocked IPs/CIDRs
 	IPBlacklist []string `json:"ip_blacklist,omitempty"`
+	// QuotaLimitUsd holds the value of the "quota_limit_usd" field.
+	QuotaLimitUsd *float64 `json:"quota_limit_usd,omitempty"`
+	// QuotaUsedUsd holds the value of the "quota_used_usd" field.
+	QuotaUsedUsd float64 `json:"quota_used_usd,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the APIKeyQuery when eager-loading is set.
 	Edges        APIKeyEdges `json:"edges"`
@@ -97,6 +101,8 @@ func (*APIKey) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case apikey.FieldIPWhitelist, apikey.FieldIPBlacklist:
 			values[i] = new([]byte)
+		case apikey.FieldQuotaLimitUsd, apikey.FieldQuotaUsedUsd:
+			values[i] = new(sql.NullFloat64)
 		case apikey.FieldID, apikey.FieldUserID, apikey.FieldGroupID:
 			values[i] = new(sql.NullInt64)
 		case apikey.FieldKey, apikey.FieldName, apikey.FieldStatus:
@@ -190,6 +196,19 @@ func (_m *APIKey) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field ip_blacklist: %w", err)
 				}
 			}
+		case apikey.FieldQuotaLimitUsd:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field quota_limit_usd", values[i])
+			} else if value.Valid {
+				_m.QuotaLimitUsd = new(float64)
+				*_m.QuotaLimitUsd = value.Float64
+			}
+		case apikey.FieldQuotaUsedUsd:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field quota_used_usd", values[i])
+			} else if value.Valid {
+				_m.QuotaUsedUsd = value.Float64
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -274,6 +293,14 @@ func (_m *APIKey) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("ip_blacklist=")
 	builder.WriteString(fmt.Sprintf("%v", _m.IPBlacklist))
+	builder.WriteString(", ")
+	if v := _m.QuotaLimitUsd; v != nil {
+		builder.WriteString("quota_limit_usd=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("quota_used_usd=")
+	builder.WriteString(fmt.Sprintf("%v", _m.QuotaUsedUsd))
 	builder.WriteByte(')')
 	return builder.String()
 }

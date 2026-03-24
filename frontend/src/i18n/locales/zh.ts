@@ -49,8 +49,8 @@ export default {
     switchToLight: '切换到浅色模式',
     switchToDark: '切换到深色模式',
     dashboard: '控制台',
-    login: '登录',
-    getStarted: '开始使用',
+    login: '登录 / 注册',
+    getStarted: '登录 / 注册',
     goToDashboard: '进入控制台',
     keyQuery: '密钥查询',
     tags: {
@@ -66,15 +66,9 @@ export default {
       balanceQuota: '余额与配额',
       balanceQuotaDesc: '基于 Token 的精确计费和用量追踪，支持配额管理和兑换码充值。'
     },
-    providers: {
-      title: '支持的服务商',
-      description: 'AI 服务的统一 API 接口',
-      supported: '已支持',
-      soon: '即将推出',
-      claude: 'Claude',
-      gemini: 'Gemini',
-      antigravity: 'Antigravity',
-      more: '更多'
+    cta: {
+      title: '准备好开始了吗？',
+      description: '立即登录，体验强大的 AI API 网关服务。'
     },
     footer: {
       allRightsReserved: '保留所有权利。'
@@ -398,6 +392,15 @@ export default {
     groupChangedSuccess: '分组更换成功',
     failedToChangeGroup: '更换分组失败',
     groupRequired: '请选择分组',
+    bulkSelectAll: '全选',
+    bulkSelected: '已选 {count} 个',
+    bulkChangeGroup: '批量改组',
+    bulkApply: '应用',
+    bulkClearSelection: '清除选择',
+    bulkUpdateGroupSuccess: '批量更新分组：{success} 个成功，{failed} 个失败',
+    bulkUpdateGroupFailed: '批量更新分组失败',
+    bulkSelectGroup: '选择目标分组',
+    bulkNoGroup: '无分组',
     usage: '用量',
     today: '今日',
     total: '累计',
@@ -455,6 +458,16 @@ export default {
     ipBlacklistHint: '每行一个 IP 或 CIDR，这些 IP 将被禁止使用此密钥',
     ipRestrictionEnabled: '已配置 IP 限制',
     ccSwitchNotInstalled: 'CC-Switch 未安装或协议处理程序未注册。请先安装 CC-Switch 或手动复制 API 密钥。',
+    quotaLimit: '用量限额',
+    quotaLimitLabel: '用量限额 (USD)',
+    quotaLimitPlaceholder: '例如 10.00',
+    quotaLimitHint: '设置此密钥的消费上限。留空表示不限制。',
+    quotaUsage: '配额',
+    quotaExceeded: '配额已用尽',
+    resetQuota: '重置',
+    resetQuotaConfirm: '确定要重置此密钥的累计用量吗？',
+    resetQuotaSuccess: '用量已重置',
+    unlimited: '不限',
     ccsClientSelect: {
       title: '选择客户端',
       description: '请选择您要导入到 CC-Switch 的客户端类型：',
@@ -1833,6 +1846,9 @@ export default {
         batchImportPartial: '导入完成：{success} 成功，{fail} 失败',
         fileReadError: '文件读取失败',
         multipleFilesSupported: '支持多文件选择',
+        loadingExistingEmails: '正在加载已有账号邮箱...',
+        emailFilterEnabled: '已启用邮箱过滤，当前系统中有 {count} 个已有邮箱',
+        emailFilteredCount: '已过滤 {count} 个邮箱重复的账号',
       },
       // Re-Auth Modal
       reAuthorizeAccount: '重新授权账号',

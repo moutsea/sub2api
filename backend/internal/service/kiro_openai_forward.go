@@ -274,7 +274,8 @@ endpointDone:
 	toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
 
 	// Calculate cache tokens (cache_read + cache_creation coexist)
-	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult)
+	// CW path: cap to 200K context window
+	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.KiroContextWindowLimit)
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int

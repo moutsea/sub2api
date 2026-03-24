@@ -92,6 +92,28 @@ export async function deleteKey(id: number): Promise<{ message: string }> {
   return data
 }
 
+export async function resetQuota(id: number): Promise<{ message: string }> {
+  const { data } = await apiClient.post<{ message: string }>(`/keys/${id}/reset-quota`)
+  return data
+}
+
+/**
+ * Bulk update group for multiple API keys
+ * @param keyIds - Array of API key IDs
+ * @param groupId - Group ID to assign, or null to remove group
+ * @returns Success and failed counts
+ */
+export async function bulkUpdateGroup(
+  keyIds: number[],
+  groupId: number | null
+): Promise<{ success: number; failed: number }> {
+  const { data } = await apiClient.put<{ success: number; failed: number }>(
+    '/keys/bulk-update-group',
+    { key_ids: keyIds, group_id: groupId }
+  )
+  return data
+}
+
 /**
  * Toggle API key status (active/inactive)
  * @param id - API key ID
@@ -108,7 +130,9 @@ export const keysAPI = {
   create,
   update,
   delete: deleteKey,
-  toggleStatus
+  toggleStatus,
+  resetQuota,
+  bulkUpdateGroup
 }
 
 export default keysAPI

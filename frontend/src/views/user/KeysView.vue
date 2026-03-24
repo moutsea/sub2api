@@ -19,7 +19,66 @@
       </template>
 
       <template #table>
+        <!-- Bulk Action Bar -->
+        <div
+          v-if="selectedKeyIds.length > 0"
+          class="flex items-center gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-800 dark:bg-primary-900/20 mb-3"
+        >
+          <span class="text-sm font-medium text-primary-700 dark:text-primary-300">
+            {{ t('keys.bulkSelected', { count: selectedKeyIds.length }) }}
+          </span>
+          <div class="h-4 w-px bg-primary-200 dark:bg-primary-700"></div>
+          <select
+            v-model="bulkGroupId"
+            class="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-dark-600 dark:bg-dark-800 dark:text-white"
+          >
+            <option value="">{{ t('keys.bulkNoGroup') }}</option>
+            <option v-for="g in groupOptions" :key="g.value" :value="g.value">{{ g.label }}</option>
+          </select>
+          <button
+            @click="handleBulkUpdateGroup"
+            :disabled="bulkSubmitting"
+            class="btn btn-primary btn-sm"
+          >
+            <svg
+              v-if="bulkSubmitting"
+              class="-ml-1 mr-1.5 h-3.5 w-3.5 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            {{ t('keys.bulkApply') }}
+          </button>
+          <button
+            @click="clearSelection"
+            class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          >
+            {{ t('keys.bulkClearSelection') }}
+          </button>
+        </div>
+
         <DataTable :columns="columns" :data="apiKeys" :loading="loading">
+          <template #header-select>
+            <input
+              type="checkbox"
+              :checked="isAllSelected"
+              :indeterminate="selectedKeyIds.length > 0 && !isAllSelected"
+              @change="selectPage"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+            />
+          </template>
+
+          <template #cell-select="{ row }">
+            <input
+              type="checkbox"
+              :checked="selectedKeyIds.includes(row.id)"
+              @change="toggleSel(row.id)"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+            />
+          </template>
+
           <template #cell-key="{ value, row }">
             <div class="flex items-center gap-2">
               <code class="code text-xs">
@@ -107,6 +166,15 @@
                   ${{ (usageStats[row.id]?.total_actual_cost ?? 0).toFixed(4) }}
                 </span>
               </div>
+              <div v-if="row.quota_limit_usd != null && row.quota_limit_usd > 0" class="mt-0.5 flex items-center gap-1.5">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('keys.quotaUsage') }}:</span>
+                <span
+                  class="font-medium"
+                  :class="row.quota_used_usd >= row.quota_limit_usd ? 'text-red-500' : 'text-gray-900 dark:text-white'"
+                >
+                  ${{ (row.quota_used_usd ?? 0).toFixed(2) }} / ${{ (row.quota_limit_usd ?? 0).toFixed(2) }}
+                </span>
+              </div>
             </div>
           </template>
 
@@ -152,6 +220,15 @@
                 <Icon v-if="row.status === 'active'" name="ban" size="sm" />
                 <Icon v-else name="checkCircle" size="sm" />
                 <span class="text-xs">{{ row.status === 'active' ? t('keys.disable') : t('keys.enable') }}</span>
+              </button>
+              <!-- Reset Quota Button -->
+              <button
+                v-if="row.quota_limit_usd != null && row.quota_limit_usd > 0"
+                @click="confirmResetQuota(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-orange-50 hover:text-orange-600 dark:hover:bg-orange-900/20 dark:hover:text-orange-400"
+              >
+                <Icon name="refresh" size="sm" />
+                <span class="text-xs">{{ t('keys.resetQuota') }}</span>
               </button>
               <!-- Edit Button -->
               <button
@@ -329,6 +406,40 @@
               />
               <p class="input-hint">{{ t('keys.ipBlacklistHint') }}</p>
             </div>
+          </div>
+        </div>
+
+        <!-- Quota Limit Section (only for edit) -->
+        <div v-if="showEditModal" class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="input-label mb-0">{{ t('keys.quotaLimit') }}</label>
+            <button
+              type="button"
+              @click="formData.enable_quota = !formData.enable_quota"
+              :class="[
+                'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+                formData.enable_quota ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  formData.enable_quota ? 'translate-x-4' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="formData.enable_quota">
+            <label class="input-label">{{ t('keys.quotaLimitLabel') }}</label>
+            <input
+              v-model="formData.quota_limit_usd"
+              type="number"
+              step="0.01"
+              min="0"
+              class="input"
+              :placeholder="t('keys.quotaLimitPlaceholder')"
+            />
+            <p class="input-hint">{{ t('keys.quotaLimitHint') }}</p>
           </div>
         </div>
       </form>
@@ -524,6 +635,7 @@ const onboardingStore = useOnboardingStore()
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
 const columns = computed<Column[]>(() => [
+  { key: 'select', label: '', sortable: false },
   { key: 'name', label: t('common.name'), sortable: true },
   { key: 'key', label: t('keys.apiKey'), sortable: false },
   { key: 'group', label: t('keys.group'), sortable: false },
@@ -554,6 +666,9 @@ const showCcsClientSelect = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
 const copiedKeyId = ref<number | null>(null)
+const selectedKeyIds = ref<number[]>([])
+const bulkGroupId = ref<number | string>('')
+const bulkSubmitting = ref(false)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
 const dropdownRef = ref<HTMLElement | null>(null)
@@ -583,7 +698,9 @@ const formData = ref({
   custom_key: '',
   enable_ip_restriction: false,
   ip_whitelist: '',
-  ip_blacklist: ''
+  ip_blacklist: '',
+  enable_quota: false,
+  quota_limit_usd: ''
 })
 
 // 自定义Key验证
@@ -708,12 +825,16 @@ const closeUseKeyModal = () => {
 
 const handlePageChange = (page: number) => {
   pagination.value.page = page
+  selectedKeyIds.value = []
+  bulkGroupId.value = ''
   loadApiKeys()
 }
 
 const handlePageSizeChange = (pageSize: number) => {
   pagination.value.page_size = pageSize
   pagination.value.page = 1
+  selectedKeyIds.value = []
+  bulkGroupId.value = ''
   loadApiKeys()
 }
 
@@ -728,7 +849,9 @@ const editKey = (key: ApiKey) => {
     custom_key: '',
     enable_ip_restriction: hasIPRestriction,
     ip_whitelist: (key.ip_whitelist || []).join('\n'),
-    ip_blacklist: (key.ip_blacklist || []).join('\n')
+    ip_blacklist: (key.ip_blacklist || []).join('\n'),
+    enable_quota: key.quota_limit_usd != null && key.quota_limit_usd > 0,
+    quota_limit_usd: key.quota_limit_usd != null && key.quota_limit_usd > 0 ? key.quota_limit_usd.toString() : ''
   }
   showEditModal.value = true
 }
@@ -743,6 +866,17 @@ const toggleKeyStatus = async (key: ApiKey) => {
     loadApiKeys()
   } catch (error) {
     appStore.showError(t('keys.failedToUpdateStatus'))
+  }
+}
+
+const confirmResetQuota = async (key: ApiKey) => {
+  if (!window.confirm(t('keys.resetQuotaConfirm'))) return
+  try {
+    await keysAPI.resetQuota(key.id)
+    appStore.showSuccess(t('keys.resetQuotaSuccess'))
+    loadApiKeys()
+  } catch (error) {
+    appStore.showError(t('keys.failedToSave'))
   }
 }
 
@@ -774,6 +908,48 @@ const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
     loadApiKeys()
   } catch (error) {
     appStore.showError(t('keys.failedToChangeGroup'))
+  }
+}
+
+const toggleSel = (id: number) => {
+  const idx = selectedKeyIds.value.indexOf(id)
+  if (idx === -1) {
+    selectedKeyIds.value.push(id)
+  } else {
+    selectedKeyIds.value.splice(idx, 1)
+  }
+}
+
+const isAllSelected = computed(() =>
+  apiKeys.value.length > 0 && apiKeys.value.every((k) => selectedKeyIds.value.includes(k.id))
+)
+
+const selectPage = () => {
+  if (isAllSelected.value) {
+    selectedKeyIds.value = []
+  } else {
+    selectedKeyIds.value = apiKeys.value.map((k) => k.id)
+  }
+}
+
+const clearSelection = () => {
+  selectedKeyIds.value = []
+  bulkGroupId.value = ''
+}
+
+const handleBulkUpdateGroup = async () => {
+  if (selectedKeyIds.value.length === 0) return
+  bulkSubmitting.value = true
+  try {
+    const groupId = bulkGroupId.value === '' ? null : Number(bulkGroupId.value)
+    const result = await keysAPI.bulkUpdateGroup(selectedKeyIds.value, groupId)
+    appStore.showSuccess(t('keys.bulkUpdateGroupSuccess', { success: result.success, failed: result.failed }))
+    clearSelection()
+    loadApiKeys()
+  } catch (error) {
+    appStore.showError(t('keys.bulkUpdateGroupFailed'))
+  } finally {
+    bulkSubmitting.value = false
   }
 }
 
@@ -816,6 +992,14 @@ const handleSubmit = async () => {
   const ipWhitelist = formData.value.enable_ip_restriction ? parseIPList(formData.value.ip_whitelist) : []
   const ipBlacklist = formData.value.enable_ip_restriction ? parseIPList(formData.value.ip_blacklist) : []
 
+  if (formData.value.enable_quota) {
+    const limit = parseFloat(formData.value.quota_limit_usd)
+    if (isNaN(limit) || limit <= 0) {
+      appStore.showError(t('keys.quotaLimitPlaceholder'))
+      return
+    }
+  }
+
   submitting.value = true
   try {
     if (showEditModal.value && selectedKey.value) {
@@ -824,7 +1008,10 @@ const handleSubmit = async () => {
         group_id: formData.value.group_id,
         status: formData.value.status,
         ip_whitelist: ipWhitelist,
-        ip_blacklist: ipBlacklist
+        ip_blacklist: ipBlacklist,
+        ...(formData.value.enable_quota
+          ? { quota_limit_usd: parseFloat(formData.value.quota_limit_usd) || 0 }
+          : { clear_quota: true })
       })
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
@@ -879,7 +1066,9 @@ const closeModals = () => {
     custom_key: '',
     enable_ip_restriction: false,
     ip_whitelist: '',
-    ip_blacklist: ''
+    ip_blacklist: '',
+    enable_quota: false,
+    quota_limit_usd: ''
   }
 }
 

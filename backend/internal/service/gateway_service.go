@@ -214,7 +214,9 @@ type GatewayService struct {
 	sessionLimitCache   SessionLimitCache    // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
 	usageCache          *UsageCache          // 用量缓存，用于账号选择时检查配额
 	accountUsageService *AccountUsageService // 账号用量服务，用于主动刷新配额
-	tempAPIKeyRepo      TempAPIKeyRepository // 临时 API Key 仓库，用于更新 quota_only 消费金额
+	tempAPIKeyRepo      TempAPIKeyRepository      // 临时 API Key 仓库，用于更新 quota_only 消费金额
+	apiKeyRepo          APIKeyRepository          // API Key 仓库，用于更新 quota_used_usd
+	apiKeyCacheInval    APIKeyAuthCacheInvalidator // API Key 认证缓存失效器
 }
 
 // NewGatewayService creates a new GatewayService
@@ -240,6 +242,8 @@ func NewGatewayService(
 	usageCache *UsageCache,
 	accountUsageService *AccountUsageService,
 	tempAPIKeyRepo TempAPIKeyRepository,
+	apiKeyRepo APIKeyRepository,
+	apiKeyCacheInval APIKeyAuthCacheInvalidator,
 ) *GatewayService {
 	return &GatewayService{
 		accountRepo:         accountRepo,
@@ -263,6 +267,8 @@ func NewGatewayService(
 		usageCache:          usageCache,
 		accountUsageService: accountUsageService,
 		tempAPIKeyRepo:      tempAPIKeyRepo,
+		apiKeyRepo:          apiKeyRepo,
+		apiKeyCacheInval:    apiKeyCacheInval,
 	}
 }
 
@@ -2272,11 +2278,26 @@ func injectClaudeCodePrompt(body []byte, system any) []byte {
 	return result
 }
 
+var unsupportedClaudeFields = []string{
+	"context_management",
+}
+
+func stripUnsupportedClaudeFields(body []byte) []byte {
+	for _, field := range unsupportedClaudeFields {
+		if gjson.GetBytes(body, field).Exists() {
+			if stripped, err := sjson.DeleteBytes(body, field); err == nil {
+				body = stripped
+			}
+		}
+	}
+	return body
+}
+
 // injectCacheControlBreakpoints 自动注入 cache_control 断点以利用 Anthropic prompt cache。
 // 返回 (处理后的 body, 是否发生了注入)。第二个返回值为 true 时表示平台主动注入了
 // cache_control，调用方应隐藏响应中的 cache tokens 并按 input 单价计费。
 // 为 false 时表示用户已自带 cache_control 或无需注入，应透传 cache tokens。
-//
+
 // 策略（方案 A：用户有任何 cache_control 则完全不注入）：
 //  0. 前置检查：若 tools/system/messages 任一区域已有 cache_control，直接返回 false
 //  1. tools：在最后一个 tool 上添加 {type: "ephemeral"}
@@ -4255,6 +4276,14 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	if input.TempAPIKey != nil && s.tempAPIKeyRepo != nil {
 		if err := s.tempAPIKeyRepo.IncrementUsageCounters(ctx, input.TempAPIKey.ID); err != nil {
 			log.Printf("Increment temp API key usage counters failed: %v", err)
+		}
+	}
+
+	if cost.ActualCost > 0 && apiKey.QuotaLimitUSD != nil && s.apiKeyRepo != nil {
+		if err := s.apiKeyRepo.IncrementQuotaUsed(ctx, apiKey.ID, cost.ActualCost); err != nil {
+			log.Printf("Increment API key quota used failed: %v", err)
+		} else if s.apiKeyCacheInval != nil && apiKey.Key != "" {
+			s.apiKeyCacheInval.InvalidateAuthCacheByKey(ctx, apiKey.Key)
 		}
 	}
 

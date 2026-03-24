@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -148,7 +149,9 @@ func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
 	if s.cache == nil {
 		return
 	}
-	_ = s.cache.DeleteAuthCache(ctx, cacheKey)
+	if err := s.cache.DeleteAuthCache(ctx, cacheKey); err != nil {
+		log.Printf("[AuthCache] L2 delete failed for key %s: %v", cacheKey[:8], err)
+	}
 }
 
 func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey string) (*APIKeyAuthCacheEntry, error) {
@@ -191,12 +194,14 @@ func (s *APIKeyService) snapshotFromAPIKey(apiKey *APIKey) *APIKeyAuthSnapshot {
 		return nil
 	}
 	snapshot := &APIKeyAuthSnapshot{
-		APIKeyID:    apiKey.ID,
-		UserID:      apiKey.UserID,
-		GroupID:     apiKey.GroupID,
-		Status:      apiKey.Status,
-		IPWhitelist: apiKey.IPWhitelist,
-		IPBlacklist: apiKey.IPBlacklist,
+		APIKeyID:      apiKey.ID,
+		UserID:        apiKey.UserID,
+		GroupID:       apiKey.GroupID,
+		Status:        apiKey.Status,
+		IPWhitelist:   apiKey.IPWhitelist,
+		IPBlacklist:   apiKey.IPBlacklist,
+		QuotaLimitUSD: apiKey.QuotaLimitUSD,
+		QuotaUsedUSD:  apiKey.QuotaUsedUSD,
 		User: APIKeyAuthUserSnapshot{
 			ID:          apiKey.User.ID,
 			Status:      apiKey.User.Status,
@@ -233,13 +238,15 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		return nil
 	}
 	apiKey := &APIKey{
-		ID:          snapshot.APIKeyID,
-		UserID:      snapshot.UserID,
-		GroupID:     snapshot.GroupID,
-		Key:         key,
-		Status:      snapshot.Status,
-		IPWhitelist: snapshot.IPWhitelist,
-		IPBlacklist: snapshot.IPBlacklist,
+		ID:            snapshot.APIKeyID,
+		UserID:        snapshot.UserID,
+		GroupID:       snapshot.GroupID,
+		Key:           key,
+		Status:        snapshot.Status,
+		IPWhitelist:   snapshot.IPWhitelist,
+		IPBlacklist:   snapshot.IPBlacklist,
+		QuotaLimitUSD: snapshot.QuotaLimitUSD,
+		QuotaUsedUSD:  snapshot.QuotaUsedUSD,
 		User: &User{
 			ID:          snapshot.User.ID,
 			Status:      snapshot.User.Status,

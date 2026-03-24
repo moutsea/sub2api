@@ -3,7 +3,7 @@
     <template v-if="loading">
       <div v-for="i in 5" :key="i" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
         <div class="space-y-3">
-          <div v-for="column in columns.filter(c => c.key !== 'actions')" :key="column.key" class="flex justify-between">
+          <div v-for="column in columns.filter(c => c.key !== 'actions' && c.key !== 'select')" :key="column.key" class="flex justify-between">
             <div class="h-4 w-20 animate-pulse rounded bg-gray-200 dark:bg-dark-700"></div>
             <div class="h-4 w-32 animate-pulse rounded bg-gray-200 dark:bg-dark-700"></div>
           </div>
@@ -39,7 +39,7 @@
       >
         <div class="space-y-3">
           <div
-            v-for="column in columns.filter(c => c.key !== 'actions')"
+            v-for="column in columns.filter(c => c.key !== 'actions' && c.key !== 'select')"
             :key="column.key"
             class="flex items-start justify-between gap-4"
           >

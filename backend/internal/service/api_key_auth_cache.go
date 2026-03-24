@@ -2,14 +2,16 @@ package service
 
 // APIKeyAuthSnapshot API Key 认证缓存快照（仅包含认证所需字段）
 type APIKeyAuthSnapshot struct {
-	APIKeyID    int64                    `json:"api_key_id"`
-	UserID      int64                    `json:"user_id"`
-	GroupID     *int64                   `json:"group_id,omitempty"`
-	Status      string                   `json:"status"`
-	IPWhitelist []string                 `json:"ip_whitelist,omitempty"`
-	IPBlacklist []string                 `json:"ip_blacklist,omitempty"`
-	User        APIKeyAuthUserSnapshot   `json:"user"`
-	Group       *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
+	APIKeyID      int64                    `json:"api_key_id"`
+	UserID        int64                    `json:"user_id"`
+	GroupID       *int64                   `json:"group_id,omitempty"`
+	Status        string                   `json:"status"`
+	IPWhitelist   []string                 `json:"ip_whitelist,omitempty"`
+	IPBlacklist   []string                 `json:"ip_blacklist,omitempty"`
+	QuotaLimitUSD *float64                 `json:"quota_limit_usd,omitempty"`
+	QuotaUsedUSD  float64                  `json:"quota_used_usd"`
+	User          APIKeyAuthUserSnapshot   `json:"user"`
+	Group         *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
 }
 
 // APIKeyAuthUserSnapshot 用户快照

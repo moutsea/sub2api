@@ -68,18 +68,20 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		return nil
 	}
 	return &APIKey{
-		ID:          k.ID,
-		UserID:      k.UserID,
-		Key:         k.Key,
-		Name:        k.Name,
-		GroupID:     k.GroupID,
-		Status:      k.Status,
-		IPWhitelist: k.IPWhitelist,
-		IPBlacklist: k.IPBlacklist,
-		CreatedAt:   k.CreatedAt,
-		UpdatedAt:   k.UpdatedAt,
-		User:        UserFromServiceShallow(k.User),
-		Group:       GroupFromServiceShallow(k.Group),
+		ID:            k.ID,
+		UserID:        k.UserID,
+		Key:           k.Key,
+		Name:          k.Name,
+		GroupID:       k.GroupID,
+		Status:        k.Status,
+		IPWhitelist:   k.IPWhitelist,
+		IPBlacklist:   k.IPBlacklist,
+		QuotaLimitUSD: k.QuotaLimitUSD,
+		QuotaUsedUSD:  k.QuotaUsedUSD,
+		CreatedAt:     k.CreatedAt,
+		UpdatedAt:     k.UpdatedAt,
+		User:          UserFromServiceShallow(k.User),
+		Group:         GroupFromServiceShallow(k.Group),
 	}
 }
 
@@ -306,7 +308,7 @@ func RedeemCodeFromServiceAdmin(rc *service.RedeemCode) *AdminRedeemCode {
 	}
 	return &AdminRedeemCode{
 		RedeemCode: redeemCodeFromServiceBase(rc),
-		Notes:     rc.Notes,
+		Notes:      rc.Notes,
 	}
 }
 

@@ -170,6 +170,54 @@ func (_u *APIKeyUpdate) ClearIPBlacklist() *APIKeyUpdate {
 	return _u
 }
 
+// SetQuotaLimitUsd sets the "quota_limit_usd" field.
+func (_u *APIKeyUpdate) SetQuotaLimitUsd(v float64) *APIKeyUpdate {
+	_u.mutation.ResetQuotaLimitUsd()
+	_u.mutation.SetQuotaLimitUsd(v)
+	return _u
+}
+
+// SetNillableQuotaLimitUsd sets the "quota_limit_usd" field if the given value is not nil.
+func (_u *APIKeyUpdate) SetNillableQuotaLimitUsd(v *float64) *APIKeyUpdate {
+	if v != nil {
+		_u.SetQuotaLimitUsd(*v)
+	}
+	return _u
+}
+
+// AddQuotaLimitUsd adds value to the "quota_limit_usd" field.
+func (_u *APIKeyUpdate) AddQuotaLimitUsd(v float64) *APIKeyUpdate {
+	_u.mutation.AddQuotaLimitUsd(v)
+	return _u
+}
+
+// ClearQuotaLimitUsd clears the value of the "quota_limit_usd" field.
+func (_u *APIKeyUpdate) ClearQuotaLimitUsd() *APIKeyUpdate {
+	_u.mutation.ClearQuotaLimitUsd()
+	return _u
+}
+
+// SetQuotaUsedUsd sets the "quota_used_usd" field.
+func (_u *APIKeyUpdate) SetQuotaUsedUsd(v float64) *APIKeyUpdate {
+	_u.mutation.ResetQuotaUsedUsd()
+	_u.mutation.SetQuotaUsedUsd(v)
+	return _u
+}
+
+// SetNillableQuotaUsedUsd sets the "quota_used_usd" field if the given value is not nil.
+func (_u *APIKeyUpdate) SetNillableQuotaUsedUsd(v *float64) *APIKeyUpdate {
+	if v != nil {
+		_u.SetQuotaUsedUsd(*v)
+	}
+	return _u
+}
+
+// AddQuotaUsedUsd adds value to the "quota_used_usd" field.
+func (_u *APIKeyUpdate) AddQuotaUsedUsd(v float64) *APIKeyUpdate {
+	_u.mutation.AddQuotaUsedUsd(v)
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *APIKeyUpdate) SetUser(v *User) *APIKeyUpdate {
 	return _u.SetUserID(v.ID)
@@ -349,6 +397,21 @@ func (_u *APIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.IPBlacklistCleared() {
 		_spec.ClearField(apikey.FieldIPBlacklist, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.QuotaLimitUsd(); ok {
+		_spec.SetField(apikey.FieldQuotaLimitUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaLimitUsd(); ok {
+		_spec.AddField(apikey.FieldQuotaLimitUsd, field.TypeFloat64, value)
+	}
+	if _u.mutation.QuotaLimitUsdCleared() {
+		_spec.ClearField(apikey.FieldQuotaLimitUsd, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.QuotaUsedUsd(); ok {
+		_spec.SetField(apikey.FieldQuotaUsedUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaUsedUsd(); ok {
+		_spec.AddField(apikey.FieldQuotaUsedUsd, field.TypeFloat64, value)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -611,6 +674,54 @@ func (_u *APIKeyUpdateOne) ClearIPBlacklist() *APIKeyUpdateOne {
 	return _u
 }
 
+// SetQuotaLimitUsd sets the "quota_limit_usd" field.
+func (_u *APIKeyUpdateOne) SetQuotaLimitUsd(v float64) *APIKeyUpdateOne {
+	_u.mutation.ResetQuotaLimitUsd()
+	_u.mutation.SetQuotaLimitUsd(v)
+	return _u
+}
+
+// SetNillableQuotaLimitUsd sets the "quota_limit_usd" field if the given value is not nil.
+func (_u *APIKeyUpdateOne) SetNillableQuotaLimitUsd(v *float64) *APIKeyUpdateOne {
+	if v != nil {
+		_u.SetQuotaLimitUsd(*v)
+	}
+	return _u
+}
+
+// AddQuotaLimitUsd adds value to the "quota_limit_usd" field.
+func (_u *APIKeyUpdateOne) AddQuotaLimitUsd(v float64) *APIKeyUpdateOne {
+	_u.mutation.AddQuotaLimitUsd(v)
+	return _u
+}
+
+// ClearQuotaLimitUsd clears the value of the "quota_limit_usd" field.
+func (_u *APIKeyUpdateOne) ClearQuotaLimitUsd() *APIKeyUpdateOne {
+	_u.mutation.ClearQuotaLimitUsd()
+	return _u
+}
+
+// SetQuotaUsedUsd sets the "quota_used_usd" field.
+func (_u *APIKeyUpdateOne) SetQuotaUsedUsd(v float64) *APIKeyUpdateOne {
+	_u.mutation.ResetQuotaUsedUsd()
+	_u.mutation.SetQuotaUsedUsd(v)
+	return _u
+}
+
+// SetNillableQuotaUsedUsd sets the "quota_used_usd" field if the given value is not nil.
+func (_u *APIKeyUpdateOne) SetNillableQuotaUsedUsd(v *float64) *APIKeyUpdateOne {
+	if v != nil {
+		_u.SetQuotaUsedUsd(*v)
+	}
+	return _u
+}
+
+// AddQuotaUsedUsd adds value to the "quota_used_usd" field.
+func (_u *APIKeyUpdateOne) AddQuotaUsedUsd(v float64) *APIKeyUpdateOne {
+	_u.mutation.AddQuotaUsedUsd(v)
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *APIKeyUpdateOne) SetUser(v *User) *APIKeyUpdateOne {
 	return _u.SetUserID(v.ID)
@@ -820,6 +931,21 @@ func (_u *APIKeyUpdateOne) sqlSave(ctx context.Context) (_node *APIKey, err erro
 	}
 	if _u.mutation.IPBlacklistCleared() {
 		_spec.ClearField(apikey.FieldIPBlacklist, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.QuotaLimitUsd(); ok {
+		_spec.SetField(apikey.FieldQuotaLimitUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaLimitUsd(); ok {
+		_spec.AddField(apikey.FieldQuotaLimitUsd, field.TypeFloat64, value)
+	}
+	if _u.mutation.QuotaLimitUsdCleared() {
+		_spec.ClearField(apikey.FieldQuotaLimitUsd, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.QuotaUsedUsd(); ok {
+		_spec.SetField(apikey.FieldQuotaUsedUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaUsedUsd(); ok {
+		_spec.AddField(apikey.FieldQuotaUsedUsd, field.TypeFloat64, value)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{

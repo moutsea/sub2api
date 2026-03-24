@@ -110,6 +110,8 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 			apikey.FieldStatus,
 			apikey.FieldIPWhitelist,
 			apikey.FieldIPBlacklist,
+			apikey.FieldQuotaLimitUsd,
+			apikey.FieldQuotaUsedUsd,
 		).
 		WithUser(func(q *dbent.UserQuery) {
 			q.Select(
@@ -178,6 +180,12 @@ func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey) erro
 		builder.SetIPBlacklist(key.IPBlacklist)
 	} else {
 		builder.ClearIPBlacklist()
+	}
+
+	if key.QuotaLimitUSD != nil {
+		builder.SetQuotaLimitUsd(*key.QuotaLimitUSD)
+	} else {
+		builder.ClearQuotaLimitUsd()
 	}
 
 	affected, err := builder.Save(ctx)
@@ -362,16 +370,18 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 		return nil
 	}
 	out := &service.APIKey{
-		ID:          m.ID,
-		UserID:      m.UserID,
-		Key:         m.Key,
-		Name:        m.Name,
-		Status:      m.Status,
-		IPWhitelist: m.IPWhitelist,
-		IPBlacklist: m.IPBlacklist,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
-		GroupID:     m.GroupID,
+		ID:            m.ID,
+		UserID:        m.UserID,
+		Key:           m.Key,
+		Name:          m.Name,
+		Status:        m.Status,
+		IPWhitelist:   m.IPWhitelist,
+		IPBlacklist:   m.IPBlacklist,
+		QuotaLimitUSD: m.QuotaLimitUsd,
+		QuotaUsedUSD:  m.QuotaUsedUsd,
+		CreatedAt:     m.CreatedAt,
+		UpdatedAt:     m.UpdatedAt,
+		GroupID:       m.GroupID,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)
@@ -436,4 +446,32 @@ func derefString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func (r *apiKeyRepository) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	affected, err := r.client.APIKey.Update().
+		Where(apikey.IDEQ(id), apikey.DeletedAtIsNil()).
+		AddQuotaUsedUsd(amount).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAPIKeyNotFound
+	}
+	return nil
+}
+
+func (r *apiKeyRepository) ResetQuotaUsed(ctx context.Context, id int64) error {
+	affected, err := r.client.APIKey.Update().
+		Where(apikey.IDEQ(id), apikey.DeletedAtIsNil()).
+		SetQuotaUsedUsd(0).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAPIKeyNotFound
+	}
+	return nil
 }

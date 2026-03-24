@@ -35,6 +35,10 @@ const (
 	FieldIPWhitelist = "ip_whitelist"
 	// FieldIPBlacklist holds the string denoting the ip_blacklist field in the database.
 	FieldIPBlacklist = "ip_blacklist"
+	// FieldQuotaLimitUsd holds the string denoting the quota_limit_usd field in the database.
+	FieldQuotaLimitUsd = "quota_limit_usd"
+	// FieldQuotaUsedUsd holds the string denoting the quota_used_usd field in the database.
+	FieldQuotaUsedUsd = "quota_used_usd"
 	// EdgeUser holds the string denoting the user edge name in mutations.
 	EdgeUser = "user"
 	// EdgeGroup holds the string denoting the group edge name in mutations.
@@ -79,6 +83,8 @@ var Columns = []string{
 	FieldStatus,
 	FieldIPWhitelist,
 	FieldIPBlacklist,
+	FieldQuotaLimitUsd,
+	FieldQuotaUsedUsd,
 }
 
 // ValidColumn reports if the column name is valid (part of the table columns).
@@ -113,6 +119,8 @@ var (
 	DefaultStatus string
 	// StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	StatusValidator func(string) error
+	// DefaultQuotaUsedUsd holds the default value on creation for the "quota_used_usd" field.
+	DefaultQuotaUsedUsd float64
 )
 
 // OrderOption defines the ordering options for the APIKey queries.
@@ -161,6 +169,16 @@ func ByGroupID(opts ...sql.OrderTermOption) OrderOption {
 // ByStatus orders the results by the status field.
 func ByStatus(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldStatus, opts...).ToFunc()
+}
+
+// ByQuotaLimitUsd orders the results by the quota_limit_usd field.
+func ByQuotaLimitUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldQuotaLimitUsd, opts...).ToFunc()
+}
+
+// ByQuotaUsedUsd orders the results by the quota_used_usd field.
+func ByQuotaUsedUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldQuotaUsedUsd, opts...).ToFunc()
 }
 
 // ByUserField orders the results by user field.

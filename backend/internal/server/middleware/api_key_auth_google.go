@@ -46,6 +46,12 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			abortWithGoogleError(c, 401, "API key is disabled")
 			return
 		}
+
+		if apiKey.IsQuotaExceeded() {
+			abortWithGoogleError(c, 429, "API key usage quota exceeded")
+			return
+		}
+
 		if apiKey.User == nil {
 			abortWithGoogleError(c, 401, "User associated with API key not found")
 			return

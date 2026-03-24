@@ -264,8 +264,8 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	}
 	req.Header.Set("anthropic-beta", betaHeader)
 
-	// Apply Claude Code client headers
-	for key, value := range claude.DefaultHeaders {
+	// Apply Claude Code client headers (with randomized OS/Arch)
+	for key, value := range claude.NewRequestHeaders() {
 		req.Header.Set(key, value)
 	}
 

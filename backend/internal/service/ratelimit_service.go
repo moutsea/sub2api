@@ -39,6 +39,8 @@ const geminiPrecheckCacheTTL = time.Minute
 const (
 	defaultRateLimitFallback = 5 * time.Minute
 	openAI429Fallback        = 60 * time.Second
+	kiro429CreditLimit5m     = 2 * time.Minute // upstream says "5-minute credit limit exceeded"
+	kiro429DefaultFallback   = 1 * time.Minute // other Kiro 429 errors
 )
 
 // NewRateLimitService 创建RateLimitService实例
@@ -374,7 +376,33 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		return
 	}
 
-	// 2. 解析重置时间（平台感知）
+	// 2. Kiro 平台：根据上游 message 内容决定限流时长（上游不带 reset header）
+	if account.Platform == PlatformKiro {
+		now := time.Now()
+		var resetAt time.Time
+		var resetSource string
+		if strings.Contains(upstreamMsg, "5-minute credit limit exceeded") {
+			resetAt = now.Add(kiro429CreditLimit5m)
+			resetSource = "kiro:5m-credit-limit"
+		} else {
+			resetAt = now.Add(kiro429DefaultFallback)
+			resetSource = "kiro:default-2m"
+		}
+		slog.Info("kiro_429_rate_limited", "account_id", account.ID, "reset_at", resetAt, "source", resetSource, "msg", upstreamMsg)
+
+		if s.shouldScopeClaudeSonnetRateLimit(account, responseBody) {
+			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelRateLimitScopeClaudeSonnet, resetAt); err != nil {
+				slog.Warn("model_rate_limit_set_failed", "account_id", account.ID, "scope", modelRateLimitScopeClaudeSonnet, "error", err)
+			}
+			return
+		}
+		if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
+		}
+		return
+	}
+
+	// 3. 非 Kiro 平台：解析重置时间（平台感知）
 	resetAt, resetSource := s.parseResetTime(account, headers)
 	if strings.HasPrefix(resetSource, "default:") {
 		slog.Warn("429_without_reset_header",

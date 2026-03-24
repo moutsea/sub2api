@@ -30,8 +30,10 @@ func RegisterUserRoutes(
 			keys.GET("", h.APIKey.List)
 			keys.GET("/:id", h.APIKey.GetByID)
 			keys.POST("", h.APIKey.Create)
+			keys.PUT("/bulk-update-group", h.APIKey.BulkUpdateGroup)
 			keys.PUT("/:id", h.APIKey.Update)
 			keys.DELETE("/:id", h.APIKey.Delete)
+			keys.POST("/:id/reset-quota", h.APIKey.ResetQuota)
 		}
 
 		// 用户可用分组（非管理员接口）
