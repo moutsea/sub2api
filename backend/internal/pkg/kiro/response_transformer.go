@@ -73,6 +73,7 @@ type AwsEventStreamParser struct {
 
 	// Thinking tag parsing state
 	inThinkingBlock    bool
+	thinkingExtracted  bool            // Once thinking is extracted, all subsequent content is text
 	thinkingBlockIndex *uint32
 	pendingContent     strings.Builder // Buffer for partial tag matching
 
@@ -150,6 +151,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		p.inTextBlock = false
 		p.thinkingBlockIndex = nil
 		p.inThinkingBlock = false
+		p.thinkingExtracted = false
 		p.pendingContent.Reset()
 		return events
 	}
@@ -171,7 +173,62 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 	}
 	p.toolAccumulators = make(map[string]*toolAccumulator)
 
-	// Close thinking block if open
+	// Flush pending thinking content at stream end.
+	// Aligned with kiro.rs generate_final_events: handle residual thinking buffer.
+	pendingStr := p.pendingContent.String()
+	p.pendingContent.Reset()
+
+	if p.inThinkingBlock {
+		// Check if buffer ends with </thinking> (boundary case: no \n\n at stream end)
+		combined := pendingStr
+		if endPos := findRealThinkingEndTagAtBufferEnd(combined); endPos >= 0 {
+			// Emit thinking content before the tag
+			thinkingContent := combined[:endPos]
+			if thinkingContent != "" {
+				if p.thinkingBlockIndex == nil {
+					idx := p.nextIndex()
+					p.thinkingBlockIndex = &idx
+					events = append(events, StreamEvent{
+						Type: EventContentBlockStart, Index: idx,
+						BlockType: ContentBlockType{Kind: BlockThinking},
+					})
+				}
+				events = append(events, StreamEvent{Type: EventThinkingDelta, Text: thinkingContent})
+			}
+			// Close thinking block
+			if p.thinkingBlockIndex != nil {
+				idx := *p.thinkingBlockIndex
+				events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+				p.thinkingBlockIndex = nil
+			}
+			p.inThinkingBlock = false
+			p.thinkingExtracted = true
+			// Remaining after tag as text
+			afterPos := endPos + len(ThinkingEndTag)
+			remaining := strings.TrimLeft(combined[afterPos:], " \t\n\r")
+			if remaining != "" {
+				events = append(events, p.emitTextDelta(remaining)...)
+			}
+		} else {
+			// No end tag found — emit remaining as thinking delta
+			if combined != "" {
+				if p.thinkingBlockIndex == nil {
+					idx := p.nextIndex()
+					p.thinkingBlockIndex = &idx
+					events = append(events, StreamEvent{
+						Type: EventContentBlockStart, Index: idx,
+						BlockType: ContentBlockType{Kind: BlockThinking},
+					})
+				}
+				events = append(events, StreamEvent{Type: EventThinkingDelta, Text: combined})
+			}
+		}
+	} else if pendingStr != "" {
+		// Not in thinking block — emit pending as text
+		events = append(events, p.emitTextDelta(pendingStr)...)
+	}
+
+	// Close thinking block if still open
 	if p.thinkingBlockIndex != nil {
 		idx := *p.thinkingBlockIndex
 		events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
@@ -192,8 +249,24 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		if p.sawToolUse {
 			stopReason = StopReasonToolUse
 		} else if p.sawThinking && !p.sawText {
-			// Thinking-only: model spent entire token budget on thinking
+			// Thinking-only: model spent entire token budget on thinking.
 			stopReason = StopReasonMaxTokens
+
+			// Aligned with kiro.rs: emit a space text block so that the response
+			// content array contains at least one text block. Some clients (e.g.
+			// Claude Code) cannot handle responses with only thinking blocks.
+			idx := p.nextIndex()
+			events = append(events,
+				StreamEvent{
+					Type:  EventContentBlockStart,
+					Index: idx,
+					BlockType: ContentBlockType{
+						Kind: BlockText,
+					},
+				},
+				StreamEvent{Type: EventTextDelta, Text: " "},
+				StreamEvent{Type: EventContentBlockStop, Index: idx},
+			)
 		}
 		events = append(events, StreamEvent{Type: EventMessageStop, StopReason: stopReason})
 		p.messageStopped = true
@@ -477,6 +550,11 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 
 	// 2) toolUseId tool event
 	if payload.ToolUseID != nil {
+		// Flush thinking buffer before tool_use (aligned with kiro.rs process_tool_use).
+		// tool_use must happen after thinking ends. If </thinking> is at buffer end
+		// without \n\n, flush it now.
+		events = append(events, p.flushThinkingBeforeToolUse()...)
+
 		// Close text block first if exists
 		if p.textBlockIndex != nil {
 			idx := *p.textBlockIndex
@@ -602,6 +680,21 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 			stopReason = StopReasonToolUse
 		} else if p.sawThinking && !p.sawText {
 			stopReason = StopReasonMaxTokens
+
+			// Aligned with kiro.rs: emit a space text block so that the response
+			// content array contains at least one text block.
+			idx := p.nextIndex()
+			events = append(events,
+				StreamEvent{
+					Type:  EventContentBlockStart,
+					Index: idx,
+					BlockType: ContentBlockType{
+						Kind: BlockText,
+					},
+				},
+				StreamEvent{Type: EventTextDelta, Text: " "},
+				StreamEvent{Type: EventContentBlockStop, Index: idx},
+			)
 		}
 		events = append(events, StreamEvent{Type: EventMessageStop, StopReason: stopReason})
 		p.messageStopped = true
@@ -1366,8 +1459,209 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 
 // ==================== Thinking Tag Parsing ====================
 
+// findCharBoundary finds the largest byte index <= targetLen that is a valid
+// UTF-8 character boundary. This prevents splitting multi-byte characters
+// (e.g. Chinese characters are 3 bytes in UTF-8).
+// Aligned with kiro.rs find_char_boundary.
+func findCharBoundary(s string, targetLen int) int {
+	if targetLen >= len(s) {
+		return len(s)
+	}
+	if targetLen <= 0 {
+		return 0
+	}
+	// Walk backwards from targetLen to find a valid UTF-8 start byte
+	for i := targetLen; i > targetLen-4 && i > 0; i-- {
+		// In UTF-8, continuation bytes start with 10xxxxxx (0x80-0xBF)
+		// Start bytes are 0xxxxxxx, 110xxxxx, 1110xxxx, 11110xxx
+		if s[i]&0xC0 != 0x80 {
+			return i
+		}
+	}
+	return 0
+}
+func isQuoteChar(s string, pos int) bool {
+	if pos < 0 || pos >= len(s) {
+		return false
+	}
+	c := s[pos]
+	return c == '`' || c == '"' || c == '\''
+}
+
+// findRealThinkingEndTag finds the position of a real </thinking> end tag.
+// A "real" end tag must:
+// 1. Not be wrapped in quotes or backticks
+// 2. Be followed by \n\n (AWSQ always emits \n\n after </thinking>)
+// Returns -1 if not found.
+// Aligned with kiro.rs find_real_thinking_end_tag.
+func findRealThinkingEndTag(buffer string) int {
+	searchStart := 0
+	for {
+		idx := strings.Index(buffer[searchStart:], ThinkingEndTag)
+		if idx < 0 {
+			return -1
+		}
+		absPos := searchStart + idx
+
+		// Check if wrapped in quotes/backticks
+		hasQuoteBefore := absPos > 0 && isQuoteChar(buffer, absPos-1)
+		afterPos := absPos + len(ThinkingEndTag)
+		hasQuoteAfter := isQuoteChar(buffer, afterPos)
+
+		if hasQuoteBefore || hasQuoteAfter {
+			searchStart = absPos + 1
+			continue
+		}
+
+		// Check for \n\n after the tag
+		afterContent := buffer[afterPos:]
+		if len(afterContent) < 2 {
+			// Not enough content to determine — wait for more
+			return -1
+		}
+		if strings.HasPrefix(afterContent, "\n\n") {
+			return absPos
+		}
+
+		// Not followed by \n\n, skip
+		searchStart = absPos + 1
+	}
+}
+
+// findRealThinkingEndTagAtBufferEnd finds </thinking> at the end of buffer.
+// Used for boundary cases: stream end or tool_use start where \n\n may not follow.
+// Only matches if everything after </thinking> is whitespace.
+// Aligned with kiro.rs find_real_thinking_end_tag_at_buffer_end.
+func findRealThinkingEndTagAtBufferEnd(buffer string) int {
+	searchStart := 0
+	for {
+		idx := strings.Index(buffer[searchStart:], ThinkingEndTag)
+		if idx < 0 {
+			return -1
+		}
+		absPos := searchStart + idx
+
+		hasQuoteBefore := absPos > 0 && isQuoteChar(buffer, absPos-1)
+		afterPos := absPos + len(ThinkingEndTag)
+		hasQuoteAfter := isQuoteChar(buffer, afterPos)
+
+		if hasQuoteBefore || hasQuoteAfter {
+			searchStart = absPos + 1
+			continue
+		}
+
+		// Only match if everything after the tag is whitespace
+		if strings.TrimSpace(buffer[afterPos:]) == "" {
+			return absPos
+		}
+
+		searchStart = absPos + 1
+	}
+}
+
+// findRealThinkingStartTag finds the position of a real <thinking> start tag.
+// Skips tags wrapped in quotes or backticks.
+// Aligned with kiro.rs find_real_thinking_start_tag.
+func findRealThinkingStartTag(buffer string) int {
+	searchStart := 0
+	for {
+		idx := strings.Index(buffer[searchStart:], ThinkingStartTag)
+		if idx < 0 {
+			return -1
+		}
+		absPos := searchStart + idx
+
+		hasQuoteBefore := absPos > 0 && isQuoteChar(buffer, absPos-1)
+		afterPos := absPos + len(ThinkingStartTag)
+		hasQuoteAfter := isQuoteChar(buffer, afterPos)
+
+		if hasQuoteBefore || hasQuoteAfter {
+			searchStart = absPos + 1
+			continue
+		}
+
+		return absPos
+	}
+}
+
+// emitTextDelta is a helper that emits text delta events, opening a text block if needed.
+func (p *AwsEventStreamParser) emitTextDelta(text string) []StreamEvent {
+	var events []StreamEvent
+	if !p.inTextBlock {
+		p.inTextBlock = true
+		idx := p.nextIndex()
+		p.textBlockIndex = &idx
+		events = append(events, StreamEvent{
+			Type: EventContentBlockStart, Index: idx,
+			BlockType: ContentBlockType{Kind: BlockText},
+		})
+	}
+	p.sawText = true
+	events = append(events, StreamEvent{Type: EventTextDelta, Text: text})
+	return events
+}
+
+// flushThinkingBeforeToolUse flushes the thinking buffer before a tool_use event.
+// Aligned with kiro.rs process_tool_use boundary handling.
+func (p *AwsEventStreamParser) flushThinkingBeforeToolUse() []StreamEvent {
+	var events []StreamEvent
+
+	// Handle in-thinking-block case: </thinking> may be at buffer end without \n\n
+	if p.inThinkingBlock {
+		pending := p.pendingContent.String()
+		p.pendingContent.Reset()
+
+		if endPos := findRealThinkingEndTagAtBufferEnd(pending); endPos >= 0 {
+			thinkingContent := pending[:endPos]
+			if thinkingContent != "" {
+				if p.thinkingBlockIndex == nil {
+					idx := p.nextIndex()
+					p.thinkingBlockIndex = &idx
+					events = append(events, StreamEvent{
+						Type: EventContentBlockStart, Index: idx,
+						BlockType: ContentBlockType{Kind: BlockThinking},
+					})
+				}
+				events = append(events, StreamEvent{Type: EventThinkingDelta, Text: thinkingContent})
+			}
+			// Close thinking block
+			if p.thinkingBlockIndex != nil {
+				idx := *p.thinkingBlockIndex
+				events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+				p.thinkingBlockIndex = nil
+			}
+			p.inThinkingBlock = false
+			p.thinkingExtracted = true
+
+			// Remaining after tag as text
+			afterPos := endPos + len(ThinkingEndTag)
+			remaining := strings.TrimLeft(pending[afterPos:], " \t\n\r")
+			if remaining != "" {
+				events = append(events, p.emitTextDelta(remaining)...)
+			}
+		}
+	}
+
+	// Flush pending content that was buffered for <thinking> tag detection
+	if !p.inThinkingBlock && !p.thinkingExtracted {
+		pending := p.pendingContent.String()
+		p.pendingContent.Reset()
+		if pending != "" {
+			events = append(events, p.emitTextDelta(pending)...)
+		}
+	}
+
+	return events
+}
+
 // parseContentWithThinking parses content for <thinking> tags and emits appropriate events.
-// This implements TAG-BASED THINKING PARSING similar to CLIProxyAPIPlus.
+// Aligned with kiro.rs process_content_with_thinking.
+//
+// Key differences from naive implementation:
+// 1. </thinking> must be followed by \n\n to be a real end tag
+// 2. Tags wrapped in quotes/backticks are skipped
+// 3. thinkingExtracted flag: once thinking is done, all content is text
+// 4. Partial tag buffering for cross-chunk tag detection
 func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []StreamEvent {
 	var events []StreamEvent
 
@@ -1376,28 +1670,22 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 	processContent := p.pendingContent.String()
 	p.pendingContent.Reset()
 
-	// Process content looking for thinking tags
 	for len(processContent) > 0 {
 		if p.inThinkingBlock {
-			// We're inside a thinking block, look for </thinking>
-			endIdx := strings.Index(processContent, ThinkingEndTag)
+			// Inside thinking block — look for real </thinking>\n\n
+			endIdx := findRealThinkingEndTag(processContent)
 			if endIdx >= 0 {
-				// Found end tag - emit thinking content before the tag
+				// Found real end tag — emit thinking content before it
 				thinkingText := processContent[:endIdx]
 				if thinkingText != "" {
-					// Ensure thinking block is open
 					if p.thinkingBlockIndex == nil {
 						idx := p.nextIndex()
 						p.thinkingBlockIndex = &idx
 						events = append(events, StreamEvent{
-							Type:  EventContentBlockStart,
-							Index: idx,
-							BlockType: ContentBlockType{
-								Kind: BlockThinking,
-							},
+							Type: EventContentBlockStart, Index: idx,
+							BlockType: ContentBlockType{Kind: BlockThinking},
 						})
 					}
-					// Send thinking delta
 					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: thinkingText})
 				}
 				// Close thinking block
@@ -1407,61 +1695,44 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 					p.thinkingBlockIndex = nil
 				}
 				p.inThinkingBlock = false
-				processContent = processContent[endIdx+len(ThinkingEndTag):]
+				p.thinkingExtracted = true
+				// Skip </thinking>\n\n
+				processContent = processContent[endIdx+len(ThinkingEndTag)+2:]
 			} else {
-				// No end tag found - check for partial match at end
-				partialLen := pendingTagSuffix(processContent, ThinkingEndTag)
-				if partialLen > 0 {
-					// Possible partial tag at end, buffer it
-					p.pendingContent.WriteString(processContent[len(processContent)-partialLen:])
-					processContent = processContent[:len(processContent)-partialLen]
-				}
-				if len(processContent) > 0 {
-					// Emit all as thinking content
-					if p.thinkingBlockIndex == nil {
-						idx := p.nextIndex()
-						p.thinkingBlockIndex = &idx
-						events = append(events, StreamEvent{
-							Type:  EventContentBlockStart,
-							Index: idx,
-							BlockType: ContentBlockType{
-								Kind: BlockThinking,
-							},
-						})
+				// No real end tag found — buffer tail for partial tag matching.
+				// Must retain enough for "</thinking>\n\n" (13 bytes) to avoid
+				// emitting tag chars as thinking content when tag spans chunks.
+				reserveLen := len("</thinking>\n\n")
+				if len(processContent) > reserveLen {
+					safeLen := findCharBoundary(processContent, len(processContent)-reserveLen)
+					safeContent := processContent[:safeLen]
+					if safeContent != "" {
+						if p.thinkingBlockIndex == nil {
+							idx := p.nextIndex()
+							p.thinkingBlockIndex = &idx
+							events = append(events, StreamEvent{
+								Type: EventContentBlockStart, Index: idx,
+								BlockType: ContentBlockType{Kind: BlockThinking},
+							})
+						}
+						events = append(events, StreamEvent{Type: EventThinkingDelta, Text: safeContent})
 					}
-					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: processContent})
+					p.pendingContent.WriteString(processContent[safeLen:])
+				} else {
+					// Entire content is shorter than reserve — buffer all
+					p.pendingContent.WriteString(processContent)
 				}
 				processContent = ""
 			}
-		} else {
-			// Not in thinking block, look for <thinking>
-			startIdx := strings.Index(processContent, ThinkingStartTag)
+		} else if !p.thinkingExtracted {
+			// Not in thinking block and thinking not yet extracted — look for <thinking>
+			startIdx := findRealThinkingStartTag(processContent)
 			if startIdx >= 0 {
-				// Found start tag - emit text content before the tag
+				// Found start tag — emit text before it
 				textBefore := processContent[:startIdx]
-				if textBefore != "" {
-					// Close thinking block if open (shouldn't happen but be safe)
-					if p.thinkingBlockIndex != nil {
-						idx := *p.thinkingBlockIndex
-						events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
-						p.thinkingBlockIndex = nil
-					}
-					// Ensure text block is open
-					if !p.inTextBlock {
-						p.inTextBlock = true
-						idx := p.nextIndex()
-						p.textBlockIndex = &idx
-						events = append(events, StreamEvent{
-							Type:  EventContentBlockStart,
-							Index: idx,
-							BlockType: ContentBlockType{
-								Kind: BlockText,
-							},
-						})
-					}
-					// Send text delta
-					p.sawText = true
-					events = append(events, StreamEvent{Type: EventTextDelta, Text: textBefore})
+				if textBefore != "" && strings.TrimSpace(textBefore) != "" {
+					// Skip whitespace-only content before thinking (adaptive mode \n\n)
+					events = append(events, p.emitTextDelta(textBefore)...)
 				}
 				// Close text block before entering thinking
 				if p.inTextBlock && p.textBlockIndex != nil {
@@ -1473,33 +1744,29 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 				p.inThinkingBlock = true
 				p.sawThinking = true
 				processContent = processContent[startIdx+len(ThinkingStartTag):]
+				// Strip leading newline after <thinking> tag (kiro.rs behavior)
+				processContent = strings.TrimPrefix(processContent, "\n")
 			} else {
-				// No start tag found - check for partial match at end
-				partialLen := pendingTagSuffix(processContent, ThinkingStartTag)
-				if partialLen > 0 {
-					// Possible partial tag at end, buffer it
-					p.pendingContent.WriteString(processContent[len(processContent)-partialLen:])
-					processContent = processContent[:len(processContent)-partialLen]
-				}
-				if len(processContent) > 0 {
-					// Emit all as text content
-					if !p.inTextBlock {
-						p.inTextBlock = true
-						idx := p.nextIndex()
-						p.textBlockIndex = &idx
-						events = append(events, StreamEvent{
-							Type:  EventContentBlockStart,
-							Index: idx,
-							BlockType: ContentBlockType{
-								Kind: BlockText,
-							},
-						})
+				// No start tag — check for partial match at end
+				reserveLen := len(ThinkingStartTag) - 1
+				if len(processContent) > reserveLen {
+					safeLen := findCharBoundary(processContent, len(processContent)-reserveLen)
+					safeContent := processContent[:safeLen]
+					// Skip whitespace-only content when thinking not yet extracted
+					// (avoids creating text block before thinking block)
+					if safeContent != "" && strings.TrimSpace(safeContent) != "" {
+						events = append(events, p.emitTextDelta(safeContent)...)
 					}
-					p.sawText = true
-					events = append(events, StreamEvent{Type: EventTextDelta, Text: processContent})
+					p.pendingContent.WriteString(processContent[safeLen:])
+				} else {
+					p.pendingContent.WriteString(processContent)
 				}
 				processContent = ""
 			}
+		} else {
+			// Thinking already extracted — all remaining content is text
+			events = append(events, p.emitTextDelta(processContent)...)
+			processContent = ""
 		}
 	}
 

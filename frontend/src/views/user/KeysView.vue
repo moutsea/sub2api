@@ -3,6 +3,16 @@
     <TablePageLayout>
       <template #actions>
         <div class="flex justify-end gap-3">
+        <!-- Group Filter -->
+        <select
+          v-model="filterGroupId"
+          @change="handleFilterChange"
+          class="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-dark-600 dark:bg-dark-800 dark:text-white"
+        >
+          <option value="all">{{ t('keys.filterAllGroups') }}</option>
+          <option value="0">{{ t('keys.filterNoGroup') }}</option>
+          <option v-for="g in groupOptions" :key="g.value" :value="g.value">{{ g.label }}</option>
+        </select>
         <button
           @click="loadApiKeys"
           :disabled="loading"
@@ -669,6 +679,7 @@ const copiedKeyId = ref<number | null>(null)
 const selectedKeyIds = ref<number[]>([])
 const bulkGroupId = ref<number | string>('')
 const bulkSubmitting = ref(false)
+const filterGroupId = ref<string>('all')
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
 const dropdownRef = ref<HTMLElement | null>(null)
@@ -765,7 +776,8 @@ const loadApiKeys = async () => {
   loading.value = true
   try {
     const response = await keysAPI.list(pagination.value.page, pagination.value.page_size, {
-      signal
+      signal,
+      groupId: filterGroupId.value === 'all' ? null : Number(filterGroupId.value)
     })
     if (signal.aborted) return
     apiKeys.value = response.items
@@ -832,6 +844,13 @@ const handlePageChange = (page: number) => {
 
 const handlePageSizeChange = (pageSize: number) => {
   pagination.value.page_size = pageSize
+  pagination.value.page = 1
+  selectedKeyIds.value = []
+  bulkGroupId.value = ''
+  loadApiKeys()
+}
+
+const handleFilterChange = () => {
   pagination.value.page = 1
   selectedKeyIds.value = []
   bulkGroupId.value = ''

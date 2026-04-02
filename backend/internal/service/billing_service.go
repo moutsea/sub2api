@@ -270,7 +270,7 @@ func (s *BillingService) CalculateCost(model string, tokens UsageTokens, rateMul
 		breakdown.CacheCreationCost + breakdown.CacheReadCost
 
 	// 应用倍率计算实际费用
-	if rateMultiplier <= 0 {
+	if rateMultiplier < 0 {
 		rateMultiplier = 1.0
 	}
 	breakdown.ActualCost = breakdown.TotalCost * rateMultiplier
@@ -367,7 +367,7 @@ func (s *BillingService) CalculateImageCost(model string, imageSize string, imag
 	totalCost := unitPrice * float64(imageCount)
 
 	// 应用倍率
-	if rateMultiplier <= 0 {
+	if rateMultiplier < 0 {
 		rateMultiplier = 1.0
 	}
 	actualCost := totalCost * rateMultiplier

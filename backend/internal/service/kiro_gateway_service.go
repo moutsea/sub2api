@@ -13,9 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/gin-gonic/gin"
@@ -28,10 +28,14 @@ const (
 	kiroRetryBaseDelay = 1 * time.Second
 	kiroRetryMaxDelay  = 16 * time.Second
 
-	// kiroMaxCWRequestBodySize is the safe body size limit for CodeWhisperer requests.
-	// Both AWSQ and CW endpoints reject requests with body > ~810KB.
+	// kiroMaxCWRequestBodySize is the safe body size limit for CodeWhisperer requests (non-1M models).
 	// Used by Forward() and executeCodeWhispererRequest (WebSearch agentic loop).
 	kiroMaxCWRequestBodySize = 800 * 1024 // 800 KB
+
+	// kiroMaxCWRequestBodySize1M is the body size limit for 1M context models (4.6 series).
+	// AWSQ has relaxed the body size limit for opus-4.6 and sonnet-4.6 to support 1M context.
+	// Tested: 4MB+ payloads accepted by AWSQ as of 2026-03.
+	kiroMaxCWRequestBodySize1M = 4 * 1024 * 1024 // 4 MB
 )
 
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
@@ -42,9 +46,17 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
+// getMaxCWBodySize returns the max request body size for the given model.
+// 4.6 series (1M context) → 4MB; others → 800KB.
+func getMaxCWBodySize(model string) int {
+	if kiro.Is1MContext(model) {
+		return kiroMaxCWRequestBodySize1M
+	}
+	return kiroMaxCWRequestBodySize
+}
+
 // getKiroEndpoints returns ordered endpoint list based on account config.
-// Both AWSQ and CodeWhisperer share the same upstream body size limit (~810KB),
-// so there is no benefit to token-based dynamic routing.
+// Non-1M models share the ~810KB body size limit; 4.6 series supports much larger bodies.
 // Priority: preferred_endpoint config > default (AWSQ first, CW fallback).
 func getKiroEndpoints(account *Account) []kiroEndpointConfig {
 	// Request routing always uses us-east-1 regardless of account's token region.
@@ -81,6 +93,7 @@ type KiroGatewayService struct {
 	httpUpstream     HTTPUpstream
 	settingService   *SettingService
 	usageCache       *UsageCache
+	cfg              *config.Config
 	proxyRepo        ProxyRepository    // proxy pool data source for Free-tier rotation
 	proxyPool        []Proxy            // cached active proxy list
 	proxyPoolMu      sync.RWMutex       // protects proxyPool
@@ -97,6 +110,7 @@ func NewKiroGatewayService(
 	settingService *SettingService,
 	usageCache *UsageCache,
 	proxyRepo ProxyRepository,
+	cfg *config.Config,
 ) *KiroGatewayService {
 	return &KiroGatewayService{
 		accountRepo:      accountRepo,
@@ -106,12 +120,47 @@ func NewKiroGatewayService(
 		settingService:   settingService,
 		usageCache:       usageCache,
 		proxyRepo:        proxyRepo,
+		cfg:              cfg,
 	}
 }
 
 // GetTokenProvider returns the token provider
 func (s *KiroGatewayService) GetTokenProvider() *KiroTokenProvider {
 	return s.tokenProvider
+}
+
+// applyRequestJitter sleeps a random duration between configured min/max before an upstream request.
+// This prevents thundering herd when multiple accounts fire requests simultaneously.
+// No-op if max is 0 or config is nil.
+func (s *KiroGatewayService) applyRequestJitter(ctx context.Context) {
+	if s.cfg == nil {
+		return
+	}
+	minMs := s.cfg.Gateway.RequestJitterMinMs
+	maxMs := s.cfg.Gateway.RequestJitterMaxMs
+	if maxMs <= 0 {
+		return
+	}
+	if minMs > maxMs {
+		minMs = maxMs
+	}
+
+	var delayMs int
+	if minMs == maxMs {
+		delayMs = maxMs
+	} else {
+		delayMs = minMs + rand.IntN(maxMs-minMs+1)
+	}
+	if delayMs <= 0 {
+		return
+	}
+
+	t := time.NewTimer(time.Duration(delayMs) * time.Millisecond)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 const (
@@ -373,18 +422,28 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	originalModel := claudeReq.Model
 	mappedModel := kiro.GetModelID(originalModel)
+	contextWindowLimit := kiro.GetContextWindowLimit(originalModel)
+	contextPreCheckLimit := kiro.GetContextPreCheckLimit(originalModel)
+
+	// Set default max_tokens if not provided.
+	// AWSQ thinking mode shares the output token budget between thinking and text.
+	// A too-small max_tokens causes thinking to exhaust the budget with no room for text output.
+	// Aligned with kiro.rs model list default (64000).
+	if claudeReq.MaxTokens <= 0 {
+		claudeReq.MaxTokens = 64000
+	}
 
 	// Pre-check: Estimate input tokens and truncate if exceeding context limit.
-	// Upstream has two limits: token count (~200k) AND body size (~810KB).
+	// Upstream has two limits: token count (~200k or ~1M for 4.6) AND body size (~810KB).
 	// This handles the token limit; body size is checked after serialization.
 	// Unlike before, truncation failure does NOT reject the request — we let
 	// the body size check and upstream handle edge cases.
 	// NOTE: Truncation MUST happen before cache estimation so that CacheableTokens
 	// reflects the actual (possibly truncated) request, not the oversized original.
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if estimatedTokens > kiro.KiroContextPreCheckLimit {
+	if estimatedTokens > contextPreCheckLimit {
 		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
-			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+			prefix, estimatedTokens, contextPreCheckLimit)
 
 		truncatedReq, truncated := kiro.TruncateAndRetry(claudeReq)
 		if truncated {
@@ -402,9 +461,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			// Safe truncation failed (likely no safe truncation points due to continuous
 			// tool_use chains). Fall back to force truncation which ignores tool pairing.
 			log.Printf("%s status=safe_truncation_failed estimated_tokens=%d limit=%d, attempting force truncation",
-				prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+				prefix, estimatedTokens, contextPreCheckLimit)
 
-			forceReq, forceOk := kiro.ForceTruncateMessages(claudeReq, kiro.DefaultTruncationConfig().TargetTokens)
+			forceReq, forceOk := kiro.ForceTruncateMessages(claudeReq, kiro.TruncationConfigForModel(originalModel).TargetTokens)
 			if forceOk {
 				newEstimate := kiro.EstimateInputTokens(forceReq)
 				log.Printf("%s status=force_truncated original_messages=%d new_messages=%d tokens=%d->%d",
@@ -417,7 +476,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				}
 			} else {
 				log.Printf("%s status=force_truncation_failed estimated_tokens=%d limit=%d, proceeding anyway",
-					prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+					prefix, estimatedTokens, contextPreCheckLimit)
 			}
 		}
 	}
@@ -481,12 +540,26 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	// CW has a hard body size limit of ~810KB; uncompressed PNG screenshots
 	// can easily exceed this. Compress before transform so that both the
 	// token estimation and serialized body reflect actual sizes.
-	if kiro.CompressImagesInRequest(claudeReq) {
-		log.Printf("%s images compressed for body size reduction", prefix)
+	// Skip for 1M context models (4.6 series) which have 4MB body limit.
+	if !kiro.Is1MContext(originalModel) {
+		if kiro.CompressImagesInRequest(claudeReq) {
+			log.Printf("%s images compressed for body size reduction", prefix)
+		}
 	}
 
-	// Get profile ARN
+	// Get profile ARN.
+	// Scheduler snapshot may hold stale credentials (before token refresh wrote profile_arn).
+	// If empty, re-read from database to get the latest value.
 	profileArn := account.GetKiroProfileArn()
+	if profileArn == "" && s.accountRepo != nil {
+		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && freshAccount != nil {
+			profileArn = freshAccount.GetKiroProfileArn()
+			if profileArn != "" {
+				log.Printf("%s profile_arn recovered from db (snapshot was stale)", prefix)
+			}
+		}
+	}
 
 	// Transform Claude request to CodeWhisperer format
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
@@ -501,17 +574,18 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Check request body size and truncate history if needed.
-	// Both AWSQ and CodeWhisperer reject requests with body > ~810KB.
-	if len(reqBody) > kiroMaxCWRequestBodySize {
+	// 4.6 series (1M context) allows up to 4MB; others limited to ~810KB.
+	maxBodySize := getMaxCWBodySize(originalModel)
+	if len(reqBody) > maxBodySize {
 		log.Printf("%s status=request_body_oversized body_size=%d limit=%d, attempting history truncation",
-			prefix, len(reqBody), kiroMaxCWRequestBodySize)
+			prefix, len(reqBody), maxBodySize)
 
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, kiroMaxCWRequestBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxBodySize)
 		if truncErr != nil {
 			log.Printf("%s status=body_truncation_failed error=%v", prefix, truncErr)
 			return nil, &ContextTooLongError{
 				EstimatedTokens: estimatedTokens,
-				Limit:           kiro.KiroContextWindowLimit,
+				Limit:           contextWindowLimit,
 			}
 		}
 
@@ -522,12 +596,12 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Final safety check: if still too large after truncation, reject
-	if len(reqBody) > kiroMaxCWRequestBodySize {
+	if len(reqBody) > maxBodySize {
 		log.Printf("%s status=request_still_too_large after truncation body_size=%d limit=%d",
-			prefix, len(reqBody), kiroMaxCWRequestBodySize)
+			prefix, len(reqBody), maxBodySize)
 		return nil, &ContextTooLongError{
 			EstimatedTokens: estimatedTokens,
-			Limit:           kiro.KiroContextWindowLimit,
+			Limit:           contextWindowLimit,
 		}
 	}
 
@@ -573,6 +647,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			if ep.AmzTarget != "" {
 				upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
 			}
+
+			// Apply request jitter before upstream call to prevent thundering herd
+			s.applyRequestJitter(ctx)
 
 			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 			if err != nil {
@@ -677,14 +754,18 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					len(cwReq.ConversationState.History), cwToolCount, estimatedTokens)
 
 				// Check if error is context/input size related
+				// Use precise patterns to avoid false positives from unrelated 400 errors
+				// (e.g., malformed request, unsupported content type in tool_result)
 				errorMsgLower := strings.ToLower(errorMsg)
-				if strings.Contains(errorMsgLower, "input too long") ||
-					strings.Contains(errorMsgLower, "is too long") ||
-					strings.Contains(errorMsgLower, "too large") ||
-					strings.Contains(errorMsgLower, "context") ||
-					strings.Contains(errorMsgLower, "exceeds") ||
-					strings.Contains(errorMsgLower, "maximum") ||
-					strings.Contains(errorMsgLower, "content_length") {
+				if strings.Contains(errorMsgLower, "input is too long") ||
+					strings.Contains(errorMsgLower, "input too long") ||
+					strings.Contains(errorMsgLower, "context window") ||
+					strings.Contains(errorMsgLower, "context length") ||
+					strings.Contains(errorMsgLower, "too many tokens") ||
+					strings.Contains(errorMsgLower, "token limit") ||
+					strings.Contains(errorMsgLower, "content_length") ||
+					strings.Contains(errorMsgLower, "exceeds the maximum number of tokens") ||
+					strings.Contains(errorMsgLower, "maximum context") {
 					log.Printf("%s status=context_error_detected error=%s", prefix, errorMsg)
 					setOpsUpstreamError(c, resp.StatusCode, errorMsg, "")
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -698,7 +779,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					})
 					return nil, &ContextTooLongError{
 						EstimatedTokens: estimatedTokens,
-						Limit:           kiro.KiroContextWindowLimit,
+						Limit:           contextWindowLimit,
 					}
 				}
 
@@ -809,8 +890,8 @@ endpointDone:
 	var usageFromUpstream bool
 
 	// Calculate cache tokens to pass to handlers (cache_read + cache_creation coexist)
-	// CW path: cap to 200K context window
-	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.KiroContextWindowLimit)
+	// CW path: cap to model-specific context window
+	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, contextWindowLimit)
 
 	if claudeReq.Stream {
 		// Streaming response
@@ -951,22 +1032,59 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	var contextPct float64
 	var tokenUsage *ClaudeUsage
 
-	// Read and process stream
-	buf := make([]byte, 4096)
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+	// Read and process stream using goroutine + channel to avoid blocking reads
+	type streamChunk struct {
+		data []byte
+		err  error
+	}
+	chunkCh := make(chan streamChunk, 1)
+
+	// Background goroutine reads from upstream; sends chunks to channel
+	go func() {
+		defer close(chunkCh)
+		buf := make([]byte, 4096)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				chunkCh <- streamChunk{data: data}
+			}
+			if err != nil {
+				chunkCh <- streamChunk{err: err}
+				return
+			}
+		}
+	}()
 
 	// Stream interval timeout
 	streamInterval := time.Duration(0)
 	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.StreamDataIntervalTimeout > 0 {
 		streamInterval = time.Duration(s.settingService.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
-
 	var intervalTicker *time.Ticker
 	if streamInterval > 0 {
 		intervalTicker = time.NewTicker(streamInterval)
 		defer intervalTicker.Stop()
 	}
+	var intervalCh <-chan time.Time
+	if intervalTicker != nil {
+		intervalCh = intervalTicker.C
+	}
+
+	// Keepalive: send SSE comment to prevent proxy idle disconnect
+	keepaliveInterval := time.Duration(0)
+	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.StreamKeepaliveInterval > 0 {
+		keepaliveInterval = time.Duration(s.settingService.cfg.Gateway.StreamKeepaliveInterval) * time.Second
+	}
+	if keepaliveInterval <= 0 {
+		keepaliveInterval = 15 * time.Second // default 15s keepalive for Kiro streams
+	}
+	keepaliveTicker := time.NewTicker(keepaliveInterval)
+	defer keepaliveTicker.Stop()
+
+	// Track last data arrival for timeout and keepalive decisions
+	lastDataAt := time.Now()
 
 	// Error event tracking
 	errorEventSent := false
@@ -983,34 +1101,33 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 	}
 
 	for {
-		// Check client disconnect
 		select {
 		case <-c.Request.Context().Done():
 			log.Printf("Stream context cancelled (kiro): %v", c.Request.Context().Err())
 			goto finishStream
-		default:
-		}
 
-		// Check stream data interval timeout
-		if intervalTicker != nil {
-			select {
-			case <-intervalTicker.C:
-				lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-				if time.Since(lastRead) >= streamInterval {
-					log.Printf("Stream data interval timeout (kiro)")
-					sendErrorEvent("stream_timeout")
+		case chunk, ok := <-chunkCh:
+			if !ok {
+				// Channel closed — upstream done
+				goto finishStream
+			}
+			if chunk.err != nil {
+				if chunk.err == io.EOF {
+					if !parser.MessageStopped() {
+						log.Printf("Stream EOF without stop event (kiro): duration=%v parse_errors=%d message_stopped=%v",
+							time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
+					}
 					goto finishStream
 				}
-			default:
+				log.Printf("Stream read error (kiro): %v", chunk.err)
+				sendErrorEvent("stream_read_error")
+				goto finishStream
 			}
-		}
 
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+			lastDataAt = time.Now()
 
 			// Process chunk through parser
-			events := parser.Process(buf[:n])
+			events := parser.Process(chunk.data)
 			for _, event := range events {
 				// Track first token time
 				if firstTokenMs == nil && (event.Type == kiro.EventTextDelta || event.Type == kiro.EventToolUseInputDelta) {
@@ -1051,19 +1168,24 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 				}
 			}
 			flusher.Flush()
-		}
 
-		if err != nil {
-			if err == io.EOF {
-				if !parser.MessageStopped() {
-					log.Printf("Stream EOF without stop event (kiro): duration=%v parse_errors=%d message_stopped=%v",
-						time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
-				}
-				break
+		case <-intervalCh:
+			if time.Since(lastDataAt) < streamInterval {
+				continue
 			}
-			log.Printf("Stream read error (kiro): %v", err)
-			sendErrorEvent("stream_read_error")
+			log.Printf("Stream data interval timeout (kiro): no data for %v", streamInterval)
+			sendErrorEvent("stream_timeout")
 			goto finishStream
+
+		case <-keepaliveTicker.C:
+			if time.Since(lastDataAt) < keepaliveInterval {
+				continue
+			}
+			// Send SSE comment as keepalive to prevent proxy idle disconnect
+			if _, err := c.Writer.Write([]byte(":\n\n")); err != nil {
+				goto finishStream
+			}
+			flusher.Flush()
 		}
 	}
 
@@ -1117,7 +1239,7 @@ finishStream:
 	// when caching is NOT active to avoid triggering compression too early
 	accurateInputTokens := inputTokens
 	if contextPct > 0 && !cachingEnabled {
-		calculatedTokens := int(contextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
+		calculatedTokens := int(contextPct / 100.0 * float64(kiro.GetContextWindowLimit(originalModel)))
 		if calculatedTokens > accurateInputTokens {
 			accurateInputTokens = calculatedTokens
 		}
@@ -1179,7 +1301,7 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	// when caching is NOT active to avoid triggering compression too early
 	accurateInputTokens := inputTokens
 	if parsedResp.ContextPct > 0 && !cachingEnabled {
-		calculatedTokens := int(parsedResp.ContextPct / 100.0 * float64(kiro.KiroContextWindowLimit))
+		calculatedTokens := int(parsedResp.ContextPct / 100.0 * float64(kiro.GetContextWindowLimit(originalModel)))
 		if calculatedTokens > accurateInputTokens {
 			accurateInputTokens = calculatedTokens
 		}
@@ -1402,13 +1524,17 @@ func (s *KiroGatewayService) handleUpstreamError(ctx context.Context, prefix str
 	case 401:
 		// Token expired/invalid — invalidate cached token so next request triggers refresh.
 		// Do NOT ban the account; 401 is typically a stale access token.
-		// Skip rateLimitService to prevent permanent disable.
+		// Skip rateLimitService to prevent permanent disable (except for apikey accounts
+		// which go through the consecutive error threshold in rateLimitService).
 		errMsg := extractKiroErrorMessage(body)
 		if s.tokenProvider != nil {
 			s.tokenProvider.InvalidateToken(account.ID)
 		}
 		log.Printf("%s status=401 token_invalidated msg=%s", prefix, errMsg)
-		return
+		if !account.IsKiroApiKey() {
+			return
+		}
+		// apikey accounts: fall through to rateLimitService for consecutive error tracking
 
 	case 403:
 		// Permission error — mark banned (skip for apikey accounts)
@@ -1567,8 +1693,14 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		return s.testClaudeAPIConnection(ctx, account, accessToken, modelID)
 	}
 
-	// Get profile ARN
+	// Get profile ARN (re-read from db if snapshot is stale)
 	profileArn := account.GetKiroProfileArn()
+	if profileArn == "" && s.accountRepo != nil {
+		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && freshAccount != nil {
+			profileArn = freshAccount.GetKiroProfileArn()
+		}
+	}
 
 	// Build test request
 	testModel := modelID
@@ -1738,6 +1870,9 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	}
 
 	log.Printf("%s url=%s model=%s stream=%v body_size=%d session_id=%s", prefix, targetURL, originalModel, claudeReq.Stream, len(body), stableSessionID)
+
+	// Apply request jitter before upstream call to prevent thundering herd
+	s.applyRequestJitter(ctx)
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {

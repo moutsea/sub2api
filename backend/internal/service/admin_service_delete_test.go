@@ -93,6 +93,18 @@ func (s *userRepoStub) RemoveGroupFromAllowedGroups(ctx context.Context, groupID
 	panic("unexpected RemoveGroupFromAllowedGroups call")
 }
 
+func (s *userRepoStub) GetUserGroupRates(ctx context.Context, userID int64) (map[int64]*float64, error) {
+	return nil, nil
+}
+
+func (s *userRepoStub) SetUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	return nil
+}
+
+func (s *userRepoStub) GetUserGroupRate(ctx context.Context, userID int64, groupID int64) (*float64, error) {
+	return nil, nil
+}
+
 type groupRepoStub struct {
 	affectedUserIDs []int64
 	deleteErr       error

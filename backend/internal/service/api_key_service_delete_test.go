@@ -78,7 +78,7 @@ func (s *apiKeyRepoStub) Delete(ctx context.Context, id int64) error {
 
 // 以下是接口要求实现但本测试不关心的方法
 
-func (s *apiKeyRepoStub) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error) {
+func (s *apiKeyRepoStub) ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error) {
 	panic("unexpected ListByUserID call")
 }
 
@@ -116,6 +116,14 @@ func (s *apiKeyRepoStub) ListKeysByUserID(ctx context.Context, userID int64) ([]
 
 func (s *apiKeyRepoStub) ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error) {
 	panic("unexpected ListKeysByGroupID call")
+}
+
+func (s *apiKeyRepoStub) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	panic("unexpected IncrementQuotaUsed call")
+}
+
+func (s *apiKeyRepoStub) ResetQuotaUsed(ctx context.Context, id int64) error {
+	panic("unexpected ResetQuotaUsed call")
 }
 
 // apiKeyCacheStub 是 APIKeyCache 接口的测试桩实现。

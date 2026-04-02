@@ -841,7 +841,7 @@ retryWithFallbackModel:
 		}
 
 		// OAuth 模型回退：上游返回 400 且错误信息指示模型不可用时，
-		// 自动降级到 gpt-5.2 重试（同账号），覆盖非 Plus 账号无 gpt-5.4 权限的场景。
+		// 自动降级重试（同账号），如 gpt-5.4 → gpt-5.3，覆盖非 Plus 账号无高版本模型权限的场景。
 		if resp.StatusCode == http.StatusBadRequest && account.Type == AccountTypeOAuth && !modelFallbackAttempted {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
@@ -873,6 +873,7 @@ retryWithFallbackModel:
 	}
 
 	// Handle normal response
+
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 	if reqStream {
@@ -1605,10 +1606,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		CacheReadTokens:     result.Usage.CacheReadInputTokens,
 	}
 
-	// Get rate multiplier
+	// Get rate multiplier: user custom > group default > global default
 	multiplier := s.cfg.Default.RateMultiplier
 	if apiKey.GroupID != nil && apiKey.Group != nil {
 		multiplier = apiKey.Group.RateMultiplier
+		// 用户自定义分组倍率覆盖
+		if userRate, ok := user.GetGroupRateMultiplier(*apiKey.GroupID); ok {
+			multiplier = userRate
+		}
 	}
 
 	cost, err := s.billingService.CalculateCost(result.Model, tokens, multiplier)
@@ -2592,7 +2597,7 @@ retryWithCCFallbackModel:
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
 		}
 
-		// OAuth 模型回退：上游返回 400 且模型不可用时，降级到 gpt-5.2 重试
+		// OAuth 模型回退：上游返回 400 且模型不可用时，降级重试（如 gpt-5.4 → gpt-5.3）
 		if resp.StatusCode == http.StatusBadRequest && account.Type == AccountTypeOAuth && !modelFallbackAttempted {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()

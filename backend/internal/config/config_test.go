@@ -566,6 +566,22 @@ func TestWarnIfInsecureURLHTTPS(t *testing.T) {
 	warnIfInsecureURL("secure", "https://example.com")
 }
 
+func TestLoadDefaultRequestJitterAndCooldownConfig(t *testing.T) {
+	viper.Reset()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Gateway.RequestJitterMinMs != 0 {
+		t.Fatalf("RequestJitterMinMs = %d, want 0", cfg.Gateway.RequestJitterMinMs)
+	}
+	if cfg.Gateway.RequestJitterMaxMs != 0 {
+		t.Fatalf("RequestJitterMaxMs = %d, want 0", cfg.Gateway.RequestJitterMaxMs)
+	}
+}
+
 func TestValidateConfigErrors(t *testing.T) {
 	buildValid := func(t *testing.T) *Config {
 		t.Helper()
@@ -589,8 +605,8 @@ func TestValidateConfigErrors(t *testing.T) {
 		},
 		{
 			name:    "jwt expire hour max",
-			mutate:  func(c *Config) { c.JWT.ExpireHour = 200 },
-			wantErr: "jwt.expire_hour must be <= 168",
+			mutate:  func(c *Config) { c.JWT.ExpireHour = 800 },
+			wantErr: "jwt.expire_hour must be <= 744",
 		},
 		{
 			name:    "csp policy required",
@@ -836,6 +852,24 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "ops cleanup minute retention",
 			mutate:  func(c *Config) { c.Ops.Cleanup.MinuteMetricsRetentionDays = -1 },
 			wantErr: "ops.cleanup.minute_metrics_retention_days",
+		},
+		{
+			name:    "gateway request jitter min negative",
+			mutate:  func(c *Config) { c.Gateway.RequestJitterMinMs = -1 },
+			wantErr: "gateway.request_jitter_min_ms must be non-negative",
+		},
+		{
+			name:    "gateway request jitter max negative",
+			mutate:  func(c *Config) { c.Gateway.RequestJitterMaxMs = -1 },
+			wantErr: "gateway.request_jitter_max_ms must be non-negative",
+		},
+		{
+			name: "gateway request jitter min exceeds max",
+			mutate: func(c *Config) {
+				c.Gateway.RequestJitterMinMs = 3000
+				c.Gateway.RequestJitterMaxMs = 1000
+			},
+			wantErr: "gateway.request_jitter_min_ms must be <= gateway.request_jitter_max_ms",
 		},
 	}
 

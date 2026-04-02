@@ -53,7 +53,7 @@ func (s *authRepoStub) Delete(ctx context.Context, id int64) error {
 	panic("unexpected Delete call")
 }
 
-func (s *authRepoStub) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error) {
+func (s *authRepoStub) ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error) {
 	panic("unexpected ListByUserID call")
 }
 
@@ -97,6 +97,14 @@ func (s *authRepoStub) ListKeysByGroupID(ctx context.Context, groupID int64) ([]
 		panic("unexpected ListKeysByGroupID call")
 	}
 	return s.listKeysByGroupID(ctx, groupID)
+}
+
+func (s *authRepoStub) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	panic("unexpected IncrementQuotaUsed call")
+}
+
+func (s *authRepoStub) ResetQuotaUsed(ctx context.Context, id int64) error {
+	panic("unexpected ResetQuotaUsed call")
 }
 
 type authCacheStub struct {

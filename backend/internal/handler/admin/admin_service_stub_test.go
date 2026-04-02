@@ -123,6 +123,14 @@ func (s *stubAdminService) GetUserUsageStats(ctx context.Context, userID int64, 
 	return map[string]any{"user_id": userID}, nil
 }
 
+func (s *stubAdminService) GetUserGroupRates(ctx context.Context, userID int64) ([]service.UserGroupRateItem, error) {
+	return nil, nil
+}
+
+func (s *stubAdminService) UpdateUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	return nil
+}
+
 func (s *stubAdminService) ListGroups(ctx context.Context, page, pageSize int, platform, status, search string, isExclusive *bool) ([]service.Group, int64, error) {
 	return s.groups, int64(len(s.groups)), nil
 }

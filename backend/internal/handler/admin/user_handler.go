@@ -277,3 +277,66 @@ func (h *UserHandler) GetUserUsage(c *gin.Context) {
 
 	response.Success(c, stats)
 }
+
+// GetUserGroupRates handles getting user's per-group custom rate multipliers
+// GET /api/v1/admin/users/:id/group-rates
+func (h *UserHandler) GetUserGroupRates(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid user ID")
+		return
+	}
+
+	items, err := h.adminService.GetUserGroupRates(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	out := make([]dto.UserGroupRate, 0, len(items))
+	for _, item := range items {
+		out = append(out, dto.UserGroupRate{
+			GroupID:     item.GroupID,
+			GroupName:   item.GroupName,
+			DefaultRate: item.DefaultRate,
+			CustomRate:  item.CustomRate,
+		})
+	}
+	response.Success(c, out)
+}
+
+// UpdateUserGroupRatesRequest represents the request body for updating user group rates
+type UpdateUserGroupRatesRequest struct {
+	Rates []struct {
+		GroupID    int64    `json:"group_id" binding:"required"`
+		CustomRate *float64 `json:"custom_rate"` // null = clear override, use group default
+	} `json:"rates" binding:"required"`
+}
+
+// UpdateUserGroupRates handles updating user's per-group custom rate multipliers
+// PUT /api/v1/admin/users/:id/group-rates
+func (h *UserHandler) UpdateUserGroupRates(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid user ID")
+		return
+	}
+
+	var req UpdateUserGroupRatesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	rates := make(map[int64]*float64, len(req.Rates))
+	for _, r := range req.Rates {
+		rates[r.GroupID] = r.CustomRate
+	}
+
+	if err := h.adminService.UpdateUserGroupRates(c.Request.Context(), userID, rates); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Group rates updated successfully"})
+}

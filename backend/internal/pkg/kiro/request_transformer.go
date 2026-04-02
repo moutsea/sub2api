@@ -93,7 +93,7 @@ type TransformContext struct {
 	AgentContID  string            // Agent continuation ID
 	ToolUseIDMap map[string]string // tool_use_id -> tool_name mapping
 	MsgCounter   int               // Message counter
-	IsOpus46     bool              // Whether the model is opus-4-6 (skip truncation/compression)
+	Is1MContext  bool              // Whether the model supports 1M context (4.6 series: skip truncation/compression)
 }
 
 // NewTransformContext creates a new transformation context
@@ -131,7 +131,7 @@ func NewTransformContext(model string, ginCtx *gin.Context, claudeReq ...*Claude
 		agentContID = uuid.New().String()
 	}
 
-	isOpus46 := strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus-4.6")
+	is1MCtx := Is1MContext(model)
 
 	return &TransformContext{
 		ModelID:      modelID,
@@ -139,7 +139,7 @@ func NewTransformContext(model string, ginCtx *gin.Context, claudeReq ...*Claude
 		AgentContID:  agentContID,
 		ToolUseIDMap: make(map[string]string),
 		MsgCounter:   0,
-		IsOpus46:     isOpus46,
+		Is1MContext:  is1MCtx,
 	}
 }
 
@@ -202,8 +202,8 @@ func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string,
 	currentMsg := messages[len(messages)-1]
 	historyMsgs := messages[:len(messages)-1]
 
-	// Process tools (truncate long descriptions, skip limits for opus-4-6)
-	processedTools := processTools(claudeReq.Tools, ctx.IsOpus46)
+	// Process tools (truncate long descriptions, skip limits for 1M context models)
+	processedTools := processTools(claudeReq.Tools, ctx.Is1MContext)
 
 	// If last message is assistant, it becomes part of history
 	if currentMsg.Role == "assistant" {
@@ -765,9 +765,16 @@ func buildUserHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) HistoryEn
 		Origin:  "AI_EDITOR",
 	}
 
-	// Add images
-	if len(msg.Images) > 0 {
-		userMsg.Images = msg.Images
+	// Collect all images: direct message images + tool_result images
+	// AWSQ only supports images at the message level (images field),
+	// not inside toolResults[].content[]. Promote tool_result images here.
+	var allImages []CodeWhispererImage
+	allImages = append(allImages, msg.Images...)
+	if msg.HasToolResults() {
+		allImages = append(allImages, extractToolResultImages(msg.ToolResults)...)
+	}
+	if len(allImages) > 0 {
+		userMsg.Images = allImages
 	}
 
 	// Add tool_results
@@ -790,7 +797,11 @@ func buildUserHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) HistoryEn
 	}
 }
 
-// buildToolResults builds tool results array
+// buildToolResults builds tool results array.
+// AWSQ toolResults[].content[] only supports {"text": "..."} items.
+// Images from tool_result are NOT included here — they must be promoted
+// to the message-level images field by the caller (see extractToolResultImages).
+// Aligned with kiro.rs extract_tool_result_content which only extracts text.
 func buildToolResults(results []ToolResultData) []ToolResult {
 	// Deduplicate by toolUseId
 	seen := make(map[string]bool)
@@ -810,20 +821,10 @@ func buildToolResults(results []ToolResultData) []ToolResult {
 			status = "error"
 		}
 
-		// Build content array with text and images
+		// Build content array with text only (AWSQ does not support image in tool_result content)
 		var content []map[string]any
 		if tr.Content != "" {
 			content = append(content, map[string]any{"text": tr.Content})
-		}
-		for _, img := range tr.Images {
-			content = append(content, map[string]any{
-				"image": map[string]any{
-					"format": img.Format,
-					"source": map[string]any{
-						"bytes": img.Source.Bytes,
-					},
-				},
-			})
 		}
 		// Ensure at least one content item
 		if len(content) == 0 {
@@ -837,6 +838,17 @@ func buildToolResults(results []ToolResultData) []ToolResult {
 		})
 	}
 	return toolResults
+}
+
+// extractToolResultImages collects all images from tool results.
+// These images must be promoted to the message-level images field
+// because AWSQ does not support images inside toolResults[].content[].
+func extractToolResultImages(results []ToolResultData) []CodeWhispererImage {
+	var images []CodeWhispererImage
+	for _, tr := range results {
+		images = append(images, tr.Images...)
+	}
+	return images
 }
 
 // buildAssistantHistoryEntry builds an assistant history entry
@@ -1118,9 +1130,16 @@ func buildCurrentMessage(ctx *TransformContext, msg *UnifiedMessage, tools []Too
 		Origin:  "AI_EDITOR",
 	}
 
-	// Add images
-	if len(msg.Images) > 0 {
-		userInputMsg.Images = msg.Images
+	// Collect all images: direct message images + tool_result images
+	// AWSQ only supports images at the message level (images field),
+	// not inside toolResults[].content[]. Promote tool_result images here.
+	var allImages []CodeWhispererImage
+	allImages = append(allImages, msg.Images...)
+	if msg.HasToolResults() {
+		allImages = append(allImages, extractToolResultImages(msg.ToolResults)...)
+	}
+	if len(allImages) > 0 {
+		userInputMsg.Images = allImages
 	}
 
 	// Build context

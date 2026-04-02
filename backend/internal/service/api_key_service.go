@@ -43,7 +43,7 @@ type APIKeyRepository interface {
 	Update(ctx context.Context, key *APIKey) error
 	Delete(ctx context.Context, id int64) error
 
-	ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error)
+	ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error)
 	VerifyOwnership(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error)
 	CountByUserID(ctx context.Context, userID int64) (int64, error)
 	ExistsByKey(ctx context.Context, key string) (bool, error)
@@ -302,12 +302,25 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 	return apiKey, nil
 }
 
-// List 获取用户的API Key列表
-func (s *APIKeyService) List(ctx context.Context, userID int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error) {
-	keys, pagination, err := s.apiKeyRepo.ListByUserID(ctx, userID, params)
+// List 获取用户的API Key列表，可选按 groupID 过滤（nil=不过滤，0=无分组，>0=指定分组）
+func (s *APIKeyService) List(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error) {
+	keys, pagination, err := s.apiKeyRepo.ListByUserID(ctx, userID, groupID, params)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list api keys: %w", err)
 	}
+
+	// 用户自定义分组倍率覆盖
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err == nil && user.AllowedGroupRates != nil {
+		for i := range keys {
+			if keys[i].Group != nil {
+				if customRate, ok := user.GetGroupRateMultiplier(keys[i].Group.ID); ok {
+					keys[i].Group.RateMultiplier = customRate
+				}
+			}
+		}
+	}
+
 	return keys, pagination, nil
 }
 
@@ -329,6 +342,17 @@ func (s *APIKeyService) GetByID(ctx context.Context, id int64) (*APIKey, error) 
 	if err != nil {
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
+
+	// 用户自定义分组倍率覆盖
+	if apiKey.Group != nil && apiKey.UserID > 0 {
+		user, userErr := s.userRepo.GetByID(ctx, apiKey.UserID)
+		if userErr == nil {
+			if customRate, ok := user.GetGroupRateMultiplier(apiKey.Group.ID); ok {
+				apiKey.Group.RateMultiplier = customRate
+			}
+		}
+	}
+
 	return apiKey, nil
 }
 
@@ -392,6 +416,15 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	apiKey.Key = key
+
+	// Load per-user group rate override for the fallback path
+	if apiKey.User != nil && apiKey.GroupID != nil {
+		rate, rateErr := s.userRepo.GetUserGroupRate(ctx, apiKey.User.ID, *apiKey.GroupID)
+		if rateErr == nil && rate != nil {
+			apiKey.User.AllowedGroupRates = map[int64]*float64{*apiKey.GroupID: rate}
+		}
+	}
+
 	if apiKey.IsQuotaExceeded() {
 		log.Printf("[QuotaDebug] source=db_fallback api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
 			apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
@@ -596,6 +629,10 @@ func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([
 	availableGroups := make([]Group, 0)
 	for _, group := range allGroups {
 		if s.canUserBindGroupInternal(user, &group, subscribedGroupIDs) {
+			// 用户自定义倍率覆盖分组默认倍率
+			if customRate, ok := user.GetGroupRateMultiplier(group.ID); ok {
+				group.RateMultiplier = customRate
+			}
 			availableGroups = append(availableGroups, group)
 		}
 	}

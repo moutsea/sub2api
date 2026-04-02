@@ -57,6 +57,33 @@ func (_u *UserAllowedGroupUpdate) SetNillableGroupID(v *int64) *UserAllowedGroup
 	return _u
 }
 
+// SetRateMultiplier sets the "rate_multiplier" field.
+func (_u *UserAllowedGroupUpdate) SetRateMultiplier(v float64) *UserAllowedGroupUpdate {
+	_u.mutation.ResetRateMultiplier()
+	_u.mutation.SetRateMultiplier(v)
+	return _u
+}
+
+// SetNillableRateMultiplier sets the "rate_multiplier" field if the given value is not nil.
+func (_u *UserAllowedGroupUpdate) SetNillableRateMultiplier(v *float64) *UserAllowedGroupUpdate {
+	if v != nil {
+		_u.SetRateMultiplier(*v)
+	}
+	return _u
+}
+
+// AddRateMultiplier adds value to the "rate_multiplier" field.
+func (_u *UserAllowedGroupUpdate) AddRateMultiplier(v float64) *UserAllowedGroupUpdate {
+	_u.mutation.AddRateMultiplier(v)
+	return _u
+}
+
+// ClearRateMultiplier clears the value of the "rate_multiplier" field.
+func (_u *UserAllowedGroupUpdate) ClearRateMultiplier() *UserAllowedGroupUpdate {
+	_u.mutation.ClearRateMultiplier()
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *UserAllowedGroupUpdate) SetUser(v *User) *UserAllowedGroupUpdate {
 	return _u.SetUserID(v.ID)
@@ -133,6 +160,15 @@ func (_u *UserAllowedGroupUpdate) sqlSave(ctx context.Context) (_node int, err e
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.RateMultiplier(); ok {
+		_spec.SetField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedRateMultiplier(); ok {
+		_spec.AddField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.RateMultiplierCleared() {
+		_spec.ClearField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -237,6 +273,33 @@ func (_u *UserAllowedGroupUpdateOne) SetNillableGroupID(v *int64) *UserAllowedGr
 	if v != nil {
 		_u.SetGroupID(*v)
 	}
+	return _u
+}
+
+// SetRateMultiplier sets the "rate_multiplier" field.
+func (_u *UserAllowedGroupUpdateOne) SetRateMultiplier(v float64) *UserAllowedGroupUpdateOne {
+	_u.mutation.ResetRateMultiplier()
+	_u.mutation.SetRateMultiplier(v)
+	return _u
+}
+
+// SetNillableRateMultiplier sets the "rate_multiplier" field if the given value is not nil.
+func (_u *UserAllowedGroupUpdateOne) SetNillableRateMultiplier(v *float64) *UserAllowedGroupUpdateOne {
+	if v != nil {
+		_u.SetRateMultiplier(*v)
+	}
+	return _u
+}
+
+// AddRateMultiplier adds value to the "rate_multiplier" field.
+func (_u *UserAllowedGroupUpdateOne) AddRateMultiplier(v float64) *UserAllowedGroupUpdateOne {
+	_u.mutation.AddRateMultiplier(v)
+	return _u
+}
+
+// ClearRateMultiplier clears the value of the "rate_multiplier" field.
+func (_u *UserAllowedGroupUpdateOne) ClearRateMultiplier() *UserAllowedGroupUpdateOne {
+	_u.mutation.ClearRateMultiplier()
 	return _u
 }
 
@@ -348,6 +411,15 @@ func (_u *UserAllowedGroupUpdateOne) sqlSave(ctx context.Context) (_node *UserAl
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.RateMultiplier(); ok {
+		_spec.SetField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedRateMultiplier(); ok {
+		_spec.AddField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.RateMultiplierCleared() {
+		_spec.ClearField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{

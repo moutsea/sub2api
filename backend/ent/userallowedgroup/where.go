@@ -20,6 +20,11 @@ func GroupID(v int64) predicate.UserAllowedGroup {
 	return predicate.UserAllowedGroup(sql.FieldEQ(FieldGroupID, v))
 }
 
+// RateMultiplier applies equality check predicate on the "rate_multiplier" field. It's identical to RateMultiplierEQ.
+func RateMultiplier(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldEQ(FieldRateMultiplier, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.UserAllowedGroup {
 	return predicate.UserAllowedGroup(sql.FieldEQ(FieldCreatedAt, v))
@@ -63,6 +68,56 @@ func GroupIDIn(vs ...int64) predicate.UserAllowedGroup {
 // GroupIDNotIn applies the NotIn predicate on the "group_id" field.
 func GroupIDNotIn(vs ...int64) predicate.UserAllowedGroup {
 	return predicate.UserAllowedGroup(sql.FieldNotIn(FieldGroupID, vs...))
+}
+
+// RateMultiplierEQ applies the EQ predicate on the "rate_multiplier" field.
+func RateMultiplierEQ(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldEQ(FieldRateMultiplier, v))
+}
+
+// RateMultiplierNEQ applies the NEQ predicate on the "rate_multiplier" field.
+func RateMultiplierNEQ(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldNEQ(FieldRateMultiplier, v))
+}
+
+// RateMultiplierIn applies the In predicate on the "rate_multiplier" field.
+func RateMultiplierIn(vs ...float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldIn(FieldRateMultiplier, vs...))
+}
+
+// RateMultiplierNotIn applies the NotIn predicate on the "rate_multiplier" field.
+func RateMultiplierNotIn(vs ...float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldNotIn(FieldRateMultiplier, vs...))
+}
+
+// RateMultiplierGT applies the GT predicate on the "rate_multiplier" field.
+func RateMultiplierGT(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldGT(FieldRateMultiplier, v))
+}
+
+// RateMultiplierGTE applies the GTE predicate on the "rate_multiplier" field.
+func RateMultiplierGTE(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldGTE(FieldRateMultiplier, v))
+}
+
+// RateMultiplierLT applies the LT predicate on the "rate_multiplier" field.
+func RateMultiplierLT(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldLT(FieldRateMultiplier, v))
+}
+
+// RateMultiplierLTE applies the LTE predicate on the "rate_multiplier" field.
+func RateMultiplierLTE(v float64) predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldLTE(FieldRateMultiplier, v))
+}
+
+// RateMultiplierIsNil applies the IsNil predicate on the "rate_multiplier" field.
+func RateMultiplierIsNil() predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldIsNull(FieldRateMultiplier))
+}
+
+// RateMultiplierNotNil applies the NotNil predicate on the "rate_multiplier" field.
+func RateMultiplierNotNil() predicate.UserAllowedGroup {
+	return predicate.UserAllowedGroup(sql.FieldNotNull(FieldRateMultiplier))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

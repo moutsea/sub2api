@@ -85,12 +85,15 @@ func (r *userRepository) GetByID(ctx context.Context, id int64) (*service.User, 
 	}
 
 	out := userEntityToService(m)
-	groups, err := r.loadAllowedGroups(ctx, []int64{id})
+	groups, rates, err := r.loadAllowedGroups(ctx, []int64{id})
 	if err != nil {
 		return nil, err
 	}
 	if v, ok := groups[id]; ok {
 		out.AllowedGroups = v
+	}
+	if v, ok := rates[id]; ok {
+		out.AllowedGroupRates = v
 	}
 	return out, nil
 }
@@ -102,12 +105,15 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*service
 	}
 
 	out := userEntityToService(m)
-	groups, err := r.loadAllowedGroups(ctx, []int64{m.ID})
+	groups, rates, err := r.loadAllowedGroups(ctx, []int64{m.ID})
 	if err != nil {
 		return nil, err
 	}
 	if v, ok := groups[m.ID]; ok {
 		out.AllowedGroups = v
+	}
+	if v, ok := rates[m.ID]; ok {
+		out.AllowedGroupRates = v
 	}
 	return out, nil
 }
@@ -254,13 +260,16 @@ func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.
 		}
 	}
 
-	allowedGroupsByUser, err := r.loadAllowedGroups(ctx, userIDs)
+	allowedGroupsByUser, ratesByUser, err := r.loadAllowedGroups(ctx, userIDs)
 	if err != nil {
 		return nil, nil, err
 	}
 	for id, u := range userMap {
 		if groups, ok := allowedGroupsByUser[id]; ok {
 			u.AllowedGroups = groups
+		}
+		if rates, ok := ratesByUser[id]; ok {
+			u.AllowedGroupRates = rates
 		}
 	}
 
@@ -387,48 +396,75 @@ func (r *userRepository) GetFirstAdmin(ctx context.Context) (*service.User, erro
 	}
 
 	out := userEntityToService(m)
-	groups, err := r.loadAllowedGroups(ctx, []int64{m.ID})
+	groups, rates, err := r.loadAllowedGroups(ctx, []int64{m.ID})
 	if err != nil {
 		return nil, err
 	}
 	if v, ok := groups[m.ID]; ok {
 		out.AllowedGroups = v
 	}
+	if v, ok := rates[m.ID]; ok {
+		out.AllowedGroupRates = v
+	}
 	return out, nil
 }
 
-func (r *userRepository) loadAllowedGroups(ctx context.Context, userIDs []int64) (map[int64][]int64, error) {
-	out := make(map[int64][]int64, len(userIDs))
+func (r *userRepository) loadAllowedGroups(ctx context.Context, userIDs []int64) (map[int64][]int64, map[int64]map[int64]*float64, error) {
+	groups := make(map[int64][]int64, len(userIDs))
+	rates := make(map[int64]map[int64]*float64, len(userIDs))
 	if len(userIDs) == 0 {
-		return out, nil
+		return groups, rates, nil
 	}
 
 	rows, err := r.client.UserAllowedGroup.Query().
 		Where(userallowedgroup.UserIDIn(userIDs...)).
 		All(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	for i := range rows {
-		out[rows[i].UserID] = append(out[rows[i].UserID], rows[i].GroupID)
+		uid := rows[i].UserID
+		gid := rows[i].GroupID
+		groups[uid] = append(groups[uid], gid)
+		if rows[i].RateMultiplier != nil {
+			if rates[uid] == nil {
+				rates[uid] = make(map[int64]*float64)
+			}
+			rates[uid][gid] = rows[i].RateMultiplier
+		}
 	}
 
-	for userID := range out {
-		sort.Slice(out[userID], func(i, j int) bool { return out[userID][i] < out[userID][j] })
+	for userID := range groups {
+		sort.Slice(groups[userID], func(i, j int) bool { return groups[userID][i] < groups[userID][j] })
 	}
 
-	return out, nil
+	return groups, rates, nil
 }
 
 // syncUserAllowedGroupsWithClient 在 ent client/事务内同步用户允许分组：
 // 仅操作 user_allowed_groups 联接表，legacy users.allowed_groups 列已弃用。
+// 保留已有记录的 rate_multiplier 自定义倍率。
 func (r *userRepository) syncUserAllowedGroupsWithClient(ctx context.Context, client *dbent.Client, userID int64, groupIDs []int64) error {
 	if client == nil {
 		return nil
 	}
 
-	// Keep join table as the source of truth for reads.
+	// 1. 读取已有记录的 rate_multiplier，以便重建时恢复
+	existing, err := client.UserAllowedGroup.Query().
+		Where(userallowedgroup.UserIDEQ(userID)).
+		All(ctx)
+	if err != nil {
+		return err
+	}
+	existingRates := make(map[int64]*float64, len(existing))
+	for _, row := range existing {
+		if row.RateMultiplier != nil {
+			existingRates[row.GroupID] = row.RateMultiplier
+		}
+	}
+
+	// 2. 删除所有旧记录
 	if _, err := client.UserAllowedGroup.Delete().Where(userallowedgroup.UserIDEQ(userID)).Exec(ctx); err != nil {
 		return err
 	}
@@ -441,10 +477,15 @@ func (r *userRepository) syncUserAllowedGroupsWithClient(ctx context.Context, cl
 		unique[id] = struct{}{}
 	}
 
+	// 3. 重建，恢复已有的 rate_multiplier
 	if len(unique) > 0 {
 		creates := make([]*dbent.UserAllowedGroupCreate, 0, len(unique))
 		for groupID := range unique {
-			creates = append(creates, client.UserAllowedGroup.Create().SetUserID(userID).SetGroupID(groupID))
+			c := client.UserAllowedGroup.Create().SetUserID(userID).SetGroupID(groupID)
+			if rate, ok := existingRates[groupID]; ok {
+				c = c.SetNillableRateMultiplier(rate)
+			}
+			creates = append(creates, c)
 		}
 		if err := client.UserAllowedGroup.
 			CreateBulk(creates...).
@@ -465,4 +506,73 @@ func applyUserEntityToService(dst *service.User, src *dbent.User) {
 	dst.ID = src.ID
 	dst.CreatedAt = src.CreatedAt
 	dst.UpdatedAt = src.UpdatedAt
+}
+
+// GetUserGroupRates returns all per-user rate multiplier overrides for a user.
+// Key: groupID, Value: custom rate (nil entries are excluded).
+func (r *userRepository) GetUserGroupRates(ctx context.Context, userID int64) (map[int64]*float64, error) {
+	rows, err := r.client.UserAllowedGroup.Query().
+		Where(
+			userallowedgroup.UserIDEQ(userID),
+			userallowedgroup.RateMultiplierNotNil(),
+		).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[int64]*float64, len(rows))
+	for _, row := range rows {
+		out[row.GroupID] = row.RateMultiplier
+	}
+	return out, nil
+}
+
+// SetUserGroupRates batch-updates per-user rate multiplier overrides.
+// rates map: groupID -> rate (*float64, nil means clear the override).
+// Only updates rows that already exist in user_allowed_groups.
+// Wrapped in a transaction to ensure atomicity.
+func (r *userRepository) SetUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txClient := tx.Client()
+	for groupID, rate := range rates {
+		update := txClient.UserAllowedGroup.Update().
+			Where(
+				userallowedgroup.UserIDEQ(userID),
+				userallowedgroup.GroupIDEQ(groupID),
+			)
+		if rate != nil {
+			update = update.SetRateMultiplier(*rate)
+		} else {
+			update = update.ClearRateMultiplier()
+		}
+		if _, err := update.Save(ctx); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetUserGroupRate returns the per-user rate multiplier for a specific group.
+// Returns nil if no override is set.
+func (r *userRepository) GetUserGroupRate(ctx context.Context, userID int64, groupID int64) (*float64, error) {
+	row, err := r.client.UserAllowedGroup.Query().
+		Where(
+			userallowedgroup.UserIDEQ(userID),
+			userallowedgroup.GroupIDEQ(groupID),
+		).
+		Only(ctx)
+	if err != nil {
+		// If no row found, return nil (no override)
+		if dbent.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return row.RateMultiplier, nil
 }

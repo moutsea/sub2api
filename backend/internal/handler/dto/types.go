@@ -26,6 +26,14 @@ type AdminUser struct {
 	Notes string `json:"notes"`
 }
 
+// UserGroupRate represents a per-user custom rate multiplier for a group.
+type UserGroupRate struct {
+	GroupID        int64    `json:"group_id"`
+	GroupName      string   `json:"group_name"`
+	DefaultRate    float64  `json:"default_rate"`    // Group's default rate_multiplier
+	CustomRate     *float64 `json:"custom_rate"`     // User's custom override (null = use default)
+}
+
 type APIKey struct {
 	ID            int64     `json:"id"`
 	UserID        int64     `json:"user_id"`

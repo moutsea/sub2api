@@ -262,6 +262,12 @@ type GatewayConfig struct {
 	// 建议仅在排查 thinking block 相关问题时开启
 	LogSignatureDebug bool `mapstructure:"log_signature_debug"`
 
+	// RequestJitterMinMs: 每次上游请求前的最小随机抖动（毫秒），防止多账号同时请求形成惊群效应
+	// 设为 0 则禁用抖动
+	RequestJitterMinMs int `mapstructure:"request_jitter_min_ms"`
+	// RequestJitterMaxMs: 每次上游请求前的最大随机抖动（毫秒）
+	RequestJitterMaxMs int `mapstructure:"request_jitter_max_ms"`
+
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 }
@@ -720,7 +726,7 @@ func setDefaults() {
 
 	// JWT
 	viper.SetDefault("jwt.secret", "")
-	viper.SetDefault("jwt.expire_hour", 24)
+	viper.SetDefault("jwt.expire_hour", 720) // 30 days
 
 	// Default
 	// Admin credentials are created via the setup flow (web wizard / CLI / AUTO_SETUP).
@@ -786,6 +792,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.log_signature_debug", false)
+	viper.SetDefault("gateway.request_jitter_min_ms", 0)  // 默认禁用抖动（设为 0）
+	viper.SetDefault("gateway.request_jitter_max_ms", 0)  // 启用示例：min=700, max=2200
 	viper.SetDefault("gateway.max_body_size", int64(100*1024*1024))
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationAccountProxy)
 	// HTTP 上游连接池配置（针对 5000+ 并发用户优化）
@@ -836,11 +844,11 @@ func (c *Config) Validate() error {
 	if c.JWT.ExpireHour <= 0 {
 		return fmt.Errorf("jwt.expire_hour must be positive")
 	}
-	if c.JWT.ExpireHour > 168 {
-		return fmt.Errorf("jwt.expire_hour must be <= 168 (7 days)")
+	if c.JWT.ExpireHour > 744 {
+		return fmt.Errorf("jwt.expire_hour must be <= 744 (31 days)")
 	}
-	if c.JWT.ExpireHour > 24 {
-		log.Printf("Warning: jwt.expire_hour is %d hours (> 24). Consider shorter expiration for security.", c.JWT.ExpireHour)
+	if c.JWT.ExpireHour > 720 {
+		log.Printf("Warning: jwt.expire_hour is %d hours (> 720). Consider shorter expiration for security.", c.JWT.ExpireHour)
 	}
 	if c.Security.CSP.Enabled && strings.TrimSpace(c.Security.CSP.Policy) == "" {
 		return fmt.Errorf("security.csp.policy is required when CSP is enabled")
@@ -1045,6 +1053,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.MaxBodySize <= 0 {
 		return fmt.Errorf("gateway.max_body_size must be positive")
+	}
+	if c.Gateway.RequestJitterMinMs < 0 {
+		return fmt.Errorf("gateway.request_jitter_min_ms must be non-negative")
+	}
+	if c.Gateway.RequestJitterMaxMs < 0 {
+		return fmt.Errorf("gateway.request_jitter_max_ms must be non-negative")
+	}
+	if c.Gateway.RequestJitterMinMs > 0 && c.Gateway.RequestJitterMaxMs > 0 && c.Gateway.RequestJitterMinMs > c.Gateway.RequestJitterMaxMs {
+		return fmt.Errorf("gateway.request_jitter_min_ms must be <= gateway.request_jitter_max_ms")
 	}
 	if strings.TrimSpace(c.Gateway.ConnectionPoolIsolation) != "" {
 		switch c.Gateway.ConnectionPoolIsolation {

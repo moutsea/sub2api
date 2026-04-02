@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -343,6 +344,19 @@ func (p *KiroTokenProvider) refreshSocialToken(ctx context.Context, account *Acc
 }
 
 // refreshIdCToken refreshes token for IdC auth type via AWS OIDC
+// kiroOIDCOSName returns the OS identifier for OIDC User-Agent headers,
+// matching the Rust SDK fingerprint used by AmazonQ-For-CLI.
+func kiroOIDCOSName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macOS"
+	case "windows":
+		return "windows"
+	default:
+		return "linux"
+	}
+}
+
 func (p *KiroTokenProvider) refreshIdCToken(ctx context.Context, account *Account) (*KiroTokenInfo, error) {
 	refreshToken := account.GetKiroRefreshToken()
 	clientID := account.GetKiroClientID()
@@ -374,16 +388,16 @@ func (p *KiroTokenProvider) refreshIdCToken(ctx context.Context, account *Accoun
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
 
-	// Set IdC specific headers
+	// Set IdC specific headers — use Rust SDK UA (AmazonQ-For-CLI fingerprint)
+	// to match the latest upstream client behavior
+	osName := kiroOIDCOSName()
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Host", hostHeader)
 	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("x-amz-user-agent", "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE")
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-rust/1.3.9 ua/2.1 api/ssooidc/1.88.0 os/%s lang/rust/1.87.0 m/E app/AmazonQ-For-CLI", osName))
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "*")
-	req.Header.Set("sec-fetch-mode", "cors")
-	req.Header.Set("User-Agent", "node")
-	req.Header.Set("Accept-Encoding", "br, gzip, deflate")
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-rust/1.3.9 os/%s lang/rust/1.87.0", osName))
+	req.Header.Set("Accept-Encoding", "gzip, compress, deflate, br")
 
 	// Get proxy URL from account
 	proxyURL := ""

@@ -174,6 +174,34 @@ export async function getUserUsageStats(
   return data
 }
 
+/**
+ * Get user's per-group custom rate multipliers
+ * @param id - User ID
+ * @returns List of group rates with defaults and custom overrides
+ */
+export async function getUserGroupRates(id: number): Promise<{
+  group_id: number
+  group_name: string
+  default_rate: number
+  custom_rate: number | null
+}[]> {
+  const { data } = await apiClient.get(`/admin/users/${id}/group-rates`)
+  return data
+}
+
+/**
+ * Update user's per-group custom rate multipliers
+ * @param id - User ID
+ * @param rates - Array of { group_id, custom_rate } (null custom_rate = use group default)
+ */
+export async function updateUserGroupRates(
+  id: number,
+  rates: { group_id: number; custom_rate: number | null }[]
+): Promise<{ message: string }> {
+  const { data } = await apiClient.put(`/admin/users/${id}/group-rates`, { rates })
+  return data
+}
+
 export const usersAPI = {
   list,
   getById,
@@ -184,7 +212,9 @@ export const usersAPI = {
   updateConcurrency,
   toggleStatus,
   getUserApiKeys,
-  getUserUsageStats
+  getUserUsageStats,
+  getUserGroupRates,
+  updateUserGroupRates
 }
 
 export default usersAPI

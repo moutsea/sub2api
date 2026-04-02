@@ -36,6 +36,20 @@ func (_c *UserAllowedGroupCreate) SetGroupID(v int64) *UserAllowedGroupCreate {
 	return _c
 }
 
+// SetRateMultiplier sets the "rate_multiplier" field.
+func (_c *UserAllowedGroupCreate) SetRateMultiplier(v float64) *UserAllowedGroupCreate {
+	_c.mutation.SetRateMultiplier(v)
+	return _c
+}
+
+// SetNillableRateMultiplier sets the "rate_multiplier" field if the given value is not nil.
+func (_c *UserAllowedGroupCreate) SetNillableRateMultiplier(v *float64) *UserAllowedGroupCreate {
+	if v != nil {
+		_c.SetRateMultiplier(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *UserAllowedGroupCreate) SetCreatedAt(v time.Time) *UserAllowedGroupCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -141,6 +155,10 @@ func (_c *UserAllowedGroupCreate) createSpec() (*UserAllowedGroup, *sqlgraph.Cre
 		_spec = sqlgraph.NewCreateSpec(userallowedgroup.Table, nil)
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.RateMultiplier(); ok {
+		_spec.SetField(userallowedgroup.FieldRateMultiplier, field.TypeFloat64, value)
+		_node.RateMultiplier = &value
+	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(userallowedgroup.FieldCreatedAt, field.TypeTime, value)
 		_node.CreatedAt = value
@@ -255,6 +273,30 @@ func (u *UserAllowedGroupUpsert) UpdateGroupID() *UserAllowedGroupUpsert {
 	return u
 }
 
+// SetRateMultiplier sets the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsert) SetRateMultiplier(v float64) *UserAllowedGroupUpsert {
+	u.Set(userallowedgroup.FieldRateMultiplier, v)
+	return u
+}
+
+// UpdateRateMultiplier sets the "rate_multiplier" field to the value that was provided on create.
+func (u *UserAllowedGroupUpsert) UpdateRateMultiplier() *UserAllowedGroupUpsert {
+	u.SetExcluded(userallowedgroup.FieldRateMultiplier)
+	return u
+}
+
+// AddRateMultiplier adds v to the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsert) AddRateMultiplier(v float64) *UserAllowedGroupUpsert {
+	u.Add(userallowedgroup.FieldRateMultiplier, v)
+	return u
+}
+
+// ClearRateMultiplier clears the value of the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsert) ClearRateMultiplier() *UserAllowedGroupUpsert {
+	u.SetNull(userallowedgroup.FieldRateMultiplier)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -325,6 +367,34 @@ func (u *UserAllowedGroupUpsertOne) SetGroupID(v int64) *UserAllowedGroupUpsertO
 func (u *UserAllowedGroupUpsertOne) UpdateGroupID() *UserAllowedGroupUpsertOne {
 	return u.Update(func(s *UserAllowedGroupUpsert) {
 		s.UpdateGroupID()
+	})
+}
+
+// SetRateMultiplier sets the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsertOne) SetRateMultiplier(v float64) *UserAllowedGroupUpsertOne {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.SetRateMultiplier(v)
+	})
+}
+
+// AddRateMultiplier adds v to the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsertOne) AddRateMultiplier(v float64) *UserAllowedGroupUpsertOne {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.AddRateMultiplier(v)
+	})
+}
+
+// UpdateRateMultiplier sets the "rate_multiplier" field to the value that was provided on create.
+func (u *UserAllowedGroupUpsertOne) UpdateRateMultiplier() *UserAllowedGroupUpsertOne {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.UpdateRateMultiplier()
+	})
+}
+
+// ClearRateMultiplier clears the value of the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsertOne) ClearRateMultiplier() *UserAllowedGroupUpsertOne {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.ClearRateMultiplier()
 	})
 }
 
@@ -541,6 +611,34 @@ func (u *UserAllowedGroupUpsertBulk) SetGroupID(v int64) *UserAllowedGroupUpsert
 func (u *UserAllowedGroupUpsertBulk) UpdateGroupID() *UserAllowedGroupUpsertBulk {
 	return u.Update(func(s *UserAllowedGroupUpsert) {
 		s.UpdateGroupID()
+	})
+}
+
+// SetRateMultiplier sets the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsertBulk) SetRateMultiplier(v float64) *UserAllowedGroupUpsertBulk {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.SetRateMultiplier(v)
+	})
+}
+
+// AddRateMultiplier adds v to the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsertBulk) AddRateMultiplier(v float64) *UserAllowedGroupUpsertBulk {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.AddRateMultiplier(v)
+	})
+}
+
+// UpdateRateMultiplier sets the "rate_multiplier" field to the value that was provided on create.
+func (u *UserAllowedGroupUpsertBulk) UpdateRateMultiplier() *UserAllowedGroupUpsertBulk {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.UpdateRateMultiplier()
+	})
+}
+
+// ClearRateMultiplier clears the value of the "rate_multiplier" field.
+func (u *UserAllowedGroupUpsertBulk) ClearRateMultiplier() *UserAllowedGroupUpsertBulk {
+	return u.Update(func(s *UserAllowedGroupUpsert) {
+		s.ClearRateMultiplier()
 	})
 }
 

@@ -22,6 +22,8 @@ type AdminService interface {
 	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)
 	GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int) ([]APIKey, int64, error)
 	GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error)
+	GetUserGroupRates(ctx context.Context, userID int64) ([]UserGroupRateItem, error)
+	UpdateUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error
 
 	// Group management
 	ListGroups(ctx context.Context, page, pageSize int, platform, status, search string, isExclusive *bool) ([]Group, int64, error)
@@ -503,7 +505,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 
 func (s *adminServiceImpl) GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int) ([]APIKey, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
-	keys, result, err := s.apiKeyRepo.ListByUserID(ctx, userID, params)
+	keys, result, err := s.apiKeyRepo.ListByUserID(ctx, userID, nil, params)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1540,4 +1542,97 @@ type MixedChannelError struct {
 func (e *MixedChannelError) Error() string {
 	return fmt.Sprintf("mixed_channel_warning: Group '%s' contains both %s and %s accounts. Using mixed channels in the same context may cause thinking block signature validation issues, which will fallback to non-thinking mode for historical messages.",
 		e.GroupName, e.CurrentPlatform, e.OtherPlatform)
+}
+
+// UserGroupRateItem represents a group with its default and user-custom rate multiplier.
+type UserGroupRateItem struct {
+	GroupID        int64
+	GroupName      string
+	DefaultRate    float64
+	CustomRate     *float64 // nil = use group default
+}
+
+// GetUserGroupRates returns all allowed groups for a user with their custom rate overrides.
+func (s *adminServiceImpl) GetUserGroupRates(ctx context.Context, userID int64) ([]UserGroupRateItem, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+
+	// Get all active groups
+	groups, err := s.groupRepo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list groups: %w", err)
+	}
+
+	// Build group map for quick lookup
+	groupMap := make(map[int64]*Group, len(groups))
+	for i := range groups {
+		groupMap[groups[i].ID] = &groups[i]
+	}
+
+	// Get user's custom rates
+	rates, err := s.userRepo.GetUserGroupRates(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user group rates: %w", err)
+	}
+
+	// Build result: only include groups the user is allowed to use
+	var items []UserGroupRateItem
+	if len(user.AllowedGroups) > 0 {
+		// User has explicit allowed groups
+		for _, gid := range user.AllowedGroups {
+			g, ok := groupMap[gid]
+			if !ok {
+				continue
+			}
+			items = append(items, UserGroupRateItem{
+				GroupID:     g.ID,
+				GroupName:   g.Name,
+				DefaultRate: g.RateMultiplier,
+				CustomRate:  rates[gid],
+			})
+		}
+	} else {
+		// User can use all non-exclusive groups
+		for _, g := range groups {
+			if g.IsExclusive {
+				continue
+			}
+			items = append(items, UserGroupRateItem{
+				GroupID:     g.ID,
+				GroupName:   g.Name,
+				DefaultRate: g.RateMultiplier,
+				CustomRate:  rates[g.ID],
+			})
+		}
+	}
+
+	return items, nil
+}
+
+// UpdateUserGroupRates updates per-user custom rate multiplier overrides.
+func (s *adminServiceImpl) UpdateUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	// Validate rates: must be >= 0
+	for groupID, rate := range rates {
+		if rate != nil && *rate < 0 {
+			return fmt.Errorf("rate_multiplier for group %d must be >= 0, got %f", groupID, *rate)
+		}
+	}
+
+	// Verify user exists
+	if _, err := s.userRepo.GetByID(ctx, userID); err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+
+	if err := s.userRepo.SetUserGroupRates(ctx, userID, rates); err != nil {
+		return fmt.Errorf("set user group rates: %w", err)
+	}
+
+	// Invalidate auth cache so new rates take effect immediately
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
+	}
+
+	return nil
 }

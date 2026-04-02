@@ -38,6 +38,11 @@ type UserRepository interface {
 	UpdateConcurrency(ctx context.Context, id int64, amount int) error
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
 	RemoveGroupFromAllowedGroups(ctx context.Context, groupID int64) (int64, error)
+
+	// Per-user group rate multiplier overrides
+	GetUserGroupRates(ctx context.Context, userID int64) (map[int64]*float64, error)
+	SetUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error
+	GetUserGroupRate(ctx context.Context, userID int64, groupID int64) (*float64, error)
 }
 
 // UpdateProfileRequest 更新用户资料请求

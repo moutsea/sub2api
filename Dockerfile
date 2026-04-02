@@ -8,7 +8,7 @@
 
 ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.25.5-alpine
-ARG ALPINE_IMAGE=alpine:3.20
+ARG ALPINE_IMAGE=alpine:3.21
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 
@@ -17,10 +17,21 @@ ARG GOSUMDB=sum.golang.google.cn
 # -----------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS frontend-builder
 
+# Proxy support: build-args → env vars for RUN commands (corepack, pnpm, etc.)
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    ALL_PROXY=${ALL_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
 WORKDIR /app/frontend
 
-# Install pnpm (pinned version to avoid network issues with @latest)
-RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
+# Install pnpm (use npm with mirror to avoid corepack network issues)
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm install -g pnpm@10.13.1
 
 # Install dependencies first (better caching)
 COPY frontend/package.json frontend/pnpm-lock.yaml ./

@@ -26,6 +26,7 @@ type RateLimitService struct {
 	tokenCacheInvalidator TokenCacheInvalidator
 	usageCacheMu          sync.RWMutex
 	usageCache            map[int64]*geminiUsageCacheEntry
+
 }
 
 type geminiUsageCacheEntry struct {
@@ -41,6 +42,7 @@ const (
 	openAI429Fallback        = 60 * time.Second
 	kiro429CreditLimit5m     = 2 * time.Minute // upstream says "5-minute credit limit exceeded"
 	kiro429DefaultFallback   = 1 * time.Minute // other Kiro 429 errors
+
 )
 
 // NewRateLimitService 创建RateLimitService实例
@@ -73,8 +75,10 @@ func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvali
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) (shouldDisable bool) {
-	// Kiro apikey accounts: skip all error handling (status is always active)
-	if account.IsKiro() && account.IsKiroApiKey() {
+	// Apikey accounts (Kiro / OpenAI): never enter cooldown or get disabled.
+	// These accounts may point to an upstream pool; all errors are treated as transient.
+	isApiKeyPool := (account.IsKiro() && account.IsKiroApiKey()) || (account.IsOpenAI() && account.IsOpenAIApiKey())
+	if isApiKeyPool {
 		return false
 	}
 
@@ -321,6 +325,7 @@ func (s *RateLimitService) getGeminiUsageTotals(accountID int64, windowStart, no
 	}
 	return entry.totals, true
 }
+
 
 func (s *RateLimitService) setGeminiUsageTotals(accountID int64, windowStart, now time.Time, totals GeminiUsageTotals) {
 	s.usageCacheMu.Lock()

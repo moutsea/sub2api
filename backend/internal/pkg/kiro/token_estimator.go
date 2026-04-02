@@ -31,7 +31,11 @@ const (
 	LargeToolPerOverhead  = 60
 
 	// Context window limits for Kiro
+	// Default limit for models without 1M support (e.g., opus-4.5, sonnet-4.5, haiku-4.5)
 	KiroContextWindowLimit = 200000
+	// 1M context window limit for 4.6 series models (opus-4.6, sonnet-4.6)
+	// These models natively support 1M context — no separate model ID or beta header needed.
+	KiroContextWindowLimit1M = 1000000
 	// Safety margin: trigger pre-check at 82.5% of the limit
 	// Token estimation has ±10-15% error, CW format transformation adds overhead
 	// (parameter hints, constraint text, history alternation padding), and
@@ -39,6 +43,8 @@ const (
 	KiroContextSafetyMargin = 0.825
 	// Effective limit for pre-check (200k * 0.825 = 165k)
 	KiroContextPreCheckLimit = int(float64(KiroContextWindowLimit) * KiroContextSafetyMargin)
+	// Effective limit for pre-check 1M (1M * 0.825 = 825k)
+	KiroContextPreCheckLimit1M = int(float64(KiroContextWindowLimit1M) * KiroContextSafetyMargin)
 
 	// Input token inflation for client-side context compression trigger
 	// Anthropic API max_tokens is typically 200k
@@ -47,6 +53,33 @@ const (
 	// Set to 0 to disable inflation
 	InputTokenInflation = 0
 )
+
+// Is1MContext returns true if the model supports 1M context window.
+// Currently only claude-opus-4.6 and claude-sonnet-4.6 (the 4.6 series) natively support 1M.
+// Accepts both input formats: dashes (claude-opus-4-6) and dots (claude-opus-4.6).
+func Is1MContext(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "opus-4-6") || strings.Contains(m, "opus-4.6") ||
+		strings.Contains(m, "sonnet-4-6") || strings.Contains(m, "sonnet-4.6")
+}
+
+// GetContextWindowLimit returns the context window limit for the given model.
+// 4.6 series (opus-4.6, sonnet-4.6) → 1M; all others → 200K.
+func GetContextWindowLimit(model string) int {
+	if Is1MContext(model) {
+		return KiroContextWindowLimit1M
+	}
+	return KiroContextWindowLimit
+}
+
+// GetContextPreCheckLimit returns the pre-check limit for the given model.
+// This is the context window limit * safety margin (82.5%).
+func GetContextPreCheckLimit(model string) int {
+	if Is1MContext(model) {
+		return KiroContextPreCheckLimit1M
+	}
+	return KiroContextPreCheckLimit
+}
 
 // EstimateInputTokens estimates the number of input tokens for a Claude request.
 // This accounts for CW format overhead: tool documentation injection into system prompt,
@@ -554,7 +587,7 @@ type CacheEstimation struct {
 // On a cache miss everything goes to cache_creation.
 //
 // contextLimit caps the total cache tokens to the upstream context window size.
-// Pass KiroContextWindowLimit (200K) for CW paths, or 0 to disable capping
+// Pass GetContextWindowLimit(model) for CW paths, or 0 to disable capping
 // (e.g. apikey paths where upstream supports 1M context).
 func (ce CacheEstimation) SplitCacheTokens(cacheResult CacheResult, contextLimit int) (cacheRead, cacheCreation int) {
 	if !ce.MeetsCacheThreshold {

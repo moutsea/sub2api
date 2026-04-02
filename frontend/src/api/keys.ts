@@ -18,10 +18,15 @@ export async function list(
   pageSize: number = 10,
   options?: {
     signal?: AbortSignal
+    groupId?: number | null
   }
 ): Promise<PaginatedResponse<ApiKey>> {
+  const params: Record<string, any> = { page, page_size: pageSize }
+  if (options?.groupId !== undefined && options.groupId !== null) {
+    params.group_id = options.groupId
+  }
   const { data } = await apiClient.get<PaginatedResponse<ApiKey>>('/keys', {
-    params: { page, page_size: pageSize },
+    params,
     signal: options?.signal
   })
   return data

@@ -229,8 +229,17 @@ func (r *apiKeyRepository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
+func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
 	q := r.activeQuery().Where(apikey.UserIDEQ(userID))
+
+	// 按分组过滤：nil=不过滤，0=无分组（group_id IS NULL），>0=指定分组
+	if groupID != nil {
+		if *groupID == 0 {
+			q = q.Where(apikey.GroupIDIsNil())
+		} else {
+			q = q.Where(apikey.GroupIDEQ(*groupID))
+		}
+	}
 
 	total, err := q.Count(ctx)
 	if err != nil {

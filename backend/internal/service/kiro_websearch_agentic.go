@@ -444,13 +444,22 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("get access_token failed: %w", err)
 	}
 
-	// Get profile ARN
+	// Get profile ARN (re-read from db if snapshot is stale)
 	profileArn := account.GetKiroProfileArn()
+	if profileArn == "" && s.accountRepo != nil {
+		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && freshAccount != nil {
+			profileArn = freshAccount.GetKiroProfileArn()
+		}
+	}
 
 	// Resolve URL images and compress before CW transformation.
 	// These modify claudeReq in-place (intentional — avoids redundant processing in subsequent iterations).
+	// Skip compression for 1M context models (4.6 series) which have 4MB body limit.
 	kiro.ResolveURLImagesInRequest(claudeReq)
-	kiro.CompressImagesInRequest(claudeReq)
+	if !kiro.Is1MContext(claudeReq.Model) {
+		kiro.CompressImagesInRequest(claudeReq)
+	}
 
 	// Transform to CodeWhisperer format
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
@@ -464,10 +473,11 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("marshal cw request: %w", err)
 	}
 
-	// Body size check and truncation (CW hard limit ~810KB, same as Forward())
-	if len(cwReqBody) > kiroMaxCWRequestBodySize {
-		log.Printf("%s body_oversized size=%d limit=%d, attempting truncation", prefix, len(cwReqBody), kiroMaxCWRequestBodySize)
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, kiroMaxCWRequestBodySize)
+	// Body size check and truncation (model-aware: 4.6 series allows up to 4MB, others ~810KB)
+	maxBodySize := getMaxCWBodySize(claudeReq.Model)
+	if len(cwReqBody) > maxBodySize {
+		log.Printf("%s body_oversized size=%d limit=%d, attempting truncation", prefix, len(cwReqBody), maxBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxBodySize)
 		if truncErr != nil {
 			log.Printf("%s body_truncation_failed error=%v", prefix, truncErr)
 			return nil, fmt.Errorf("request body too large (%d bytes) and truncation failed: %w", len(cwReqBody), truncErr)
@@ -478,8 +488,8 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	}
 
 	// Final safety check: if still too large after truncation, reject (defense-in-depth)
-	if len(cwReqBody) > kiroMaxCWRequestBodySize {
-		log.Printf("%s body_still_too_large after truncation size=%d limit=%d", prefix, len(cwReqBody), kiroMaxCWRequestBodySize)
+	if len(cwReqBody) > maxBodySize {
+		log.Printf("%s body_still_too_large after truncation size=%d limit=%d", prefix, len(cwReqBody), maxBodySize)
 		return nil, fmt.Errorf("request body still too large (%d bytes) after truncation", len(cwReqBody))
 	}
 
@@ -526,6 +536,9 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			if ep.AmzTarget != "" {
 				upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
 			}
+
+			// Apply request jitter before upstream call to prevent thundering herd
+			s.applyRequestJitter(ctx)
 
 			resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 			if err != nil {
@@ -659,7 +672,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 						strings.Contains(msgLower, "content_length") {
 						return nil, &ContextTooLongError{
 							EstimatedTokens: 0,
-							Limit:           kiro.KiroContextWindowLimit,
+							Limit:           kiro.GetContextWindowLimit(claudeReq.Model),
 						}
 					}
 					return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, upstreamMsg)

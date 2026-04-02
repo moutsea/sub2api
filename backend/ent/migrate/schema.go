@@ -679,6 +679,7 @@ var (
 	}
 	// UserAllowedGroupsColumns holds the columns for the "user_allowed_groups" table.
 	UserAllowedGroupsColumns = []*schema.Column{
+		{Name: "rate_multiplier", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "user_id", Type: field.TypeInt64},
 		{Name: "group_id", Type: field.TypeInt64},
@@ -687,17 +688,17 @@ var (
 	UserAllowedGroupsTable = &schema.Table{
 		Name:       "user_allowed_groups",
 		Columns:    UserAllowedGroupsColumns,
-		PrimaryKey: []*schema.Column{UserAllowedGroupsColumns[1], UserAllowedGroupsColumns[2]},
+		PrimaryKey: []*schema.Column{UserAllowedGroupsColumns[2], UserAllowedGroupsColumns[3]},
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "user_allowed_groups_users_user",
-				Columns:    []*schema.Column{UserAllowedGroupsColumns[1]},
+				Columns:    []*schema.Column{UserAllowedGroupsColumns[2]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "user_allowed_groups_groups_group",
-				Columns:    []*schema.Column{UserAllowedGroupsColumns[2]},
+				Columns:    []*schema.Column{UserAllowedGroupsColumns[3]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -706,7 +707,7 @@ var (
 			{
 				Name:    "userallowedgroup_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{UserAllowedGroupsColumns[2]},
+				Columns: []*schema.Column{UserAllowedGroupsColumns[3]},
 			},
 		},
 	}

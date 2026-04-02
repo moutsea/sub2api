@@ -41,18 +41,18 @@ var codexModelMap = map[string]string{
 	"gpt-5.2-codex-medium":      "gpt-5.2-codex",
 	"gpt-5.2-codex-high":        "gpt-5.2-codex",
 	"gpt-5.2-codex-xhigh":       "gpt-5.2-codex",
-	// gpt-5.3 系列在 ChatGPT OAuth 端已不可用，统一映射到 gpt-5.2 系列。
-	"gpt-5.3":                   "gpt-5.2",
-	"gpt-5.3-none":              "gpt-5.2",
-	"gpt-5.3-low":               "gpt-5.2",
-	"gpt-5.3-medium":            "gpt-5.2",
-	"gpt-5.3-high":              "gpt-5.2",
-	"gpt-5.3-xhigh":             "gpt-5.2",
-	"gpt-5.3-codex":             "gpt-5.2-codex",
-	"gpt-5.3-codex-low":         "gpt-5.2-codex",
-	"gpt-5.3-codex-medium":      "gpt-5.2-codex",
-	"gpt-5.3-codex-high":        "gpt-5.2-codex",
-	"gpt-5.3-codex-xhigh":       "gpt-5.2-codex",
+	// gpt-5.3 系列：OAuth 端只认 gpt-5.3-codex，裸名 gpt-5.3 不可用，统一映射到 codex 变体。
+	"gpt-5.3":                   "gpt-5.3-codex",
+	"gpt-5.3-none":              "gpt-5.3-codex",
+	"gpt-5.3-low":               "gpt-5.3-codex",
+	"gpt-5.3-medium":            "gpt-5.3-codex",
+	"gpt-5.3-high":              "gpt-5.3-codex",
+	"gpt-5.3-xhigh":             "gpt-5.3-codex",
+	"gpt-5.3-codex":             "gpt-5.3-codex",
+	"gpt-5.3-codex-low":         "gpt-5.3-codex",
+	"gpt-5.3-codex-medium":      "gpt-5.3-codex",
+	"gpt-5.3-codex-high":        "gpt-5.3-codex",
+	"gpt-5.3-codex-xhigh":       "gpt-5.3-codex",
 	"gpt-5.4":                   "gpt-5.4",
 	"gpt-5.4-none":              "gpt-5.4",
 	"gpt-5.4-low":               "gpt-5.4",
@@ -216,12 +216,11 @@ func normalizeCodexModel(model string) string {
 	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
 		return "gpt-5.4"
 	}
-	// gpt-5.3 系列不再可用，回退到 gpt-5.2
 	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
-		return "gpt-5.2-codex"
+		return "gpt-5.3-codex"
 	}
 	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
-		return "gpt-5.2"
+		return "gpt-5.3-codex"
 	}
 	if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
 		return "gpt-5.2-codex"
@@ -302,12 +301,17 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 }
 
 // stripCodexModelSuffix removes the "-codex" segment from GPT model names.
-// ChatGPT OAuth endpoint (chatgpt.com/backend-api/codex/responses) no longer
-// accepts models with the "-codex" suffix; the base model name must be used instead.
-// e.g. "gpt-5.3-codex" → "gpt-5.3", "gpt-5.1-codex-max" → "gpt-5.1-max"
+// stripCodexModelSuffix removes the "-codex" infix for models where the ChatGPT
+// OAuth endpoint requires the base name (e.g. gpt-5.4-codex → gpt-5.4).
+// gpt-5.3 系列在 OAuth 端必须保留 -codex 后缀，否则上游返回错误。
 // Non-GPT models are returned unchanged.
 func stripCodexModelSuffix(model string) string {
 	if !strings.HasPrefix(model, "gpt-") {
+		return model
+	}
+	// gpt-5.3 系列保留 -codex 后缀（OAuth 端只认 gpt-5.3-codex，不认 gpt-5.3）
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "gpt-5.3") {
 		return model
 	}
 	return strings.Replace(model, "-codex", "", 1)
@@ -328,7 +332,17 @@ func getOAuthModelFallback(currentModel string) string {
 		return ""
 	}
 
-	// gpt-5.4 / gpt-5.3 → gpt-5.2 (保留 -codex 后缀结构以便下游 strip)
+	// 已经是 5.3，无需回退（5.3 已恢复可用）
+	if strings.Contains(lower, "gpt-5.3") {
+		return ""
+	}
+
+	// gpt-5.4 → gpt-5.3-codex（OAuth 端只认 gpt-5.3-codex，不认裸名 gpt-5.3）
+	if strings.Contains(lower, "gpt-5.4") {
+		return "gpt-5.3-codex"
+	}
+
+	// 其他未知高版本 → gpt-5.2
 	if strings.Contains(lower, "codex") {
 		return "gpt-5.2-codex"
 	}

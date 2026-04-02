@@ -115,7 +115,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	gatewayCache := repository.NewGatewayCache(redisClient)
 	antigravityTokenProvider := service.NewAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, antigravityTokenProvider, rateLimitService, httpUpstream, settingService, accountUsageService, usageCache)
-	kiroGatewayService := service.NewKiroGatewayService(accountRepository, kiroTokenProvider, rateLimitService, httpUpstream, settingService, usageCache, proxyRepository)
+	kiroGatewayService := service.NewKiroGatewayService(accountRepository, kiroTokenProvider, rateLimitService, httpUpstream, settingService, usageCache, proxyRepository, configConfig)
 	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, antigravityGatewayService, kiroGatewayService, httpUpstream, configConfig)
 	concurrencyCache := repository.ProvideConcurrencyCache(redisClient, configConfig)
 	concurrencyService := service.ProvideConcurrencyService(concurrencyCache, accountRepository, configConfig)

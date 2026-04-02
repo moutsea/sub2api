@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"time"
 
 	"github.com/google/uuid"
@@ -157,6 +158,18 @@ func ExtractCreditsInfo(limits *UsageLimits) *KiroCreditsInfo {
 	return info
 }
 
+// usageLimitsOSName returns the OS identifier for usage limits User-Agent headers.
+func usageLimitsOSName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "darwin#24.6.0"
+	case "windows":
+		return "windows#10.0"
+	default:
+		return "linux#6.1.0"
+	}
+}
+
 // UsageLimitsFetcher fetches usage limits from CodeWhisperer API
 type UsageLimitsFetcher struct {
 	httpClient *http.Client
@@ -191,9 +204,12 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
 
-	// Set headers (aligned with kiro.rs AWSQ)
-	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.27 KiroGateway")
-	req.Header.Set("User-Agent", "aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroGateway")
+	// Set headers — dynamically generate OS identifier from runtime
+	osName := usageLimitsOSName()
+	kiroVersion := "1.6.0"
+	machineID := GenerateRandomMachineID()
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/%s lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", osName, kiroVersion, machineID))
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroVersion, machineID))
 	req.Header.Set("Host", fmt.Sprintf("q.%s.amazonaws.com", region))
 	req.Header.Set("Connection", "close")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())

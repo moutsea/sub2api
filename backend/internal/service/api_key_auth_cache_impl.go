@@ -167,6 +167,17 @@ func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey st
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	apiKey.Key = key
+
+	// Load per-user group rate override for the API key's group
+	if apiKey.User != nil && apiKey.GroupID != nil {
+		rate, err := s.userRepo.GetUserGroupRate(ctx, apiKey.User.ID, *apiKey.GroupID)
+		if err != nil {
+			log.Printf("[AuthCache] Failed to load user group rate for user %d group %d: %v", apiKey.User.ID, *apiKey.GroupID, err)
+		} else if rate != nil {
+			apiKey.User.AllowedGroupRates = map[int64]*float64{*apiKey.GroupID: rate}
+		}
+	}
+
 	snapshot := s.snapshotFromAPIKey(apiKey)
 	if snapshot == nil {
 		return nil, fmt.Errorf("get api key: %w", ErrAPIKeyNotFound)
@@ -203,11 +214,12 @@ func (s *APIKeyService) snapshotFromAPIKey(apiKey *APIKey) *APIKeyAuthSnapshot {
 		QuotaLimitUSD: apiKey.QuotaLimitUSD,
 		QuotaUsedUSD:  apiKey.QuotaUsedUSD,
 		User: APIKeyAuthUserSnapshot{
-			ID:          apiKey.User.ID,
-			Status:      apiKey.User.Status,
-			Role:        apiKey.User.Role,
-			Balance:     apiKey.User.Balance,
-			Concurrency: apiKey.User.Concurrency,
+			ID:                apiKey.User.ID,
+			Status:            apiKey.User.Status,
+			Role:              apiKey.User.Role,
+			Balance:           apiKey.User.Balance,
+			Concurrency:       apiKey.User.Concurrency,
+			AllowedGroupRates: apiKey.User.AllowedGroupRates,
 		},
 	}
 	if apiKey.Group != nil {
@@ -248,11 +260,12 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		QuotaLimitUSD: snapshot.QuotaLimitUSD,
 		QuotaUsedUSD:  snapshot.QuotaUsedUSD,
 		User: &User{
-			ID:          snapshot.User.ID,
-			Status:      snapshot.User.Status,
-			Role:        snapshot.User.Role,
-			Balance:     snapshot.User.Balance,
-			Concurrency: snapshot.User.Concurrency,
+			ID:                snapshot.User.ID,
+			Status:            snapshot.User.Status,
+			Role:              snapshot.User.Role,
+			Balance:           snapshot.User.Balance,
+			Concurrency:       snapshot.User.Concurrency,
+			AllowedGroupRates: snapshot.User.AllowedGroupRates,
 		},
 	}
 	if snapshot.Group != nil {

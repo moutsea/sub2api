@@ -16,10 +16,11 @@ type User struct {
 	Balance       float64
 	Concurrency   int
 	Status        string
-	AllowedGroups []int64
-	TokenVersion  int64 // Incremented on password change to invalidate existing tokens
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	AllowedGroups     []int64
+	AllowedGroupRates map[int64]*float64 // Per-group custom rate_multiplier overrides (groupID -> rate, nil = use group default)
+	TokenVersion      int64              // Incremented on password change to invalidate existing tokens
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 
 	APIKeys       []APIKey
 	Subscriptions []UserSubscription
@@ -60,4 +61,17 @@ func (u *User) SetPassword(password string) error {
 
 func (u *User) CheckPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) == nil
+}
+
+// GetGroupRateMultiplier returns the user's custom rate multiplier for a group.
+// Returns (customRate, true) if a per-user override exists, or (0, false) if not.
+func (u *User) GetGroupRateMultiplier(groupID int64) (float64, bool) {
+	if u.AllowedGroupRates == nil {
+		return 0, false
+	}
+	rate, ok := u.AllowedGroupRates[groupID]
+	if !ok || rate == nil {
+		return 0, false
+	}
+	return *rate, true
 }

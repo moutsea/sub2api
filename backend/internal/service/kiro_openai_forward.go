@@ -44,9 +44,12 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	originalModel := claudeReq.Model
 	mappedModel := kiro.GetModelID(originalModel)
 
-	// Set default max_tokens if not provided
+	// Set default max_tokens if not provided.
+	// AWSQ thinking mode shares the output token budget between thinking and text.
+	// A too-small max_tokens causes thinking to exhaust the budget with no room for text output.
+	// Aligned with kiro.rs model list default (64000).
 	if claudeReq.MaxTokens <= 0 {
-		claudeReq.MaxTokens = 16384
+		claudeReq.MaxTokens = 64000
 	}
 
 	// 2. Cache estimation
@@ -61,10 +64,11 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	// 3. Token pre-check and truncation
+	contextPreCheckLimit := kiro.GetContextPreCheckLimit(originalModel)
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if estimatedTokens > kiro.KiroContextPreCheckLimit {
+	if estimatedTokens > contextPreCheckLimit {
 		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
-			prefix, estimatedTokens, kiro.KiroContextPreCheckLimit)
+			prefix, estimatedTokens, contextPreCheckLimit)
 
 		truncatedReq, truncated := kiro.TruncateAndRetry(claudeReq)
 		if truncated {
@@ -94,12 +98,21 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	// 5b. Compress oversized images before CW transformation
-	if kiro.CompressImagesInRequest(claudeReq) {
-		log.Printf("%s images compressed for body size reduction", prefix)
+	// Skip for 1M context models (4.6 series) which have 4MB body limit.
+	if !kiro.Is1MContext(originalModel) {
+		if kiro.CompressImagesInRequest(claudeReq) {
+			log.Printf("%s images compressed for body size reduction", prefix)
+		}
 	}
 
-	// 6. Transform to CodeWhisperer format
+	// 6. Transform to CodeWhisperer format (re-read profileArn from db if snapshot is stale)
 	profileArn := account.GetKiroProfileArn()
+	if profileArn == "" && s.accountRepo != nil {
+		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && freshAccount != nil {
+			profileArn = freshAccount.GetKiroProfileArn()
+		}
+	}
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
 	if err != nil {
 		return nil, fmt.Errorf("transform request: %w", err)
@@ -111,11 +124,12 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	// 7. Body size check and truncation
-	if len(reqBody) > kiroMaxCWRequestBodySize {
+	maxBodySize := getMaxCWBodySize(originalModel)
+	if len(reqBody) > maxBodySize {
 		log.Printf("%s status=request_body_oversized body_size=%d limit=%d, attempting truncation",
-			prefix, len(reqBody), kiroMaxCWRequestBodySize)
+			prefix, len(reqBody), maxBodySize)
 
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, kiroMaxCWRequestBodySize)
+		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxBodySize)
 		if truncErr != nil {
 			return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
 				"Input context too long. Please reduce context length.")
@@ -124,7 +138,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		reqBody = truncatedBody
 	}
 
-	if len(reqBody) > kiroMaxCWRequestBodySize {
+	if len(reqBody) > maxBodySize {
 		return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
 			"Input context too long. Please reduce context length.")
 	}
@@ -167,6 +181,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 			if ep.AmzTarget != "" {
 				upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
 			}
+
+			// Apply request jitter before upstream call to prevent thundering herd
+			s.applyRequestJitter(ctx)
 
 			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 			if err != nil {
@@ -274,8 +291,8 @@ endpointDone:
 	toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
 
 	// Calculate cache tokens (cache_read + cache_creation coexist)
-	// CW path: cap to 200K context window
-	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.KiroContextWindowLimit)
+	// CW path: cap to model-specific context window
+	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.GetContextWindowLimit(originalModel))
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int

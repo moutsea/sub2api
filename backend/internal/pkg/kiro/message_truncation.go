@@ -14,8 +14,11 @@ import (
 // TruncationConfig holds configuration for message truncation
 type TruncationConfig struct {
 	// TargetTokens is the target token count after truncation
-	// Should be less than KiroContextPreCheckLimit to leave room for response
+	// Should be less than PreCheckLimit to leave room for response
 	TargetTokens int
+	// PreCheckLimit is the context pre-check limit (model-aware).
+	// If zero, defaults to KiroContextPreCheckLimit (200K * 0.825).
+	PreCheckLimit int
 	// MinMessagesToKeep is the minimum number of messages to keep (from the end)
 	// This ensures we don't truncate too aggressively
 	MinMessagesToKeep int
@@ -25,9 +28,18 @@ type TruncationConfig struct {
 
 // DefaultTruncationConfig returns the default truncation configuration
 func DefaultTruncationConfig() TruncationConfig {
+	return TruncationConfigForModel("")
+}
+
+// TruncationConfigForModel returns truncation configuration for the given model.
+// 4.6 series models use 1M context window limits; others use 200K.
+func TruncationConfigForModel(model string) TruncationConfig {
+	limit := GetContextWindowLimit(model)
+	preCheck := GetContextPreCheckLimit(model)
 	return TruncationConfig{
 		// Target 70% of the limit to leave generous room for estimation errors (±10-15%)
-		TargetTokens:      int(float64(KiroContextWindowLimit) * 0.70), // 140k tokens
+		TargetTokens:      int(float64(limit) * 0.70),
+		PreCheckLimit:     preCheck,
 		MinMessagesToKeep: 4, // Keep at least 4 messages (2 turns)
 		EnableLogging:     true,
 	}
@@ -64,13 +76,17 @@ func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]Cl
 
 	// Total tokens = fixed (system+tools+overhead) + all message tokens
 	currentTokens := fixedTokens + suffixSum[0]
-	if currentTokens <= KiroContextPreCheckLimit {
+	preCheckLimit := config.PreCheckLimit
+	if preCheckLimit <= 0 {
+		preCheckLimit = KiroContextPreCheckLimit
+	}
+	if currentTokens <= preCheckLimit {
 		return req.Messages, false
 	}
 
 	if config.EnableLogging {
 		log.Printf("[kiro] message truncation triggered: estimated %d tokens, limit %d",
-			currentTokens, KiroContextPreCheckLimit)
+			currentTokens, preCheckLimit)
 	}
 
 	// Don't truncate if we have very few messages
@@ -115,10 +131,10 @@ func TruncateMessagesIfNeeded(req *ClaudeRequest, config TruncationConfig) ([]Cl
 		return messages[point:], true
 	}
 
-	// Couldn't reach TargetTokens — try to at least get under KiroContextPreCheckLimit
-	// Binary search for the earliest point where tokens <= KiroContextPreCheckLimit
+	// Couldn't reach TargetTokens — try to at least get under preCheckLimit
+	// Binary search for the earliest point where tokens <= preCheckLimit
 	limitIdx := sort.Search(len(truncationPoints), func(i int) bool {
-		return tokenAt(truncationPoints[i]) <= KiroContextPreCheckLimit
+		return tokenAt(truncationPoints[i]) <= preCheckLimit
 	})
 
 	if limitIdx < len(truncationPoints) {
@@ -334,7 +350,7 @@ func TruncateAndRetry(req *ClaudeRequest) (*ClaudeRequest, bool) {
 		return nil, false
 	}
 
-	config := DefaultTruncationConfig()
+	config := TruncationConfigForModel(req.Model)
 	truncatedMessages, truncated := TruncateMessagesIfNeeded(req, config)
 
 	if !truncated {

@@ -4118,10 +4118,14 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	account := input.Account
 	subscription := input.Subscription
 
-	// 获取费率倍数
+	// 获取费率倍数：用户自定义 > 分组默认 > 全局默认
 	multiplier := s.cfg.Default.RateMultiplier
 	if apiKey.GroupID != nil && apiKey.Group != nil {
 		multiplier = apiKey.Group.RateMultiplier
+		// 用户自定义分组倍率覆盖
+		if userRate, ok := user.GetGroupRateMultiplier(*apiKey.GroupID); ok {
+			multiplier = userRate
+		}
 	}
 
 	var cost *CostBreakdown

@@ -45,8 +45,9 @@ type UpdateAPIKeyRequest struct {
 	ClearQuota    bool     `json:"clear_quota"`
 }
 
-// List handles listing user's API keys with pagination
-// GET /api/v1/api-keys
+// List handles listing user's API keys with pagination and optional group filter
+// GET /api/v1/api-keys?page=1&page_size=10&group_id=123
+// group_id: 不传=全部, 0=无分组, >0=指定分组
 func (h *APIKeyHandler) List(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
@@ -57,7 +58,18 @@ func (h *APIKeyHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
 
-	keys, result, err := h.apiKeyService.List(c.Request.Context(), subject.UserID, params)
+	// 解析可选的 group_id 过滤参数
+	var groupID *int64
+	if gidStr := c.Query("group_id"); gidStr != "" {
+		gid, err := strconv.ParseInt(gidStr, 10, 64)
+		if err != nil {
+			response.BadRequest(c, "Invalid group_id parameter")
+			return
+		}
+		groupID = &gid
+	}
+
+	keys, result, err := h.apiKeyService.List(c.Request.Context(), subject.UserID, groupID, params)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

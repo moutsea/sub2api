@@ -19,7 +19,10 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: cfjwlchangji/sub2api:v1.1.1.4
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: sub2api:local
     container_name: sub2api
     restart: unless-stopped
     ulimits:
