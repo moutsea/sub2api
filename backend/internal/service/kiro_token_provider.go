@@ -59,6 +59,7 @@ const (
 type KiroTokenState struct {
 	AccountID       int64
 	AccessToken     string
+	ProfileArn      string // Cached profile ARN from token refresh (avoids async DB write race)
 	ExpiresAt       time.Time
 	Status          KiroTokenStatus
 	CooldownUntil   time.Time
@@ -199,6 +200,9 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 	state.Status = KiroTokenStatusActive
 	state.RefreshFailures = 0
 	state.ErrorMsg = ""
+	if tokenInfo.ProfileArn != "" {
+		state.ProfileArn = tokenInfo.ProfileArn
+	}
 
 	// Clear backoff on success
 	p.refreshBackoff.Delete(account.ID)
@@ -228,6 +232,11 @@ func (p *KiroTokenProvider) initializeStateFromAccount(state *KiroTokenState, ac
 	// Load access token from database if available
 	if accessToken := account.GetKiroAccessToken(); accessToken != "" {
 		state.AccessToken = accessToken
+	}
+
+	// Load profile ARN from database if available
+	if profileArn := account.GetKiroProfileArn(); profileArn != "" {
+		state.ProfileArn = profileArn
 	}
 
 	// Load expires_at from database if available
@@ -685,6 +694,19 @@ func (p *KiroTokenProvider) GetTokenState(accountID int64) *KiroTokenState {
 	return nil
 }
 
+// GetProfileArn returns the cached profile ARN for an account.
+// This avoids the race condition where async DB write from token refresh
+// hasn't completed yet when the request reads profileArn.
+func (p *KiroTokenProvider) GetProfileArn(accountID int64) string {
+	if state, ok := p.cache.Load(accountID); ok {
+		s := state.(*KiroTokenState)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.ProfileArn
+	}
+	return ""
+}
+
 // updateAccountCredentials updates account credentials in database
 func (p *KiroTokenProvider) updateAccountCredentials(accountID int64, tokenInfo *KiroTokenInfo) {
 	if p.accountRepo == nil || tokenInfo == nil {
@@ -899,6 +921,9 @@ func (p *KiroTokenProvider) ForceRefreshToken(ctx context.Context, account *Acco
 	state.Status = KiroTokenStatusActive
 	state.RefreshFailures = 0
 	state.ErrorMsg = ""
+	if tokenInfo.ProfileArn != "" {
+		state.ProfileArn = tokenInfo.ProfileArn
+	}
 
 	// Clear backoff on success
 	p.refreshBackoff.Delete(account.ID)

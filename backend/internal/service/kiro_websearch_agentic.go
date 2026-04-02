@@ -444,8 +444,14 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("get access_token failed: %w", err)
 	}
 
-	// Get profile ARN (re-read from db if snapshot is stale)
-	profileArn := account.GetKiroProfileArn()
+	// Get profile ARN (in-memory cache > snapshot > db)
+	profileArn := ""
+	if s.tokenProvider != nil {
+		profileArn = s.tokenProvider.GetProfileArn(account.ID)
+	}
+	if profileArn == "" {
+		profileArn = account.GetKiroProfileArn()
+	}
 	if profileArn == "" && s.accountRepo != nil {
 		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
 		if err == nil && freshAccount != nil {
@@ -498,7 +504,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account, execFreeTier)
-	kiroVersion := "1.6.0"
+	kiroVersion := "0.11.107"
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
 	proxyURL := s.resolveProxyURL(ctx, account, execFreeTier)
@@ -659,10 +665,19 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				})
 				log.Printf("%s endpoint=%s status=%d msg=%s", prefix, ep.Name, resp.StatusCode, upstreamMsg)
 
-				// 400 is deterministic — both endpoints will reject, no point failing over
+				// 400 is usually deterministic — both endpoints will reject, no point failing over.
+				// Exception: "profileArn is required" is endpoint-specific (AWSQ requires it, CW may not).
 				if resp.StatusCode == http.StatusBadRequest {
-					// Check for context-too-long errors
 					msgLower := strings.ToLower(upstreamMsg)
+
+					// profileArn-related 400: failover to next endpoint
+					if strings.Contains(msgLower, "profilearn is required") || strings.Contains(msgLower, "profilearn") {
+						log.Printf("%s endpoint=%s status=400 profileArn_required, trying next endpoint", prefix, ep.Name)
+						lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+						break
+					}
+
+					// Check for context-too-long errors
 					if strings.Contains(msgLower, "input too long") ||
 						strings.Contains(msgLower, "is too long") ||
 						strings.Contains(msgLower, "too large") ||

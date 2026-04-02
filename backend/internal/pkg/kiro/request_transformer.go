@@ -16,6 +16,55 @@ const (
 	ToolDocThresholdLength        = 500 // Threshold for moving description to system prompt
 )
 
+// normalizeJSONSchema fixes common type issues in MCP tool JSON schemas.
+// Claude Code / MCP tools occasionally produce `required: null`, `properties: null`, etc.
+// which cause AWSQ to return 400 "Improperly formed request".
+// Aligned with kiro.rs normalize_json_schema().
+func normalizeJSONSchema(schema map[string]any) map[string]any {
+	if schema == nil {
+		return map[string]any{
+			"type":                 "object",
+			"properties":          map[string]any{},
+			"required":            []any{},
+			"additionalProperties": true,
+		}
+	}
+
+	// type: must be a non-empty string
+	if t, ok := schema["type"].(string); !ok || t == "" {
+		schema["type"] = "object"
+	}
+
+	// properties: must be an object
+	if _, ok := schema["properties"].(map[string]any); !ok {
+		schema["properties"] = map[string]any{}
+	}
+
+	// required: must be a string array (filter out non-strings, replace null)
+	switch req := schema["required"].(type) {
+	case []any:
+		filtered := make([]any, 0, len(req))
+		for _, v := range req {
+			if s, ok := v.(string); ok && s != "" {
+				filtered = append(filtered, s)
+			}
+		}
+		schema["required"] = filtered
+	default:
+		schema["required"] = []any{}
+	}
+
+	// additionalProperties: allow bool or object, default to true
+	switch schema["additionalProperties"].(type) {
+	case bool, map[string]any:
+		// valid, keep as-is
+	default:
+		schema["additionalProperties"] = true
+	}
+
+	return schema
+}
+
 // generateParameterHints extracts parameter requirements from input_schema and generates hints
 // This helps the model understand what parameters are required/optional for each tool
 func generateParameterHints(inputSchema map[string]any) string {
@@ -1261,13 +1310,7 @@ func processTools(tools []ClaudeTool, skipLimits bool) []ToolItem {
 			description += "\n<instruction>ALWAYS use Write/Edit tools for file modifications. Ensure all required parameters are provided correctly.</instruction>"
 		}
 
-		inputSchema := tool.InputSchema
-		if inputSchema == nil || inputSchema["type"] == nil {
-			inputSchema = map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			}
-		}
+		inputSchema := normalizeJSONSchema(tool.InputSchema)
 
 		// Generate parameter hints from schema and append to description
 		// This helps the model understand required/optional parameters

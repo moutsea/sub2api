@@ -58,6 +58,8 @@ func getMaxCWBodySize(model string) int {
 // getKiroEndpoints returns ordered endpoint list based on account config.
 // Non-1M models share the ~810KB body size limit; 4.6 series supports much larger bodies.
 // Priority: preferred_endpoint config > default (AWSQ first, CW fallback).
+// AWSQ supports thinking; CW does not. Always prefer AWSQ.
+// If AWSQ returns 400 for profileArn, the caller handles failover to CW.
 func getKiroEndpoints(account *Account) []kiroEndpointConfig {
 	// Request routing always uses us-east-1 regardless of account's token region.
 	// Verified: EU accounts (e.g. eu-north-1 IdC) can send requests to us-east-1 endpoints.
@@ -548,9 +550,16 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Get profile ARN.
-	// Scheduler snapshot may hold stale credentials (before token refresh wrote profile_arn).
-	// If empty, re-read from database to get the latest value.
-	profileArn := account.GetKiroProfileArn()
+	// Priority: in-memory cache (synchronous with token refresh) > account snapshot > database.
+	// The in-memory cache eliminates the race condition where async DB write from
+	// token refresh hasn't completed yet when this request reads profileArn.
+	profileArn := ""
+	if s.tokenProvider != nil {
+		profileArn = s.tokenProvider.GetProfileArn(account.ID)
+	}
+	if profileArn == "" {
+		profileArn = account.GetKiroProfileArn()
+	}
 	if profileArn == "" && s.accountRepo != nil {
 		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
 		if err == nil && freshAccount != nil {
@@ -612,7 +621,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account, freeTier)
-	kiroVersion := "1.6.0"
+	kiroVersion := "0.11.107"
 
 	// Endpoint loop: try each endpoint, with retries per endpoint
 	var resp *http.Response
@@ -783,7 +792,16 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					}
 				}
 
-				// 400 errors are deterministic — no point trying the other endpoint
+				// 400 errors are usually deterministic — no point trying the other endpoint.
+				// Exception: "profileArn is required" is endpoint-specific (AWSQ requires it,
+				// CW may not). Failover to next endpoint for these cases.
+				if strings.Contains(errorMsgLower, "profilearn is required") ||
+					strings.Contains(errorMsgLower, "profilearn") {
+					log.Printf("%s endpoint=%s status=400 profileArn_required, trying next endpoint", prefix, ep.Name)
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+					break // try next endpoint
+				}
+
 				return nil, s.writeMappedClaudeError(c, account, resp.StatusCode, resp.Header.Get("x-amzn-requestid"), respBody)
 			}
 
@@ -1037,7 +1055,7 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 		data []byte
 		err  error
 	}
-	chunkCh := make(chan streamChunk, 1)
+	chunkCh := make(chan streamChunk, 32)
 
 	// Background goroutine reads from upstream; sends chunks to channel
 	go func() {
@@ -1693,8 +1711,14 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		return s.testClaudeAPIConnection(ctx, account, accessToken, modelID)
 	}
 
-	// Get profile ARN (re-read from db if snapshot is stale)
-	profileArn := account.GetKiroProfileArn()
+	// Get profile ARN (in-memory cache > snapshot > db)
+	profileArn := ""
+	if s.tokenProvider != nil {
+		profileArn = s.tokenProvider.GetProfileArn(account.ID)
+	}
+	if profileArn == "" {
+		profileArn = account.GetKiroProfileArn()
+	}
 	if profileArn == "" && s.accountRepo != nil {
 		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
 		if err == nil && freshAccount != nil {
@@ -1743,7 +1767,7 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account, testFreeTier)
-	kiroVersion := "1.6.0"
+	kiroVersion := "0.11.107"
 
 	// Try each endpoint
 	var lastErr error

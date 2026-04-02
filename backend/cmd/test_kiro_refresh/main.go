@@ -94,7 +94,7 @@ func main() {
 	cwBody, _ := json.Marshal(cwReq)
 
 	machineID := "test-machine-id"
-	kiroVersion := "1.6.0"
+	kiroVersion := "0.11.107"
 
 	for _, ep := range endpoints {
 		fmt.Printf("\n========== %s ==========\n", ep.name)

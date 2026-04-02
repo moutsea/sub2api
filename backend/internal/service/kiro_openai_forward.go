@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
@@ -105,8 +106,15 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		}
 	}
 
-	// 6. Transform to CodeWhisperer format (re-read profileArn from db if snapshot is stale)
-	profileArn := account.GetKiroProfileArn()
+	// 6. Transform to CodeWhisperer format
+	// Priority: in-memory cache (synchronous with token refresh) > account snapshot > database
+	profileArn := ""
+	if s.tokenProvider != nil {
+		profileArn = s.tokenProvider.GetProfileArn(account.ID)
+	}
+	if profileArn == "" {
+		profileArn = account.GetKiroProfileArn()
+	}
 	if profileArn == "" && s.accountRepo != nil {
 		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
 		if err == nil && freshAccount != nil {
@@ -148,7 +156,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	// 7. Endpoint loop (reuse existing pattern)
 	endpoints := getKiroEndpoints(account)
 	machineID := s.resolveMachineID(account, freeTier)
-	kiroVersion := "1.6.0"
+	kiroVersion := "0.11.107"
 
 	var resp *http.Response
 	var lastErr error
@@ -239,6 +247,15 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+
+				// "profileArn is required" is endpoint-specific — failover to next endpoint
+				errorMsg := strings.ToLower(extractKiroErrorMessage(respBody))
+				if strings.Contains(errorMsg, "profilearn is required") || strings.Contains(errorMsg, "profilearn") {
+					log.Printf("%s endpoint=%s status=400 profileArn_required, trying next endpoint", prefix, ep.Name)
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+					break
+				}
+
 				return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
 					"Bad request: "+extractKiroErrorMessage(respBody))
 			}

@@ -184,7 +184,7 @@ func NewUsageLimitsFetcher(client *http.Client) *UsageLimitsFetcher {
 }
 
 // FetchUsageLimits fetches usage limits from CodeWhisperer API
-func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, region, proxyURL string) (*UsageLimits, error) {
+func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, region, proxyURL string, profileArn ...string) (*UsageLimits, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -195,6 +195,11 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	params.Add("isEmailRequired", "true")
 	params.Add("origin", "AI_EDITOR")
 	params.Add("resourceType", "AGENTIC_REQUEST")
+	// profileArn is optional — kiro.rs passes it when available to avoid
+	// "Value null at 'profileArn' failed to satisfy constraint" errors.
+	if len(profileArn) > 0 && profileArn[0] != "" {
+		params.Add("profileArn", profileArn[0])
+	}
 
 	requestURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
 
@@ -206,7 +211,7 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 
 	// Set headers — dynamically generate OS identifier from runtime
 	osName := usageLimitsOSName()
-	kiroVersion := "1.6.0"
+	kiroVersion := "0.11.107"
 	machineID := GenerateRandomMachineID()
 	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/%s lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", osName, kiroVersion, machineID))
 	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroVersion, machineID))
