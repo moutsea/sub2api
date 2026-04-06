@@ -2,6 +2,7 @@
 package kiro
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -79,21 +80,32 @@ type SubscriptionInfo struct {
 
 // KiroCreditsInfo represents the credits information for a Kiro account
 type KiroCreditsInfo struct {
-	AvailableCredits float64    `json:"available_credits"` // Available credits balance
-	UsedCredits      float64    `json:"used_credits"`      // Used credits
-	TotalCredits     float64    `json:"total_credits"`     // Total credits limit
-	DaysUntilReset   int        `json:"days_until_reset"`  // Days until reset
-	NextResetAt      *time.Time `json:"next_reset_at"`     // Next reset time
-	UserEmail        string     `json:"user_email"`        // User email
-	SubscriptionType string     `json:"subscription_type"` // Subscription type
+	AvailableCredits  float64    `json:"available_credits"`            // Available credits balance
+	UsedCredits       float64    `json:"used_credits"`                 // Used credits
+	TotalCredits      float64    `json:"total_credits"`                // Total credits limit
+	DaysUntilReset    int        `json:"days_until_reset"`             // Days until reset
+	NextResetAt       *time.Time `json:"next_reset_at"`                // Next reset time
+	UserEmail         string     `json:"user_email"`                   // User email
+	SubscriptionType  string     `json:"subscription_type"`            // Subscription type
+	OverageCapable    bool       `json:"overage_capable"`              // Whether subscription supports overage
+	OverageEnabled    bool       `json:"overage_enabled"`              // Whether overage is currently enabled
+	OverageCap        float64    `json:"overage_cap,omitempty"`        // Max overage allowed
+	CurrentOverages   float64    `json:"current_overages,omitempty"`   // Current overage usage
+	OverageCharges    float64    `json:"overage_charges,omitempty"`    // Overage charges incurred
+	OverageRate       float64    `json:"overage_rate,omitempty"`       // Per-unit overage rate
 }
 
-// CalculateAvailableCredits calculates available credits from UsageLimits
-// This follows the same logic as kiro4api's CalculateAvailableCount
+// CalculateAvailableCredits calculates available credits from UsageLimits.
+// When overage is enabled (OVERAGE_CAPABLE + ENABLED), the effective limit
+// extends beyond the base quota by overageCap, so accounts in overage are
+// not incorrectly treated as exhausted.
 func CalculateAvailableCredits(limits *UsageLimits) float64 {
 	if limits == nil {
 		return 0
 	}
+
+	overageCapable := limits.SubscriptionInfo.OverageCapability == "OVERAGE_CAPABLE"
+	overageEnabled := limits.OverageConfiguration.OverageStatus == "ENABLED"
 
 	for _, breakdown := range limits.UsageBreakdownList {
 		if breakdown.ResourceType == "CREDIT" {
@@ -105,6 +117,15 @@ func CalculateAvailableCredits(limits *UsageLimits) float64 {
 			// Add free trial credits if active
 			if breakdown.FreeTrialInfo != nil && breakdown.FreeTrialInfo.FreeTrialStatus == "ACTIVE" {
 				total += breakdown.FreeTrialInfo.UsageLimitWithPrecision - breakdown.FreeTrialInfo.CurrentUsageWithPrecision
+			}
+
+			// When base credits are exhausted but overage is enabled,
+			// add remaining overage capacity
+			if total <= 0 && overageCapable && overageEnabled && breakdown.OverageCapWithPrecision > 0 {
+				overageRemaining := breakdown.OverageCapWithPrecision - breakdown.CurrentOveragesWithPrecision
+				if overageRemaining > 0 {
+					return overageRemaining
+				}
 			}
 
 			if total < 0 {
@@ -127,6 +148,8 @@ func ExtractCreditsInfo(limits *UsageLimits) *KiroCreditsInfo {
 		DaysUntilReset:   limits.DaysUntilReset,
 		UserEmail:        limits.UserInfo.Email,
 		SubscriptionType: limits.SubscriptionInfo.Type,
+		OverageCapable:   limits.SubscriptionInfo.OverageCapability == "OVERAGE_CAPABLE",
+		OverageEnabled:   limits.OverageConfiguration.OverageStatus == "ENABLED",
 	}
 
 	// Calculate next reset time
@@ -147,8 +170,22 @@ func ExtractCreditsInfo(limits *UsageLimits) *KiroCreditsInfo {
 				info.UsedCredits += breakdown.FreeTrialInfo.CurrentUsageWithPrecision
 			}
 
+			// Overage fields
+			info.OverageCap = breakdown.OverageCapWithPrecision
+			info.CurrentOverages = breakdown.CurrentOveragesWithPrecision
+			info.OverageCharges = breakdown.OverageCharges
+			info.OverageRate = breakdown.OverageRate
+
+			// Calculate available credits considering overage
 			info.AvailableCredits = info.TotalCredits - info.UsedCredits
-			if info.AvailableCredits < 0 {
+			if info.AvailableCredits <= 0 && info.OverageCapable && info.OverageEnabled && info.OverageCap > 0 {
+				overageRemaining := info.OverageCap - info.CurrentOverages
+				if overageRemaining > 0 {
+					info.AvailableCredits = overageRemaining
+				} else {
+					info.AvailableCredits = 0
+				}
+			} else if info.AvailableCredits < 0 {
 				info.AvailableCredits = 0
 			}
 			break
@@ -184,7 +221,7 @@ func NewUsageLimitsFetcher(client *http.Client) *UsageLimitsFetcher {
 }
 
 // FetchUsageLimits fetches usage limits from CodeWhisperer API
-func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, region, proxyURL string, profileArn ...string) (*UsageLimits, error) {
+func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, region, proxyURL string) (*UsageLimits, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -195,11 +232,6 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	params.Add("isEmailRequired", "true")
 	params.Add("origin", "AI_EDITOR")
 	params.Add("resourceType", "AGENTIC_REQUEST")
-	// profileArn is optional — kiro.rs passes it when available to avoid
-	// "Value null at 'profileArn' failed to satisfy constraint" errors.
-	if len(profileArn) > 0 && profileArn[0] != "" {
-		params.Add("profileArn", profileArn[0])
-	}
 
 	requestURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
 
@@ -260,4 +292,85 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	}
 
 	return &limits, nil
+}
+
+// SetOverageStatus calls the AWS SetUserPreference API to enable or disable overage.
+// This is equivalent to: POST / with X-Amz-Target: AmazonCodeWhispererService.SetUserPreference
+func (f *UsageLimitsFetcher) SetOverageStatus(ctx context.Context, accessToken, region, proxyURL string, enabled bool, profileArn string) error {
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	status := "DISABLED"
+	if enabled {
+		status = "ENABLED"
+	}
+
+	// Build request body
+	reqBody := map[string]any{
+		"overageConfiguration": map[string]string{
+			"overageStatus": status,
+		},
+	}
+	if profileArn != "" {
+		reqBody["profileArn"] = profileArn
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal request body: %w", err)
+	}
+
+	// Build request URL — SetUserPreference uses POST to root path
+	requestURL := fmt.Sprintf("https://q.%s.amazonaws.com/", region)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	// Set headers matching the Smithy-generated client
+	osName := usageLimitsOSName()
+	kiroVersion := "0.11.107"
+	machineID := GenerateRandomMachineID()
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("X-Amz-Target", "AmazonCodeWhispererService.SetUserPreference")
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/%s lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", osName, kiroVersion, machineID))
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroVersion, machineID))
+	req.Header.Set("Host", fmt.Sprintf("q.%s.amazonaws.com", region))
+	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Use proxy if configured
+	client := f.httpClient
+	if proxyURL != "" {
+		proxyURLParsed, err := url.Parse(proxyURL)
+		if err == nil {
+			transport := &http.Transport{
+				Proxy: http.ProxyURL(proxyURLParsed),
+			}
+			client = &http.Client{
+				Transport: transport,
+				Timeout:   30 * time.Second,
+			}
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("SetUserPreference returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }

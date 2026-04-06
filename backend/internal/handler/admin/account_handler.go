@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -1618,4 +1619,93 @@ func reconcileKiroStatus(acc *dto.Account, state *service.KiroTokenState) {
 		acc.Status = effectiveStatus
 		acc.ErrorMessage = effectiveErrMsg
 	}
+}
+
+// SetKiroOverageRequest represents the request to enable/disable overage
+type SetKiroOverageRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetKiroOverage handles enabling/disabling overage for a Kiro account
+// POST /api/v1/admin/accounts/:id/set-kiro-overage
+func (h *AccountHandler) SetKiroOverage(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req SetKiroOverageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	if !account.IsKiro() {
+		response.BadRequest(c, "Account is not a Kiro account")
+		return
+	}
+
+	if account.IsKiroApiKey() {
+		response.BadRequest(c, "API key accounts do not support overage configuration")
+		return
+	}
+
+	if h.kiroTokenProvider == nil {
+		response.BadRequest(c, "Kiro token provider not configured")
+		return
+	}
+
+	// Get access token
+	accessToken, err := h.kiroTokenProvider.GetAccessToken(c.Request.Context(), account)
+	if err != nil {
+		response.InternalError(c, "Failed to get access token: "+err.Error())
+		return
+	}
+
+	// Get proxy URL
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	// Get profile ARN and region
+	profileArn := account.GetKiroProfileArn()
+	region := account.GetKiroRegion()
+
+	// Call SetUserPreference API
+	fetcher := kiro.NewUsageLimitsFetcher(nil)
+	if err := fetcher.SetOverageStatus(c.Request.Context(), accessToken, region, proxyURL, req.Enabled, profileArn); err != nil {
+		response.InternalError(c, "Failed to set overage status: "+err.Error())
+		return
+	}
+
+	// Persist overage status to account extra field
+	extra := account.Extra
+	if extra == nil {
+		extra = make(map[string]any)
+	}
+	extra["kiro_overage_enabled"] = req.Enabled
+	if _, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+		Extra: extra,
+	}); err != nil {
+		log.Printf("[Kiro] Account %d overage status set but failed to persist to DB: %v", accountID, err)
+	}
+
+	statusText := "disabled"
+	if req.Enabled {
+		statusText = "enabled"
+	}
+	log.Printf("[Kiro] Account %d (%s) overage %s", accountID, account.Name, statusText)
+
+	response.Success(c, gin.H{
+		"message": fmt.Sprintf("Overage %s successfully", statusText),
+		"enabled": req.Enabled,
+	})
 }

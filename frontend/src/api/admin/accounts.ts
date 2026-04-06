@@ -363,6 +363,20 @@ export async function refreshKiroStates(): Promise<{
   return data
 }
 
+/**
+ * Set Kiro account overage status (enable/disable)
+ * @param id - Account ID
+ * @param enabled - Whether to enable overage
+ * @returns Result with message and enabled status
+ */
+export async function setKiroOverage(
+  id: number,
+  enabled: boolean
+): Promise<{ message: string; enabled: boolean }> {
+  const { data } = await apiClient.post(`/admin/accounts/${id}/set-kiro-overage`, { enabled })
+  return data
+}
+
 export const accountsAPI = {
   list,
   getById,
@@ -387,7 +401,8 @@ export const accountsAPI = {
   batchUpdateCredentials,
   bulkUpdate,
   syncFromCrs,
-  refreshKiroStates
+  refreshKiroStates,
+  setKiroOverage
 }
 
 export default accountsAPI

@@ -1791,6 +1791,15 @@ export default {
         socialDesc: 'Kiro 桌面应用',
         idcDesc: 'AWS IAM Identity Center',
         apikeyDesc: '自定义 Claude API 端点',
+        // Overage
+        overageTitle: '超额使用',
+        overageDesc: '开启后，基础额度用完可继续使用，按超额费率计费直到超额上限',
+        overageEnabling: '开启中...',
+        overageDisabling: '关闭中...',
+        overageEnabled: '超额使用已开启',
+        overageDisabled: '超额使用已关闭',
+        overageFailed: '设置超额状态失败',
+        overageNotCapable: '当前订阅等级不支持超额',
         // API Key fields
         baseUrlHint: 'Claude API 兼容端点，例如 https://my-proxy.example.com',
         pleaseEnterApikeyCredentials: '请输入 Base URL 和 API Key',

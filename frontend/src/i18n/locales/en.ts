@@ -1679,6 +1679,15 @@ export default {
         socialDesc: 'Kiro Desktop App',
         idcDesc: 'AWS IAM Identity Center',
         apikeyDesc: 'Custom Claude API Endpoint',
+        // Overage
+        overageTitle: 'Overage Usage',
+        overageDesc: 'When enabled, usage can continue beyond base quota at overage rate until overage cap',
+        overageEnabling: 'Enabling...',
+        overageDisabling: 'Disabling...',
+        overageEnabled: 'Overage usage enabled',
+        overageDisabled: 'Overage usage disabled',
+        overageFailed: 'Failed to set overage status',
+        overageNotCapable: 'Current subscription does not support overage',
         // API Key fields
         baseUrlHint: 'Claude API compatible endpoint, e.g. https://my-proxy.example.com',
         pleaseEnterApikeyCredentials: 'Please enter Base URL and API Key',

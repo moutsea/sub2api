@@ -604,6 +604,41 @@
         </div>
       </div>
 
+      <!-- Kiro Overage Toggle (Kiro OAuth/SetupToken only, not apikey) -->
+      <div
+        v-if="account?.platform === 'kiro' && account?.type !== 'apikey'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.kiro.overageTitle') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.kiro.overageDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            :disabled="kiroOverageLoading"
+            @click="toggleKiroOverage"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              kiroOverageEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600',
+              kiroOverageLoading ? 'opacity-50 cursor-wait' : ''
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                kiroOverageEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+        <p v-if="kiroOverageLoading" class="mt-1 text-xs text-primary-500">
+          {{ kiroOverageEnabled ? t('admin.accounts.kiro.overageDisabling') : t('admin.accounts.kiro.overageEnabling') }}
+        </p>
+      </div>
+
       <!-- Quota Control Section (Anthropic OAuth/SetupToken only) -->
       <div
         v-if="account?.platform === 'anthropic' && (account?.type === 'oauth' || account?.type === 'setup-token')"
@@ -905,6 +940,10 @@ const sessionLimitEnabled = ref(false)
 const maxSessions = ref<number | null>(null)
 const sessionIdleTimeout = ref<number | null>(null)
 
+// Kiro overage state
+const kiroOverageEnabled = ref(false)
+const kiroOverageLoading = ref(false)
+
 // Computed: current preset mappings based on platform
 const presetMappings = computed(() => getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))
 const tempUnschedPresets = computed(() => [
@@ -994,6 +1033,9 @@ watch(
 
       // Load quota control settings (Anthropic OAuth/SetupToken only)
       loadQuotaControlSettings(newAccount)
+
+      // Load Kiro overage status from extra field
+      loadKiroOverageStatus(newAccount)
 
       loadTempUnschedRules(credentials)
 
@@ -1254,6 +1296,42 @@ function loadQuotaControlSettings(account: Account) {
     sessionLimitEnabled.value = true
     maxSessions.value = account.max_sessions
     sessionIdleTimeout.value = account.session_idle_timeout_minutes ?? 5
+  }
+}
+
+// Load Kiro overage status from account extra field
+function loadKiroOverageStatus(account: Account) {
+  kiroOverageEnabled.value = false
+  kiroOverageLoading.value = false
+
+  if (account.platform !== 'kiro' || account.type === 'apikey') {
+    return
+  }
+
+  const extra = account.extra as Record<string, unknown> | undefined
+  kiroOverageEnabled.value = extra?.kiro_overage_enabled === true
+}
+
+// Toggle Kiro overage status via API call (real-time, not on form submit)
+async function toggleKiroOverage() {
+  if (!props.account || kiroOverageLoading.value) return
+
+  const newEnabled = !kiroOverageEnabled.value
+  kiroOverageLoading.value = true
+
+  try {
+    await adminAPI.accounts.setKiroOverage(props.account.id, newEnabled)
+    kiroOverageEnabled.value = newEnabled
+    appStore.showSuccess(
+      newEnabled
+        ? t('admin.accounts.kiro.overageEnabled')
+        : t('admin.accounts.kiro.overageDisabled')
+    )
+  } catch (error: any) {
+    const msg = error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.kiro.overageFailed')
+    appStore.showError(msg)
+  } finally {
+    kiroOverageLoading.value = false
   }
 }
 
