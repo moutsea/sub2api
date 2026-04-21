@@ -479,26 +479,6 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		return nil, fmt.Errorf("marshal cw request: %w", err)
 	}
 
-	// Body size check and truncation (model-aware: 4.6 series allows up to 4MB, others ~810KB)
-	maxBodySize := getMaxCWBodySize(claudeReq.Model)
-	if len(cwReqBody) > maxBodySize {
-		log.Printf("%s body_oversized size=%d limit=%d, attempting truncation", prefix, len(cwReqBody), maxBodySize)
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxBodySize)
-		if truncErr != nil {
-			log.Printf("%s body_truncation_failed error=%v", prefix, truncErr)
-			return nil, fmt.Errorf("request body too large (%d bytes) and truncation failed: %w", len(cwReqBody), truncErr)
-		}
-		log.Printf("%s body_truncated original=%d new=%d", prefix, len(cwReqBody), len(truncatedBody))
-		cwReq = truncatedReq
-		cwReqBody = truncatedBody
-	}
-
-	// Final safety check: if still too large after truncation, reject (defense-in-depth)
-	if len(cwReqBody) > maxBodySize {
-		log.Printf("%s body_still_too_large after truncation size=%d limit=%d", prefix, len(cwReqBody), maxBodySize)
-		return nil, fmt.Errorf("request body still too large (%d bytes) after truncation", len(cwReqBody))
-	}
-
 	// Build endpoint list (primary + fallback) — same as Forward()
 	endpoints := getKiroEndpoints(account)
 

@@ -627,6 +627,18 @@ const MaxThinkingBudgetTokens = 24576
 // DefaultThinkingBudgetTokens is the default budget_tokens when not specified.
 const DefaultThinkingBudgetTokens = 20000
 
+// KiroFixedMaxTokens is the fixed max_tokens for all Kiro requests.
+// Thinking budget is capped at 50% of this to prevent thinking-only responses.
+const KiroFixedMaxTokens = 64000
+
+// maxThinkingBudgetForMaxTokens returns the thinking budget cap (50% of max_tokens).
+// AWSQ shares the output token budget between thinking and text. Without this cap,
+// thinking can exhaust the entire budget, leaving no room for text output — causing
+// users to see "thinking forever with no result".
+func maxThinkingBudgetForMaxTokens() int {
+	return KiroFixedMaxTokens / 2
+}
+
 // generateThinkingPrefix generates the thinking mode XML prefix for AWSQ.
 // Reference: kiro.rs converter.rs generate_thinking_prefix
 func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
@@ -639,6 +651,8 @@ func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
 		return ""
 	}
 
+	budgetCap := maxThinkingBudgetForMaxTokens()
+
 	switch thinkingType {
 	case "enabled":
 		budgetTokens := DefaultThinkingBudgetTokens
@@ -648,6 +662,10 @@ func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
 		if budgetTokens > MaxThinkingBudgetTokens {
 			budgetTokens = MaxThinkingBudgetTokens
 		}
+		// Cap to 50% of max_tokens to prevent thinking-only responses
+		if budgetTokens > budgetCap {
+			budgetTokens = budgetCap
+		}
 		return fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", budgetTokens)
 
 	case "adaptive":
@@ -656,7 +674,8 @@ func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
 		if e, ok := claudeReq.Thinking["thinking_effort"].(string); ok && e != "" {
 			effort = e
 		}
-		return fmt.Sprintf("<thinking_mode>adaptive</thinking_mode><thinking_effort>%s</thinking_effort>", effort)
+		// Cap adaptive thinking to 50% of max_tokens to prevent thinking-only responses
+		return fmt.Sprintf("<thinking_mode>adaptive</thinking_mode><thinking_effort>%s</thinking_effort><max_thinking_length>%d</max_thinking_length>", effort, budgetCap)
 	}
 
 	return ""

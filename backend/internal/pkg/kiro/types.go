@@ -15,6 +15,8 @@ const (
 // Model ID mapping from Claude to AWSQ
 // Format aligned with kiro.rs: use simplified model IDs
 var ModelMap = map[string]string{
+	// Opus 4.7 series (1M context by default, no separate -1m variant)
+	"claude-opus-4-7": "claude-opus-4.7",
 	// Opus 4.6 series
 	"claude-opus-4-6":    "claude-opus-4.6",
 	"claude-opus-4-6-1m": "claude-opus-4.6",
@@ -45,7 +47,7 @@ var ModelMap = map[string]string{
 }
 
 // Default model ID for AWSQ
-const DefaultModelID = "claude-sonnet-4.6"
+const DefaultModelID = "claude-opus-4.6"
 
 // GetModelID returns the CodeWhisperer model ID for a given Claude model
 func GetModelID(claudeModel string) string {

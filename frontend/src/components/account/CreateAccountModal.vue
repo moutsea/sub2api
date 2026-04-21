@@ -3138,6 +3138,8 @@ const handleSubmit = async () => {
       }
       const batchPrefix = form.name.trim() || getDefaultBatchPrefix()
       const totalCount = kiroParsedTokens.value.length
+      const now = new Date()
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
 
       submitting.value = true
       let successCount = 0
@@ -3162,8 +3164,10 @@ const handleSubmit = async () => {
             credentials.region = token.region
           }
 
-          // Generate account name: batchPrefix_1, batchPrefix_2, ...
-          const accountName = `${batchPrefix}_${i + 1}`
+          // Generate account name: use token.name_date if name exists, otherwise batchPrefix_index
+          const accountName = token.name
+            ? `${token.name}_${dateStr}`
+            : `${batchPrefix}_${i + 1}`
 
           try {
             await adminAPI.accounts.create({

@@ -596,6 +596,17 @@ func Load() (*Config, error) {
 		}
 		cfg.JWT.Secret = secret
 		log.Println("Warning: JWT secret auto-generated. Consider setting a fixed secret for production.")
+
+		// Persist the generated secret back to the config file so it survives restarts.
+		// We do a minimal text-level patch instead of viper.WriteConfig() to avoid
+		// dumping all default values into the config file.
+		if configFile := viper.ConfigFileUsed(); configFile != "" {
+			if persistErr := persistJWTSecret(configFile, secret); persistErr != nil {
+				log.Printf("Warning: failed to persist auto-generated JWT secret to %s: %v", configFile, persistErr)
+			} else {
+				log.Printf("Auto-generated JWT secret persisted to %s", configFile)
+			}
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -1225,6 +1236,70 @@ func generateJWTSecret(byteLength int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// persistJWTSecret patches the config file to add or update the jwt.secret field.
+// It does a minimal text-level edit to avoid rewriting the entire file with viper defaults.
+func persistJWTSecret(configFile, secret string) error {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	secretLine := "  secret: \"" + secret + "\""
+	lines := strings.Split(string(data), "\n")
+	inJWT := false
+	replaced := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip empty lines and comments while inside a section
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// Detect top-level keys (no leading whitespace, ends with ':' or has ': ')
+		isTopLevel := len(line) > 0 && line[0] != ' ' && line[0] != '\t'
+
+		if isTopLevel {
+			if inJWT {
+				// We were in jwt section but didn't find secret → insert before this top-level key
+				newLines := make([]string, 0, len(lines)+1)
+				newLines = append(newLines, lines[:i]...)
+				newLines = append(newLines, secretLine)
+				newLines = append(newLines, lines[i:]...)
+				lines = newLines
+				replaced = true
+				break
+			}
+			// Check if this is the jwt section (exact match for "jwt:")
+			if trimmed == "jwt:" {
+				inJWT = true
+			}
+			continue
+		}
+
+		// Inside jwt section: look for the secret key
+		if inJWT && strings.HasPrefix(trimmed, "secret:") {
+			lines[i] = secretLine
+			replaced = true
+			break
+		}
+	}
+
+	// jwt section was the last section and secret was not found
+	if inJWT && !replaced {
+		lines = append(lines, secretLine)
+		replaced = true
+	}
+
+	// No jwt section at all → append it
+	if !replaced {
+		lines = append(lines, "jwt:", secretLine)
+	}
+
+	return os.WriteFile(configFile, []byte(strings.Join(lines, "\n")), 0600)
 }
 
 // GetServerAddress returns the server address (host:port) from config file or environment variable.

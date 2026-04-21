@@ -127,6 +127,11 @@ func (p *AwsEventStreamParser) Process(chunk []byte) []StreamEvent {
 
 	if len(p.buffer)+len(chunk) > p.maxBufferSize {
 		p.parseErrorCount++
+		// Clear buffer to prevent permanent parser stall.
+		// Without this, every subsequent Process() call would re-trigger overflow
+		// because the oversized buffer is never drained, blocking all further parsing
+		// including stop events — causing the stream to hang until timeout.
+		p.buffer = nil
 		return []StreamEvent{{
 			Type:         EventError,
 			ErrorType:    "buffer_overflow",
@@ -668,6 +673,72 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		}
 		p.toolAccumulators = make(map[string]*toolAccumulator)
 
+		// Flush pending thinking content before closing blocks.
+		// When the model exhausts its token budget on thinking, the stop event
+		// arrives while pendingContent still holds the tail of the thinking stream
+		// (up to 13 bytes reserved for cross-chunk </thinking>\n\n detection).
+		// Without this flush, the thinking block is never closed and the last
+		// chunk of thinking content is silently discarded, causing truncated
+		// thinking output and a malformed SSE stream (missing content_block_stop).
+		pendingStr := p.pendingContent.String()
+		p.pendingContent.Reset()
+
+		if p.inThinkingBlock {
+			// Check if buffer ends with </thinking> (boundary: stop arrives right after end tag)
+			if endPos := findRealThinkingEndTagAtBufferEnd(pendingStr); endPos >= 0 {
+				thinkingContent := pendingStr[:endPos]
+				if thinkingContent != "" {
+					if p.thinkingBlockIndex == nil {
+						idx := p.nextIndex()
+						p.thinkingBlockIndex = &idx
+						events = append(events, StreamEvent{
+							Type: EventContentBlockStart, Index: idx,
+							BlockType: ContentBlockType{Kind: BlockThinking},
+						})
+					}
+					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: thinkingContent})
+				}
+				// Close thinking block
+				if p.thinkingBlockIndex != nil {
+					idx := *p.thinkingBlockIndex
+					events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+					p.thinkingBlockIndex = nil
+				}
+				p.inThinkingBlock = false
+				p.thinkingExtracted = true
+				// Remaining after tag as text
+				afterPos := endPos + len(ThinkingEndTag)
+				remaining := strings.TrimLeft(pendingStr[afterPos:], " \t\n\r")
+				if remaining != "" {
+					events = append(events, p.emitTextDelta(remaining)...)
+				}
+			} else {
+				// No end tag — emit remaining as thinking delta (model ran out of tokens mid-thinking)
+				if pendingStr != "" {
+					if p.thinkingBlockIndex == nil {
+						idx := p.nextIndex()
+						p.thinkingBlockIndex = &idx
+						events = append(events, StreamEvent{
+							Type: EventContentBlockStart, Index: idx,
+							BlockType: ContentBlockType{Kind: BlockThinking},
+						})
+					}
+					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: pendingStr})
+				}
+			}
+		} else if pendingStr != "" {
+			// Not in thinking block — emit pending as text
+			events = append(events, p.emitTextDelta(pendingStr)...)
+		}
+
+		// Close thinking block if still open
+		if p.thinkingBlockIndex != nil {
+			idx := *p.thinkingBlockIndex
+			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+			p.thinkingBlockIndex = nil
+			p.inThinkingBlock = false
+		}
+
 		if p.textBlockIndex != nil {
 			idx := *p.textBlockIndex
 			p.textBlockIndex = nil
@@ -707,6 +778,24 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		errMsg := *payload.Message
 		log.Printf("[kiro-parser] upstream exception: type=%s message=%s", errType, errMsg)
 		p.parseErrorCount++
+
+		// Flush thinking state before emitting error — same rationale as stop handler.
+		// Without this, an exception arriving mid-thinking leaves the thinking block
+		// unclosed and pendingContent is silently discarded by Finish().
+		events = append(events, p.flushThinkingBeforeToolUse()...)
+		if p.thinkingBlockIndex != nil {
+			idx := *p.thinkingBlockIndex
+			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+			p.thinkingBlockIndex = nil
+			p.inThinkingBlock = false
+		}
+		if p.textBlockIndex != nil {
+			idx := *p.textBlockIndex
+			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
+			p.textBlockIndex = nil
+			p.inTextBlock = false
+		}
+
 		events = append(events, StreamEvent{
 			Type:         EventError,
 			ErrorType:    errType,

@@ -425,68 +425,16 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	originalModel := claudeReq.Model
 	mappedModel := kiro.GetModelID(originalModel)
 	contextWindowLimit := kiro.GetContextWindowLimit(originalModel)
-	contextPreCheckLimit := kiro.GetContextPreCheckLimit(originalModel)
 
-	// Set default max_tokens if not provided.
+	// Force max_tokens to 64000.
 	// AWSQ thinking mode shares the output token budget between thinking and text.
 	// A too-small max_tokens causes thinking to exhaust the budget with no room for text output.
-	// Aligned with kiro.rs model list default (64000).
-	if claudeReq.MaxTokens <= 0 {
-		claudeReq.MaxTokens = 64000
-	}
+	// Fixed at 64000 to ensure consistent behavior across all clients.
+	claudeReq.MaxTokens = 64000
 
-	// Pre-check: Estimate input tokens and truncate if exceeding context limit.
-	// Upstream has two limits: token count (~200k or ~1M for 4.6) AND body size (~810KB).
-	// This handles the token limit; body size is checked after serialization.
-	// Unlike before, truncation failure does NOT reject the request — we let
-	// the body size check and upstream handle edge cases.
-	// NOTE: Truncation MUST happen before cache estimation so that CacheableTokens
-	// reflects the actual (possibly truncated) request, not the oversized original.
 	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
-	if estimatedTokens > contextPreCheckLimit {
-		log.Printf("%s status=context_exceeds_limit estimated_tokens=%d limit=%d, attempting truncation",
-			prefix, estimatedTokens, contextPreCheckLimit)
 
-		truncatedReq, truncated := kiro.TruncateAndRetry(claudeReq)
-		if truncated {
-			newEstimate := kiro.EstimateInputTokens(truncatedReq)
-			log.Printf("%s status=messages_truncated original_messages=%d new_messages=%d tokens=%d->%d",
-				prefix, len(claudeReq.Messages), len(truncatedReq.Messages), estimatedTokens, newEstimate)
-			claudeReq = truncatedReq
-			estimatedTokens = newEstimate
-
-			// Re-serialize body for apikey passthrough path
-			if newBody, err := json.Marshal(claudeReq); err == nil {
-				body = newBody
-			}
-		} else {
-			// Safe truncation failed (likely no safe truncation points due to continuous
-			// tool_use chains). Fall back to force truncation which ignores tool pairing.
-			log.Printf("%s status=safe_truncation_failed estimated_tokens=%d limit=%d, attempting force truncation",
-				prefix, estimatedTokens, contextPreCheckLimit)
-
-			forceReq, forceOk := kiro.ForceTruncateMessages(claudeReq, kiro.TruncationConfigForModel(originalModel).TargetTokens)
-			if forceOk {
-				newEstimate := kiro.EstimateInputTokens(forceReq)
-				log.Printf("%s status=force_truncated original_messages=%d new_messages=%d tokens=%d->%d",
-					prefix, len(claudeReq.Messages), len(forceReq.Messages), estimatedTokens, newEstimate)
-				claudeReq = forceReq
-				estimatedTokens = newEstimate
-
-				if newBody, err := json.Marshal(claudeReq); err == nil {
-					body = newBody
-				}
-			} else {
-				log.Printf("%s status=force_truncation_failed estimated_tokens=%d limit=%d, proceeding anyway",
-					prefix, estimatedTokens, contextPreCheckLimit)
-			}
-		}
-	}
-
-	// Cache estimation for billing — computed AFTER truncation so that
-	// CacheableTokens reflects the actual request sent upstream, not the
-	// oversized original. Without this ordering, a 250K request truncated
-	// to 150K would still report cache_creation ≈ 240K.
+	// Cache estimation for billing — computed from the actual request as-is.
 	cacheEstimation := kiro.EstimateCache(claudeReq)
 	var cacheResult kiro.CacheResult
 	if cacheEstimation.MeetsCacheThreshold {
@@ -580,38 +528,6 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	reqBody, err := json.Marshal(cwReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	// Check request body size and truncate history if needed.
-	// 4.6 series (1M context) allows up to 4MB; others limited to ~810KB.
-	maxBodySize := getMaxCWBodySize(originalModel)
-	if len(reqBody) > maxBodySize {
-		log.Printf("%s status=request_body_oversized body_size=%d limit=%d, attempting history truncation",
-			prefix, len(reqBody), maxBodySize)
-
-		truncatedReq, truncatedBody, truncErr := kiro.TruncateToFitBodySize(claudeReq, profileArn, c, maxBodySize)
-		if truncErr != nil {
-			log.Printf("%s status=body_truncation_failed error=%v", prefix, truncErr)
-			return nil, &ContextTooLongError{
-				EstimatedTokens: estimatedTokens,
-				Limit:           contextWindowLimit,
-			}
-		}
-
-		log.Printf("%s status=body_truncated original_size=%d new_size=%d",
-			prefix, len(reqBody), len(truncatedBody))
-		cwReq = truncatedReq
-		reqBody = truncatedBody
-	}
-
-	// Final safety check: if still too large after truncation, reject
-	if len(reqBody) > maxBodySize {
-		log.Printf("%s status=request_still_too_large after truncation body_size=%d limit=%d",
-			prefix, len(reqBody), maxBodySize)
-		return nil, &ContextTooLongError{
-			EstimatedTokens: estimatedTokens,
-			Limit:           contextWindowLimit,
-		}
 	}
 
 	log.Printf("%s request_size=%d model=%s mapped_model=%s", prefix, len(reqBody), originalModel, mappedModel)
