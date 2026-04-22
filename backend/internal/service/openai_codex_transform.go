@@ -21,26 +21,27 @@ const (
 var codexCLIInstructions string
 
 var codexModelMap = map[string]string{
-	"gpt-5.1-codex":             "gpt-5.1-codex",
-	"gpt-5.1-codex-low":         "gpt-5.1-codex",
-	"gpt-5.1-codex-medium":      "gpt-5.1-codex",
-	"gpt-5.1-codex-high":        "gpt-5.1-codex",
-	"gpt-5.1-codex-max":         "gpt-5.1-codex-max",
-	"gpt-5.1-codex-max-low":     "gpt-5.1-codex-max",
-	"gpt-5.1-codex-max-medium":  "gpt-5.1-codex-max",
-	"gpt-5.1-codex-max-high":    "gpt-5.1-codex-max",
-	"gpt-5.1-codex-max-xhigh":   "gpt-5.1-codex-max",
-	"gpt-5.2":                   "gpt-5.2",
-	"gpt-5.2-none":              "gpt-5.2",
-	"gpt-5.2-low":               "gpt-5.2",
-	"gpt-5.2-medium":            "gpt-5.2",
-	"gpt-5.2-high":              "gpt-5.2",
-	"gpt-5.2-xhigh":             "gpt-5.2",
-	"gpt-5.2-codex":             "gpt-5.2-codex",
-	"gpt-5.2-codex-low":         "gpt-5.2-codex",
-	"gpt-5.2-codex-medium":      "gpt-5.2-codex",
-	"gpt-5.2-codex-high":        "gpt-5.2-codex",
-	"gpt-5.2-codex-xhigh":       "gpt-5.2-codex",
+	// gpt-5 / gpt-5.1 系列已不再稳定可用，统一重映射到 gpt-5.2 系列。
+	"gpt-5.1-codex":            "gpt-5.2-codex",
+	"gpt-5.1-codex-low":        "gpt-5.2-codex",
+	"gpt-5.1-codex-medium":     "gpt-5.2-codex",
+	"gpt-5.1-codex-high":       "gpt-5.2-codex",
+	"gpt-5.1-codex-max":        "gpt-5.2-codex",
+	"gpt-5.1-codex-max-low":    "gpt-5.2-codex",
+	"gpt-5.1-codex-max-medium": "gpt-5.2-codex",
+	"gpt-5.1-codex-max-high":   "gpt-5.2-codex",
+	"gpt-5.1-codex-max-xhigh":  "gpt-5.2-codex",
+	"gpt-5.2":                  "gpt-5.2",
+	"gpt-5.2-none":             "gpt-5.2",
+	"gpt-5.2-low":              "gpt-5.2",
+	"gpt-5.2-medium":           "gpt-5.2",
+	"gpt-5.2-high":             "gpt-5.2",
+	"gpt-5.2-xhigh":            "gpt-5.2",
+	"gpt-5.2-codex":            "gpt-5.2-codex",
+	"gpt-5.2-codex-low":        "gpt-5.2-codex",
+	"gpt-5.2-codex-medium":     "gpt-5.2-codex",
+	"gpt-5.2-codex-high":       "gpt-5.2-codex",
+	"gpt-5.2-codex-xhigh":      "gpt-5.2-codex",
 	// gpt-5.3 系列：OAuth 端只认 gpt-5.3-codex，裸名 gpt-5.3 不可用，统一映射到 codex 变体。
 	"gpt-5.3":                   "gpt-5.3-codex",
 	"gpt-5.3-none":              "gpt-5.3-codex",
@@ -64,29 +65,30 @@ var codexModelMap = map[string]string{
 	"gpt-5.4-codex-medium":      "gpt-5.4-codex",
 	"gpt-5.4-codex-high":        "gpt-5.4-codex",
 	"gpt-5.4-codex-xhigh":       "gpt-5.4-codex",
-	"gpt-5.1-codex-mini":        "gpt-5.1-codex-mini",
-	"gpt-5.1-codex-mini-medium": "gpt-5.1-codex-mini",
-	"gpt-5.1-codex-mini-high":   "gpt-5.1-codex-mini",
-	"gpt-5.1":                   "gpt-5.1",
-	"gpt-5.1-none":              "gpt-5.1",
-	"gpt-5.1-low":               "gpt-5.1",
-	"gpt-5.1-medium":            "gpt-5.1",
-	"gpt-5.1-high":              "gpt-5.1",
-	"gpt-5.1-chat-latest":       "gpt-5.1",
-	"gpt-5-codex":               "gpt-5.1-codex",
-	"codex-mini-latest":         "gpt-5.1-codex-mini",
-	"gpt-5-codex-mini":          "gpt-5.1-codex-mini",
-	"gpt-5-codex-mini-medium":   "gpt-5.1-codex-mini",
-	"gpt-5-codex-mini-high":     "gpt-5.1-codex-mini",
-	"gpt-5":                     "gpt-5.1",
-	"gpt-5-mini":                "gpt-5.1",
-	"gpt-5-nano":                "gpt-5.1",
+	"gpt-5.1-codex-mini":        "gpt-5.2-codex",
+	"gpt-5.1-codex-mini-medium": "gpt-5.2-codex",
+	"gpt-5.1-codex-mini-high":   "gpt-5.2-codex",
+	"gpt-5.1":                   "gpt-5.2",
+	"gpt-5.1-none":              "gpt-5.2",
+	"gpt-5.1-low":               "gpt-5.2",
+	"gpt-5.1-medium":            "gpt-5.2",
+	"gpt-5.1-high":              "gpt-5.2",
+	"gpt-5.1-chat-latest":       "gpt-5.2",
+	"gpt-5-codex":               "gpt-5.2-codex",
+	"codex-mini-latest":         "gpt-5.2-codex",
+	"gpt-5-codex-mini":          "gpt-5.2-codex",
+	"gpt-5-codex-mini-medium":   "gpt-5.2-codex",
+	"gpt-5-codex-mini-high":     "gpt-5.2-codex",
+	"gpt-5":                     "gpt-5.2",
+	"gpt-5-mini":                "gpt-5.2",
+	"gpt-5-nano":                "gpt-5.2",
 }
 
 type codexTransformResult struct {
-	Modified        bool
-	NormalizedModel string
-	PromptCacheKey  string
+	Modified             bool
+	NormalizedModel      string
+	PromptCacheKey       string
+	InjectedInstructions string
 }
 
 type opencodeCacheMetadata struct {
@@ -156,6 +158,7 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 
 	if instructions != "" {
 		if existingInstructions != instructions {
+			result.InjectedInstructions = instructions
 			reqBody["instructions"] = instructions
 			result.Modified = true
 		}
@@ -163,6 +166,7 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 		// 未获取到 opencode 指令时，回退使用 Codex CLI 指令。
 		codexInstructions := strings.TrimSpace(getCodexCLIInstructions())
 		if codexInstructions != "" {
+			result.InjectedInstructions = codexInstructions
 			reqBody["instructions"] = codexInstructions
 			result.Modified = true
 		}
@@ -208,51 +212,82 @@ func normalizeCodexModel(model string) string {
 		return mapped
 	}
 
-	normalized := strings.ToLower(modelID)
+	normalized := canonicalizeCodexModelID(modelID)
 
-	if strings.Contains(normalized, "gpt-5.4-codex") || strings.Contains(normalized, "gpt 5.4 codex") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5.4-codex") {
 		return "gpt-5.4-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5.4") {
 		return "gpt-5.4"
 	}
-	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5.3-codex") {
 		return "gpt-5.3-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5.3") {
 		return "gpt-5.3-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5.2-codex") {
 		return "gpt-5.2-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5.2") {
 		return "gpt-5.2"
 	}
-	if strings.Contains(normalized, "gpt-5.1-codex-max") || strings.Contains(normalized, "gpt 5.1 codex max") {
-		return "gpt-5.1-codex-max"
+	if hasOpenAIModelPrefix(normalized, "gpt-5.1-codex-max") {
+		return "gpt-5.2-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.1-codex-mini") || strings.Contains(normalized, "gpt 5.1 codex mini") {
-		return "gpt-5.1-codex-mini"
+	if hasOpenAIModelPrefix(normalized, "gpt-5.1-codex-mini") {
+		return "gpt-5.2-codex"
 	}
-	if strings.Contains(normalized, "codex-mini-latest") ||
-		strings.Contains(normalized, "gpt-5-codex-mini") ||
-		strings.Contains(normalized, "gpt 5 codex mini") {
-		return "codex-mini-latest"
+	if hasOpenAIModelPrefix(normalized, "codex-mini-latest") ||
+		hasOpenAIModelPrefix(normalized, "gpt-5-codex-mini") {
+		return "gpt-5.2-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.1-codex") || strings.Contains(normalized, "gpt 5.1 codex") {
-		return "gpt-5.1-codex"
+	if hasOpenAIModelPrefix(normalized, "gpt-5.1-codex") {
+		return "gpt-5.2-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.1") || strings.Contains(normalized, "gpt 5.1") {
-		return "gpt-5.1"
+	if hasOpenAIModelPrefix(normalized, "gpt-5.1") {
+		return "gpt-5.2"
 	}
-	if strings.Contains(normalized, "codex") {
+	if hasOpenAIModelPrefix(normalized, "gpt-5-codex") {
+		return "gpt-5.2-codex"
+	}
+	if hasOpenAIModelPrefix(normalized, "codex") {
 		return "gpt-5.4-codex"
 	}
-	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.4-codex"
+	if hasOpenAIModelPrefix(normalized, "gpt-5") {
+		return "gpt-5.2"
+	}
+	if strings.HasPrefix(normalized, "gpt-5.") {
+		return ""
 	}
 
 	return "gpt-5.4-codex"
+}
+
+func canonicalizeCodexModelID(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(model))
+	lastDash := false
+	for _, r := range model {
+		switch r {
+		case ' ', '\t', '\n', '\r', '_':
+			if builder.Len() == 0 || lastDash {
+				continue
+			}
+			builder.WriteByte('-')
+			lastDash = true
+		default:
+			builder.WriteRune(r)
+			lastDash = r == '-'
+		}
+	}
+
+	return strings.Trim(builder.String(), "-")
 }
 
 // extractCodexModelEffort extracts the reasoning effort suffix from the original model name
@@ -286,6 +321,15 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 		if validEfforts[suffix] {
 			return suffix
 		}
+	}
+
+	// gpt-5.1-codex-max 无显式 effort 后缀时，贴近映射到 5.2 的 xhigh 档位。
+	if strings.Contains(original, "gpt-5.1-codex-max") &&
+		!strings.HasSuffix(original, "-low") &&
+		!strings.HasSuffix(original, "-medium") &&
+		!strings.HasSuffix(original, "-high") &&
+		!strings.HasSuffix(original, "-xhigh") {
+		return "xhigh"
 	}
 
 	// Fallback: when normalization changes the version (e.g. 5.3→5.2),

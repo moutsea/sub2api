@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +42,8 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	originalModel := claudeReq.Model
-	mappedModel := kiro.GetModelID(originalModel)
+	activeUpstreamModel := s.resolveKiroUpstreamModel(account, originalModel)
+	mappedModel := kiro.GetModelID(activeUpstreamModel)
 
 	// Force max_tokens to 64000.
 	// AWSQ thinking mode shares the output token budget between thinking and text.
@@ -102,17 +102,15 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 			profileArn = freshAccount.GetKiroProfileArn()
 		}
 	}
-	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
+	_, reqBody, err := s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
 	if err != nil {
-		return nil, fmt.Errorf("transform request: %w", err)
-	}
-
-	reqBody, err := json.Marshal(cwReq)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("prepare request: %w", err)
 	}
 
 	log.Printf("%s request_size=%d model=%s mapped_model=%s", prefix, len(reqBody), originalModel, mappedModel)
+	if activeUpstreamModel != originalModel {
+		log.Printf("%s dynamic_model_fallback: %s -> %s", prefix, originalModel, activeUpstreamModel)
+	}
 
 	// 7. Endpoint loop (reuse existing pattern)
 	endpoints := getKiroEndpoints(account)
@@ -124,7 +122,8 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	tokenRefreshed := false
 
 	for epIdx, ep := range endpoints {
-		for attempt := 1; attempt <= kiroMaxRetries; attempt++ {
+		attempt := 1
+		for attempt <= kiroMaxRetries {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -161,6 +160,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
 						return nil, ctx.Err()
 					}
+					attempt++
 					continue
 				}
 				lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
@@ -210,7 +210,20 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 
 				// "profileArn is required" is endpoint-specific — failover to next endpoint
-				errorMsg := strings.ToLower(extractKiroErrorMessage(respBody))
+				rawErrorMsg := extractKiroErrorMessage(respBody)
+				if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, originalModel, activeUpstreamModel, rawErrorMsg); ok {
+					log.Printf("%s endpoint=%s dynamic_model_fallback_retry: %s -> %s", prefix, ep.Name, activeUpstreamModel, fallbackModel)
+					activeUpstreamModel = fallbackModel
+					mappedModel = kiro.GetModelID(activeUpstreamModel)
+					_, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+					if err != nil {
+						return nil, fmt.Errorf("prepare fallback request: %w", err)
+					}
+					log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
+					continue
+				}
+
+				errorMsg := strings.ToLower(rawErrorMsg)
 				if strings.Contains(errorMsg, "profilearn is required") || strings.Contains(errorMsg, "profilearn") {
 					log.Printf("%s endpoint=%s status=400 profileArn_required, trying next endpoint", prefix, ep.Name)
 					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
@@ -229,6 +242,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
 						return nil, ctx.Err()
 					}
+					attempt++
 					continue
 				}
 				_ = respBody
@@ -263,6 +277,7 @@ endpointDone:
 		}
 		return nil, s.writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 	}
+	s.markKiroModelSupported(account, originalModel, activeUpstreamModel)
 
 	// 8. Process response
 	inputTokens := kiro.EstimateInputTokens(claudeReq)

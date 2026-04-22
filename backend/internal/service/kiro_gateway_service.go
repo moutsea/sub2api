@@ -89,18 +89,19 @@ func getKiroEndpoints(account *Account) []kiroEndpointConfig {
 
 // KiroGatewayService handles Kiro/CodeWhisperer platform API forwarding
 type KiroGatewayService struct {
-	accountRepo      AccountRepository
-	tokenProvider    *KiroTokenProvider
-	rateLimitService *RateLimitService
-	httpUpstream     HTTPUpstream
-	settingService   *SettingService
-	usageCache       *UsageCache
-	cfg              *config.Config
-	proxyRepo        ProxyRepository    // proxy pool data source for Free-tier rotation
-	proxyPool        []Proxy            // cached active proxy list
-	proxyPoolMu      sync.RWMutex       // protects proxyPool
-	proxyPoolUpdated time.Time          // cache timestamp
-	freeTierSF       singleflight.Group // dedup concurrent subscription type fetches per account
+	accountRepo          AccountRepository
+	tokenProvider        *KiroTokenProvider
+	rateLimitService     *RateLimitService
+	httpUpstream         HTTPUpstream
+	settingService       *SettingService
+	usageCache           *UsageCache
+	cfg                  *config.Config
+	proxyRepo            ProxyRepository    // proxy pool data source for Free-tier rotation
+	proxyPool            []Proxy            // cached active proxy list
+	proxyPoolMu          sync.RWMutex       // protects proxyPool
+	proxyPoolUpdated     time.Time          // cache timestamp
+	modelCapabilityCache sync.Map           // account+model -> dynamic capability state
+	freeTierSF           singleflight.Group // dedup concurrent subscription type fetches per account
 }
 
 // NewKiroGatewayService creates a new KiroGatewayService
@@ -423,7 +424,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	originalModel := claudeReq.Model
-	mappedModel := kiro.GetModelID(originalModel)
+	activeUpstreamModel := s.resolveKiroUpstreamModel(account, originalModel)
+	mappedModel := kiro.GetModelID(activeUpstreamModel)
 	contextWindowLimit := kiro.GetContextWindowLimit(originalModel)
 
 	// Force max_tokens to 64000.
@@ -519,18 +521,15 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Transform Claude request to CodeWhisperer format
-	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
+	cwReq, reqBody, err := s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
 	if err != nil {
-		return nil, fmt.Errorf("transform request: %w", err)
-	}
-
-	// Serialize request
-	reqBody, err := json.Marshal(cwReq)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("prepare request: %w", err)
 	}
 
 	log.Printf("%s request_size=%d model=%s mapped_model=%s", prefix, len(reqBody), originalModel, mappedModel)
+	if activeUpstreamModel != originalModel {
+		log.Printf("%s dynamic_model_fallback: %s -> %s", prefix, originalModel, activeUpstreamModel)
+	}
 
 	// Build endpoint list (primary + fallback)
 	endpoints := getKiroEndpoints(account)
@@ -544,7 +543,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	var lastErr error
 	tokenRefreshed := false // shared across endpoints to avoid redundant refresh
 	for epIdx, ep := range endpoints {
-		for attempt := 1; attempt <= kiroMaxRetries; attempt++ {
+		attempt := 1
+		for attempt <= kiroMaxRetries {
 			select {
 			case <-ctx.Done():
 				log.Printf("%s status=context_canceled error=%v", prefix, ctx.Err())
@@ -593,6 +593,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
 						return nil, ctx.Err()
 					}
+					attempt++
 					continue
 				}
 				log.Printf("%s endpoint=%s status=request_failed retries_exhausted error=%v", prefix, ep.Name, err)
@@ -678,6 +679,18 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					prefix, ep.Name, len(reqBody), originalModel, len(claudeReq.Messages), len(claudeReq.Tools),
 					len(cwReq.ConversationState.History), cwToolCount, estimatedTokens)
 
+				if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, originalModel, activeUpstreamModel, errorMsg); ok {
+					log.Printf("%s endpoint=%s dynamic_model_fallback_retry: %s -> %s", prefix, ep.Name, activeUpstreamModel, fallbackModel)
+					activeUpstreamModel = fallbackModel
+					mappedModel = kiro.GetModelID(activeUpstreamModel)
+					cwReq, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+					if err != nil {
+						return nil, fmt.Errorf("prepare fallback request: %w", err)
+					}
+					log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
+					continue
+				}
+
 				// Check if error is context/input size related
 				// Use precise patterns to avoid false positives from unrelated 400 errors
 				// (e.g., malformed request, unsupported content type in tool_result)
@@ -742,6 +755,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
 						return nil, ctx.Err()
 					}
+					attempt++
 					continue
 				}
 
@@ -812,6 +826,7 @@ endpointDone:
 	if requestID != "" {
 		c.Header("x-request-id", requestID)
 	}
+	s.markKiroModelSupported(account, originalModel, activeUpstreamModel)
 
 	// Estimate input tokens from the Claude request
 	inputTokens := kiro.EstimateInputTokens(claudeReq)
@@ -1665,14 +1680,10 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 		Stream:    false,
 	}
 
-	cwReq, err := kiro.TransformClaudeToCodeWhisperer(testClaudeReq, profileArn, nil)
+	activeTestModel := s.resolveKiroUpstreamModel(account, testModel)
+	_, reqBody, err := s.prepareCodeWhispererPayload(testClaudeReq, profileArn, nil, activeTestModel)
 	if err != nil {
-		return nil, fmt.Errorf("transform request: %w", err)
-	}
-
-	reqBody, err := json.Marshal(cwReq)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("prepare request: %w", err)
 	}
 
 	// Proxy URL (Free-tier: random from pool; others: account-bound)
@@ -1688,57 +1699,72 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	// Try each endpoint
 	var lastErr error
 	for _, ep := range endpoints {
-		req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+		for {
+			req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
+			if err != nil {
+				return nil, fmt.Errorf("create request: %w", err)
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			req.Header.Set("Accept", "text/event-stream")
+			req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
+			req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
+			req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+			req.Header.Set("x-amzn-codewhisperer-optout", "true")
+			req.Header.Set("Host", ep.Host)
+			req.Header.Set("Connection", "close")
+			req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+			req.Header.Set("amz-sdk-request", "attempt=1; max=3")
+			if ep.AmzTarget != "" {
+				req.Header.Set("X-Amz-Target", ep.AmzTarget)
+			}
+
+			resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+			if err != nil {
+				log.Printf("[kiro-TestConnection] endpoint=%s request_failed error=%v", ep.Name, err)
+				lastErr = err
+				break
+			}
+
+			respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			resp.Body.Close()
+			if err != nil {
+				return nil, fmt.Errorf("read response: %w", err)
+			}
+
+			log.Printf("[kiro-TestConnection] endpoint=%s response status=%d, body_len=%d, body_preview=%s",
+				ep.Name, resp.StatusCode, len(respBody), truncateForLog(respBody, 500))
+
+			if resp.StatusCode >= 400 {
+				errorMsg := extractKiroErrorMessage(respBody)
+				if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, testModel, activeTestModel, errorMsg); ok {
+					log.Printf("[kiro-TestConnection] endpoint=%s dynamic_model_fallback_retry: %s -> %s", ep.Name, activeTestModel, fallbackModel)
+					activeTestModel = fallbackModel
+					_, reqBody, err = s.prepareCodeWhispererPayload(testClaudeReq, profileArn, nil, activeTestModel)
+					if err != nil {
+						return nil, fmt.Errorf("prepare fallback request: %w", err)
+					}
+					continue
+				}
+
+				lastErr = fmt.Errorf("endpoint %s returned %d: %s", ep.Name, resp.StatusCode, string(respBody))
+				log.Printf("[kiro-TestConnection] endpoint=%s failed, trying next", ep.Name)
+				break
+			}
+
+			s.markKiroModelSupported(account, testModel, activeTestModel)
+
+			// Parse response to extract text
+			parsedResp := kiro.ParseCompleteResponse(respBody)
+
+			log.Printf("[kiro-TestConnection] endpoint=%s parsed text=%q, tool_calls=%d", ep.Name, parsedResp.Text, len(parsedResp.ToolCalls))
+
+			return &TestConnectionResult{
+				Text:        parsedResp.Text,
+				MappedModel: kiro.GetModelID(activeTestModel),
+			}, nil
 		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
-		req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
-		req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-		req.Header.Set("x-amzn-codewhisperer-optout", "true")
-		req.Header.Set("Host", ep.Host)
-		req.Header.Set("Connection", "close")
-		req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
-		req.Header.Set("amz-sdk-request", "attempt=1; max=3")
-		if ep.AmzTarget != "" {
-			req.Header.Set("X-Amz-Target", ep.AmzTarget)
-		}
-
-		resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
-		if err != nil {
-			log.Printf("[kiro-TestConnection] endpoint=%s request_failed error=%v", ep.Name, err)
-			lastErr = err
-			continue
-		}
-
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-
-		log.Printf("[kiro-TestConnection] endpoint=%s response status=%d, body_len=%d, body_preview=%s",
-			ep.Name, resp.StatusCode, len(respBody), truncateForLog(respBody, 500))
-
-		if resp.StatusCode >= 400 {
-			lastErr = fmt.Errorf("endpoint %s returned %d: %s", ep.Name, resp.StatusCode, string(respBody))
-			log.Printf("[kiro-TestConnection] endpoint=%s failed, trying next", ep.Name)
-			continue
-		}
-
-		// Parse response to extract text
-		parsedResp := kiro.ParseCompleteResponse(respBody)
-
-		log.Printf("[kiro-TestConnection] endpoint=%s parsed text=%q, tool_calls=%d", ep.Name, parsedResp.Text, len(parsedResp.ToolCalls))
-
-		return &TestConnectionResult{
-			Text:        parsedResp.Text,
-			MappedModel: "claude-3-5-sonnet-20241022",
-		}, nil
 	}
 
 	if lastErr != nil {

@@ -105,6 +105,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if strings.TrimSpace(existingInstructions) == "" {
 			if instructions := strings.TrimSpace(service.GetOpenCodeInstructions()); instructions != "" {
 				reqBody["instructions"] = instructions
+				c.Set(service.OpenAIInjectedInstructionsContextKey, instructions)
 				// Re-serialize body
 				body, err = json.Marshal(reqBody)
 				if err != nil {

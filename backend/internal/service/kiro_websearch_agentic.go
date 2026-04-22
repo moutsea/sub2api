@@ -467,16 +467,10 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		kiro.CompressImagesInRequest(claudeReq)
 	}
 
-	// Transform to CodeWhisperer format
-	cwReq, err := kiro.TransformClaudeToCodeWhisperer(claudeReq, profileArn, c)
+	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
+	_, cwReqBody, err := s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
 	if err != nil {
-		return nil, fmt.Errorf("transform request: %w", err)
-	}
-
-	// Marshal CodeWhisperer request
-	cwReqBody, err := json.Marshal(cwReq)
-	if err != nil {
-		return nil, fmt.Errorf("marshal cw request: %w", err)
+		return nil, fmt.Errorf("prepare cw request: %w", err)
 	}
 
 	// Build endpoint list (primary + fallback) — same as Forward()
@@ -494,7 +488,8 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	tokenRefreshed := false
 
 	for epIdx, ep := range endpoints {
-		for attempt := 1; attempt <= kiroMaxRetries; attempt++ {
+		attempt := 1
+		for attempt <= kiroMaxRetries {
 			// Check context cancellation
 			select {
 			case <-ctx.Done():
@@ -542,6 +537,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
 						return nil, ctx.Err()
 					}
+					attempt++
 					continue
 				}
 				log.Printf("%s endpoint=%s retries_exhausted error=%v", prefix, ep.Name, err)
@@ -648,6 +644,16 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				// 400 is usually deterministic — both endpoints will reject, no point failing over.
 				// Exception: "profileArn is required" is endpoint-specific (AWSQ requires it, CW may not).
 				if resp.StatusCode == http.StatusBadRequest {
+					if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, claudeReq.Model, activeUpstreamModel, upstreamMsg); ok {
+						log.Printf("%s endpoint=%s dynamic_model_fallback_retry: %s -> %s", prefix, ep.Name, activeUpstreamModel, fallbackModel)
+						activeUpstreamModel = fallbackModel
+						_, cwReqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+						if err != nil {
+							return nil, fmt.Errorf("prepare fallback cw request: %w", err)
+						}
+						continue
+					}
+
 					msgLower := strings.ToLower(upstreamMsg)
 
 					// profileArn-related 400: failover to next endpoint
@@ -679,6 +685,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 					if !sleepKiroBackoffWithContext(ctx, attempt) {
 						return nil, ctx.Err()
 					}
+					attempt++
 					continue
 				}
 				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
@@ -686,6 +693,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			}
 
 			// Success
+			s.markKiroModelSupported(account, claudeReq.Model, activeUpstreamModel)
 			return resp, nil
 		}
 

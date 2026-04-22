@@ -45,7 +45,7 @@ func (f fakeAPIKeyRepo) Update(ctx context.Context, key *service.APIKey) error {
 func (f fakeAPIKeyRepo) Delete(ctx context.Context, id int64) error {
 	return errors.New("not implemented")
 }
-func (f fakeAPIKeyRepo) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
+func (f fakeAPIKeyRepo) ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
 	return nil, nil, errors.New("not implemented")
 }
 func (f fakeAPIKeyRepo) VerifyOwnership(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error) {
@@ -74,6 +74,12 @@ func (f fakeAPIKeyRepo) ListKeysByUserID(ctx context.Context, userID int64) ([]s
 }
 func (f fakeAPIKeyRepo) ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error) {
 	return nil, errors.New("not implemented")
+}
+func (f fakeAPIKeyRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+func (f fakeAPIKeyRepo) ResetQuotaUsed(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
 }
 
 type googleErrorResponse struct {
@@ -168,7 +174,6 @@ func TestApiKeyAuthWithSubscriptionGoogleSetsGroupContext(t *testing.T) {
 		User:   user,
 		Group:  group,
 	}
-	apiKey.GroupID = &group.ID
 
 	apiKeyService := service.NewAPIKeyService(
 		fakeAPIKeyRepo{

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,20 @@ func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, pl
 
 type stubConcurrencyCache struct {
 	ConcurrencyCache
+}
+
+type openAICapacityAccountRepoStub struct {
+	AccountRepository
+	tempCalls  int
+	lastUntil  time.Time
+	lastReason string
+}
+
+func (r *openAICapacityAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	r.tempCalls++
+	r.lastUntil = until
+	r.lastReason = reason
+	return nil
 }
 
 func (c stubConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -205,7 +221,7 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, start, "model", "model")
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, start, "model", "model", "")
 	_ = pw.Close()
 	_ = pr.Close()
 
@@ -246,7 +262,7 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 		_, _ = pw.Write([]byte(payload))
 	}()
 
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 2}, time.Now(), "model", "model")
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 2}, time.Now(), "model", "model", "")
 	_ = pr.Close()
 
 	if !errors.Is(err, bufio.ErrTooLong) {
@@ -277,7 +293,7 @@ func TestOpenAINonStreamingContentTypePassThrough(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/vnd.test+json"}},
 	}
 
-	_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+	_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model", "")
 	if err != nil {
 		t.Fatalf("handleNonStreamingResponse error: %v", err)
 	}
@@ -307,13 +323,252 @@ func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
 		Header:     http.Header{},
 	}
 
-	_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+	_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model", "")
 	if err != nil {
 		t.Fatalf("handleNonStreamingResponse error: %v", err)
 	}
 
 	if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
 		t.Fatalf("expected default Content-Type, got %q", rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestOpenAINonStreamingResponse_StripsInjectedInstructionsAndNormalizesModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	injectedInstructions := GetCodexCLIInstructions()
+	body := []byte(`{"id":"resp_1","model":"gpt-5.2-2025-12-11","instructions":` + strconv.Quote(injectedInstructions) + `,"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":11,"output_tokens":5,"input_tokens_details":{"cached_tokens":7}}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	usage, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.1", "gpt-5.2", injectedInstructions)
+	if err != nil {
+		t.Fatalf("handleNonStreamingResponse error: %v", err)
+	}
+	if usage == nil || usage.InputTokens != 11 || usage.OutputTokens != 5 || usage.CacheReadInputTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if _, exists := got["instructions"]; exists {
+		t.Fatalf("expected injected instructions to be stripped, got %v", got["instructions"])
+	}
+	if model, _ := got["model"].(string); model != "gpt-5.2" {
+		t.Fatalf("expected normalized model gpt-5.2, got %q", model)
+	}
+}
+
+func TestOpenAIHandleOAuthSSEToJSON_RebuildsMissingOutputAndStripsInjectedInstructions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	injectedInstructions := GetCodexCLIInstructions()
+	instructionsJSON, err := json.Marshal(injectedInstructions)
+	if err != nil {
+		t.Fatalf("marshal instructions: %v", err)
+	}
+
+	body := []byte("event: response.output_item.done\n" +
+		"data: " + `{"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"OK"}],"role":"assistant"},"output_index":0}` + "\n\n" +
+		"event: response.completed\n" +
+		"data: " + `{"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.2-2025-12-11","instructions":` + string(instructionsJSON) + `,"output":[],"usage":{"input_tokens":11,"output_tokens":5,"input_tokens_details":{"cached_tokens":7}}}}` + "\n")
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, err := svc.handleOAuthSSEToJSON(context.Background(), resp, c, &Account{Type: AccountTypeOAuth}, body, "gpt-5.1", "gpt-5.2", injectedInstructions)
+	if err != nil {
+		t.Fatalf("handleOAuthSSEToJSON error: %v", err)
+	}
+	if usage == nil || usage.InputTokens != 11 || usage.OutputTokens != 5 || usage.CacheReadInputTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if _, exists := got["instructions"]; exists {
+		t.Fatalf("expected injected instructions to be stripped, got %v", got["instructions"])
+	}
+	if model, _ := got["model"].(string); model != "gpt-5.2" {
+		t.Fatalf("expected normalized model gpt-5.2, got %q", model)
+	}
+	output, _ := got["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("expected rebuilt output item, got %v", got["output"])
+	}
+	item, _ := output[0].(map[string]any)
+	content, _ := item["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("expected one content part, got %v", item["content"])
+	}
+	part, _ := content[0].(map[string]any)
+	if text, _ := part["text"].(string); text != "OK" {
+		t.Fatalf("expected rebuilt text OK, got %q", text)
+	}
+}
+
+func TestOpenAIHandleCCViaResponsesNonStreamingResponse_RebuildsMissingOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	body := []byte("event: response.output_item.done\n" +
+		"data: " + `{"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"OK"}],"role":"assistant"},"output_index":0}` + "\n\n" +
+		"event: response.completed\n" +
+		"data: " + `{"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[],"usage":{"input_tokens":11,"output_tokens":5,"input_tokens_details":{"cached_tokens":7}}}}` + "\n")
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, err := svc.handleCCViaResponsesNonStreamingResponse(context.Background(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.2", "")
+	if err != nil {
+		t.Fatalf("handleCCViaResponsesNonStreamingResponse error: %v", err)
+	}
+	if usage == nil || usage.InputTokens != 11 || usage.OutputTokens != 5 || usage.CacheReadInputTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal CC response: %v", err)
+	}
+
+	choices, _ := got["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("expected one choice, got %v", got["choices"])
+	}
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if content, _ := message["content"].(string); content != "OK" {
+		t.Fatalf("expected message content OK, got %q", content)
+	}
+	if model, _ := got["model"].(string); model != "gpt-5.2" {
+		t.Fatalf("expected visible mapped model gpt-5.2, got %q", model)
+	}
+}
+
+func TestOpenAIStreamingResponse_NormalizesSnapshotModelToStableAlias(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	payload := "event: response.created\n" +
+		"data: " + `{"type":"response.created","response":{"id":"resp_1","model":"gpt-5.2-2025-12-11"}}` + "\n\n" +
+		"event: response.completed\n" +
+		"data: " + `{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.2-2025-12-11","usage":{"input_tokens":11,"output_tokens":5}}}` + "\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(payload)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{Type: AccountTypeOAuth}, time.Now(), "gpt-5.1", "gpt-5.2", "")
+	if err != nil {
+		t.Fatalf("handleStreamingResponse error: %v", err)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "gpt-5.2-2025-12-11") {
+		t.Fatalf("expected snapshot model to be normalized, got %q", body)
+	}
+	if !strings.Contains(body, `"model":"gpt-5.2"`) {
+		t.Fatalf("expected stable model alias in stream, got %q", body)
+	}
+}
+
+func TestOpenAIStreamingResponse_StripsInjectedInstructionsAndNormalizesModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	injectedInstructions := GetCodexCLIInstructions()
+	instructionsJSON, err := json.Marshal(injectedInstructions)
+	if err != nil {
+		t.Fatalf("marshal instructions: %v", err)
+	}
+
+	payload := "event: response.created\n" +
+		"data: " + `{"type":"response.created","response":{"id":"resp_1","model":"gpt-5.2-2025-12-11","instructions":` + string(instructionsJSON) + `}}` + "\n\n" +
+		"event: response.completed\n" +
+		"data: " + `{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.2-2025-12-11","instructions":` + string(instructionsJSON) + `,"usage":{"input_tokens":11,"output_tokens":5}}}` + "\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(payload)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	_, err = svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{Type: AccountTypeOAuth}, time.Now(), "gpt-5.1", "gpt-5.2", injectedInstructions)
+	if err != nil {
+		t.Fatalf("handleStreamingResponse error: %v", err)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, injectedInstructions) {
+		t.Fatalf("expected injected instructions to be stripped, got %q", body)
+	}
+	if strings.Contains(body, `"instructions"`) {
+		t.Fatalf("expected instructions field to be stripped, got %q", body)
+	}
+	if strings.Contains(body, "gpt-5.2-2025-12-11") {
+		t.Fatalf("expected snapshot model to be normalized, got %q", body)
+	}
+	if !strings.Contains(body, `"model":"gpt-5.2"`) {
+		t.Fatalf("expected stable model alias in stream, got %q", body)
+	}
+}
+
+func TestOpenAIResponseModelMatches_DoesNotConfuseFutureVersionWithGpt51(t *testing.T) {
+	if openAIResponseModelMatches("gpt-5.10-2026-01-01", "gpt-5.2") {
+		t.Fatalf("did not expect gpt-5.10 snapshot to match gpt-5.2")
+	}
+	if normalized := normalizeOpenAIResponseModel("gpt-5.10-2026-01-01"); normalized != "" {
+		t.Fatalf("expected no normalization for unknown future version, got %q", normalized)
 	}
 }
 
@@ -351,7 +606,7 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 		_, _ = pw.Write([]byte("data: {}\n\n"))
 	}()
 
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", "")
 	_ = pr.Close()
 	if err != nil {
 		t.Fatalf("handleStreamingResponse error: %v", err)
@@ -365,6 +620,127 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 	}
 	if rec.Header().Get("X-Request-Id") != "req-123" {
 		t.Fatalf("expected X-Request-Id passthrough, got %q", rec.Header().Get("X-Request-Id"))
+	}
+}
+
+func TestRateLimitService_HandleOpenAICapacityError_SetsTempUnschedulable(t *testing.T) {
+	repo := &openAICapacityAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       301,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	start := time.Now()
+	ok := service.HandleOpenAICapacityError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		[]byte(`{"response":{"error":{"message":"Selected model is at capacity. Please try a different model."}}}`),
+	)
+
+	if !ok {
+		t.Fatalf("expected capacity error to be handled")
+	}
+	if repo.tempCalls != 1 {
+		t.Fatalf("expected temp unschedulable to be set once, got %d", repo.tempCalls)
+	}
+	minUntil := start.Add(openAICapacityCooldown - 2*time.Second)
+	maxUntil := start.Add(openAICapacityCooldown + 2*time.Second)
+	if repo.lastUntil.Before(minUntil) || repo.lastUntil.After(maxUntil) {
+		t.Fatalf("unexpected cooldown window: got %v, want around %v", repo.lastUntil, start.Add(openAICapacityCooldown))
+	}
+	if !strings.Contains(repo.lastReason, "openai_model_capacity") {
+		t.Fatalf("expected structured temp unsched reason, got %q", repo.lastReason)
+	}
+}
+
+func TestOpenAIStreamingResponse_PreReadsCapacityAndFailsOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 1,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	repo := &openAICapacityAccountRepoStub{}
+	rateLimitService := NewRateLimitService(repo, nil, cfg, nil, nil)
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		rateLimitService: rateLimitService,
+		toolCorrector:    NewCodexToolCorrector(),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"X-Request-Id": []string{"req-capacity"}},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n\n"))
+	}()
+
+	account := &Account{ID: 302, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4", "")
+	_ = pr.Close()
+
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("expected UpstreamFailoverError, got %v", err)
+	}
+	if failoverErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected failover status 429, got %d", failoverErr.StatusCode)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected no client-visible body before failover, got %q", rec.Body.String())
+	}
+	if repo.tempCalls != 1 {
+		t.Fatalf("expected capacity cooldown to be recorded once, got %d", repo.tempCalls)
+	}
+}
+
+func TestOpenAIHandleOAuthSSEToJSON_CapacityTriggersFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	repo := &openAICapacityAccountRepoStub{}
+	rateLimitService := NewRateLimitService(repo, nil, cfg, nil, nil)
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		rateLimitService: rateLimitService,
+		toolCorrector:    NewCodexToolCorrector(),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Request-Id": []string{"req-capacity-json"}},
+	}
+	account := &Account{ID: 303, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	body := []byte("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n\n")
+
+	_, err := svc.handleOAuthSSEToJSON(context.Background(), resp, c, account, body, "gpt-5.4", "gpt-5.4", "")
+
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("expected UpstreamFailoverError, got %v", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected no response body before failover, got %q", rec.Body.String())
+	}
+	if repo.tempCalls != 1 {
+		t.Fatalf("expected capacity cooldown to be recorded once, got %d", repo.tempCalls)
 	}
 }
 

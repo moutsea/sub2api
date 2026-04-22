@@ -15,7 +15,7 @@ const (
 // Model ID mapping from Claude to AWSQ
 // Format aligned with kiro.rs: use simplified model IDs
 var ModelMap = map[string]string{
-	// Opus 4.7 series (1M context by default, no separate -1m variant)
+	// Opus 4.7 series
 	"claude-opus-4-7": "claude-opus-4.7",
 	// Opus 4.6 series
 	"claude-opus-4-6":    "claude-opus-4.6",
@@ -180,10 +180,10 @@ type ToolUseEntry struct {
 
 // HistoryEntry represents a history entry (user or assistant message)
 type HistoryEntry struct {
-	MessageID string                    `json:"messageId"`
-	Type      string                    // "user" or "assistant" (not serialized)
-	User      *HistoryUserMessage       `json:"userInputMessage,omitempty"`
-	Assistant *HistoryAssistantMessage  `json:"assistantResponseMessage,omitempty"`
+	MessageID string                   `json:"messageId"`
+	Type      string                   // "user" or "assistant" (not serialized)
+	User      *HistoryUserMessage      `json:"userInputMessage,omitempty"`
+	Assistant *HistoryAssistantMessage `json:"assistantResponseMessage,omitempty"`
 }
 
 // HistoryUserMessage represents a user message in history
@@ -337,11 +337,11 @@ type StreamEvent struct {
 	StopReason StopReason
 
 	// BackendUsage
-	Credits           float64
-	ContextPercentage float64
-	HasTokenUsage     bool
-	InputTokens       int
-	OutputTokens      int
+	Credits                  float64
+	ContextPercentage        float64
+	HasTokenUsage            bool
+	InputTokens              int
+	OutputTokens             int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
 

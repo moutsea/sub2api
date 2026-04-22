@@ -26,7 +26,6 @@ type RateLimitService struct {
 	tokenCacheInvalidator TokenCacheInvalidator
 	usageCacheMu          sync.RWMutex
 	usageCache            map[int64]*geminiUsageCacheEntry
-
 }
 
 type geminiUsageCacheEntry struct {
@@ -102,6 +101,10 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	if upstreamMsg != "" {
 		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
+	}
+
+	if s.HandleOpenAICapacityError(ctx, account, statusCode, responseBody) {
+		return false
 	}
 
 	switch statusCode {
@@ -325,7 +328,6 @@ func (s *RateLimitService) getGeminiUsageTotals(accountID int64, windowStart, no
 	}
 	return entry.totals, true
 }
-
 
 func (s *RateLimitService) setGeminiUsageTotals(accountID int64, windowStart, now time.Time, totals GeminiUsageTotals) {
 	s.usageCacheMu.Lock()

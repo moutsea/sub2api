@@ -10,6 +10,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNormalizeCodexModel_RemapsLegacyGPT5FamiliesToGPT52Series(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "gpt5", input: "gpt-5", want: "gpt-5.2"},
+		{name: "gpt5 mini", input: "gpt-5-mini", want: "gpt-5.2"},
+		{name: "gpt51", input: "gpt-5.1", want: "gpt-5.2"},
+		{name: "gpt51 high", input: "gpt-5.1-high", want: "gpt-5.2"},
+		{name: "gpt51 chat latest", input: "gpt-5.1-chat-latest", want: "gpt-5.2"},
+		{name: "gpt5 codex", input: "gpt-5-codex", want: "gpt-5.2-codex"},
+		{name: "gpt5 codex fuzzy", input: "gpt 5 codex", want: "gpt-5.2-codex"},
+		{name: "gpt51 codex", input: "gpt-5.1-codex", want: "gpt-5.2-codex"},
+		{name: "gpt51 codex high", input: "gpt-5.1-codex-high", want: "gpt-5.2-codex"},
+		{name: "gpt51 codex max", input: "gpt-5.1-codex-max", want: "gpt-5.2-codex"},
+		{name: "gpt5 codex mini", input: "gpt-5-codex-mini", want: "gpt-5.2-codex"},
+		{name: "codex mini latest", input: "codex-mini-latest", want: "gpt-5.2-codex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
+		})
+	}
+}
+
+func TestNormalizeCodexModel_DoesNotConfuseFutureVersionWithGPT51(t *testing.T) {
+	tests := []string{
+		"gpt-5.10",
+		"gpt-5.10-codex",
+		"provider/gpt-5.10-codex",
+		"gpt 5.10 codex",
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			require.Empty(t, normalizeCodexModel(input))
+		})
+	}
+}
+
 func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 	// 续链场景：保留 item_reference 与 id，但不再强制 store=true。
 	setupCodexCache(t)
@@ -174,6 +216,38 @@ func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
 	require.Len(t, input, 0)
+}
+
+func TestApplyCodexOAuthTransform_RemapsLegacyGPT51HighToGPT52WithEffort(t *testing.T) {
+	setupCodexCache(t)
+
+	reqBody := map[string]any{
+		"model": "gpt-5.1-high",
+		"input": "hi",
+	}
+
+	applyCodexOAuthTransform(reqBody)
+
+	require.Equal(t, "gpt-5.2", reqBody["model"])
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "high", reasoning["effort"])
+}
+
+func TestApplyCodexOAuthTransform_RemapsLegacyGPT51CodexMaxToGPT52CodexXHigh(t *testing.T) {
+	setupCodexCache(t)
+
+	reqBody := map[string]any{
+		"model": "gpt-5.1-codex-max",
+		"input": "hi",
+	}
+
+	applyCodexOAuthTransform(reqBody)
+
+	require.Equal(t, "gpt-5.2-codex", reqBody["model"])
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "xhigh", reasoning["effort"])
 }
 
 func setupCodexCache(t *testing.T) {
