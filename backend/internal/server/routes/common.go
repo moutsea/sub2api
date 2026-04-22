@@ -14,7 +14,9 @@ func RegisterCommonRoutes(r *gin.Engine, h *handler.Handlers) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// 临时 API Key 公开查询
+	// API Key 公开查询（支持 TempAPIKey 和普通 APIKey）
+	r.GET("/api/v1/keys/query", h.TempAPIKeyQuery.Query)
+	// 兼容旧路由
 	r.GET("/api/v1/temp-api-keys/query", h.TempAPIKeyQuery.Query)
 
 	// Claude Code 遥测日志（忽略，直接返回200）

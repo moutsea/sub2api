@@ -52,6 +52,9 @@ interface KeyInfo {
   daily_quota_usd?: number
   current_period_cost_usd?: number
   remaining_daily_quota_usd?: number
+  // standard 类型：时间段消费统计
+  cost_today?: number
+  cost_30d?: number
   usage_logs?: UsageLogEntry[]
   pagination?: PaginationInfo
 }
@@ -76,7 +79,7 @@ const queryKey = async (page = 1) => {
   }
 
   try {
-    const resp = await axios.get('/api/v1/temp-api-keys/query', {
+    const resp = await axios.get('/api/v1/keys/query', {
       params: {
         key: keyInput.value.trim(),
         page: page,
@@ -128,6 +131,7 @@ const getStatusText = (info: KeyInfo) => {
   if (info.status === 'disabled') return t('keyQuery.status.disabled')
   if (info.status === 'exhausted' || info.is_exhausted) return t('keyQuery.status.exhausted')
   if (info.is_expired) return t('keyQuery.status.expired')
+  if (info.key_type === 'standard') return info.status === 'active' ? t('keyQuery.status.active') : info.status
   if (info.is_activated) return t('keyQuery.status.active')
   return t('keyQuery.status.pending')
 }
@@ -136,9 +140,15 @@ const getStatusBadge = (info: KeyInfo) => {
   if (info.status === 'disabled') return 'badge-error'
   if (info.status === 'exhausted' || info.is_exhausted) return 'badge-error'
   if (info.is_expired) return 'badge-warning'
+  if (info.key_type === 'standard') return info.status === 'active' ? 'badge-success' : 'badge-warning'
   if (info.is_activated) return 'badge-success'
   return 'badge-info'
 }
+
+// 判断是否为 standard 类型（普通 API Key）
+const isStandard = computed(() => {
+  return keyInfo.value?.key_type === 'standard'
+})
 
 // 判断是否为 quota_only 类型
 const isQuotaOnly = computed(() => {
@@ -152,6 +162,11 @@ const isTimeQuota = computed(() => {
 
 const usagePercent = computed(() => {
   if (!keyInfo.value) return 0
+  // standard 类型：基于 quota USD 计算
+  if (keyInfo.value.key_type === 'standard') {
+    if (!keyInfo.value.total_quota_usd || keyInfo.value.total_quota_usd <= 0) return 0
+    return Math.min(100, ((keyInfo.value.total_cost_usd || 0) / keyInfo.value.total_quota_usd) * 100)
+  }
   // quota_only 类型：基于美元消费计算
   if (keyInfo.value.key_type === 'quota_only') {
     if (!keyInfo.value.total_quota_usd || keyInfo.value.total_quota_usd <= 0) return 0
@@ -251,8 +266,18 @@ onMounted(() => {
             </div>
 
             <div class="grid grid-cols-2 gap-4">
+              <!-- standard 类型：显示总额度 -->
+              <div v-if="isStandard && keyInfo.total_quota_usd" class="stat bg-base-200/30 rounded-xl p-4">
+                <div class="stat-title text-xs">{{ t('keyQuery.totalQuota') }}</div>
+                <div class="stat-value text-xl text-primary">${{ keyInfo.total_quota_usd?.toFixed(2) || '0.00' }}</div>
+                <div class="stat-desc">USD</div>
+              </div>
+              <div v-else-if="isStandard" class="stat bg-base-200/30 rounded-xl p-4">
+                <div class="stat-title text-xs">{{ t('keyQuery.totalQuota') }}</div>
+                <div class="stat-value text-xl text-primary">{{ t('keyQuery.unlimited') || 'Unlimited' }}</div>
+              </div>
               <!-- quota_only 类型：显示总额度 -->
-              <div v-if="isQuotaOnly" class="stat bg-base-200/30 rounded-xl p-4">
+              <div v-else-if="isQuotaOnly" class="stat bg-base-200/30 rounded-xl p-4">
                 <div class="stat-title text-xs">{{ t('keyQuery.totalQuota') }}</div>
                 <div class="stat-value text-xl text-primary">${{ keyInfo.total_quota_usd?.toFixed(2) || '0.00' }}</div>
                 <div class="stat-desc">USD</div>
@@ -276,12 +301,16 @@ onMounted(() => {
             </div>
 
             <div class="space-y-3">
-              <div class="flex items-center justify-between text-sm">
+              <div v-if="!isStandard" class="flex items-center justify-between text-sm">
                 <span class="text-base-content/60">{{ t('keyQuery.activatedAt') }}</span>
                 <span class="font-mono">{{ formatDate(keyInfo.activated_at) }}</span>
               </div>
+              <div v-if="isStandard" class="flex items-center justify-between text-sm">
+                <span class="text-base-content/60">{{ t('keyQuery.createdAt') || '创建时间' }}</span>
+                <span class="font-mono">{{ formatDate(keyInfo.activated_at) }}</span>
+              </div>
               <!-- time_limited / time_quota 类型才显示过期时间 -->
-              <div v-if="!isQuotaOnly" class="flex items-center justify-between text-sm">
+              <div v-if="!isQuotaOnly && !isStandard" class="flex items-center justify-between text-sm">
                 <span class="text-base-content/60">{{ t('keyQuery.expiresAt') }}</span>
                 <span class="font-mono" :class="keyInfo.is_expired ? 'text-error' : ''">{{ formatDate(keyInfo.expires_at) }}</span>
               </div>
@@ -290,8 +319,53 @@ onMounted(() => {
             <div class="divider text-xs text-base-content/40">{{ t('keyQuery.usageInfo') }}</div>
 
             <div class="space-y-3">
+              <!-- standard 类型：显示 quota 消费 -->
+              <template v-if="isStandard && keyInfo.total_quota_usd">
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">{{ t('keyQuery.costUsed') }} / {{ t('keyQuery.totalQuota') }}</span>
+                  <span class="font-semibold">${{ (keyInfo.total_cost_usd || 0).toFixed(4) }} / ${{ (keyInfo.total_quota_usd || 0).toFixed(2) }}</span>
+                </div>
+                <progress
+                  class="progress w-full h-3"
+                  :class="progressColor"
+                  :value="keyInfo.total_cost_usd || 0"
+                  :max="keyInfo.total_quota_usd || 1"
+                ></progress>
+                <div class="flex items-center justify-between">
+                  <span class="text-base-content/60 text-sm">{{ t('keyQuery.remainingQuota') }}</span>
+                  <span
+                    class="text-2xl font-bold"
+                    :class="(keyInfo.remaining_quota_usd || 0) > 0 ? 'text-success' : 'text-error'"
+                  >
+                    ${{ (keyInfo.remaining_quota_usd || 0).toFixed(4) }}
+                  </span>
+                </div>
+                <div class="grid grid-cols-2 gap-4 mt-2">
+                  <div class="flex items-center justify-between text-sm">
+                    <span class="text-base-content/60">{{ t('keyQuery.usageToday') }}</span>
+                    <span class="font-mono text-warning">${{ (keyInfo.cost_today || 0).toFixed(4) }}</span>
+                  </div>
+                  <div class="flex items-center justify-between text-sm">
+                    <span class="text-base-content/60">{{ t('keyQuery.usage30d') }}</span>
+                    <span class="font-mono text-warning">${{ (keyInfo.cost_30d || 0).toFixed(4) }}</span>
+                  </div>
+                </div>
+              </template>
+              <!-- standard 类型无 quota：显示消费统计 -->
+              <template v-else-if="isStandard">
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="stat bg-base-200/30 rounded-xl p-4">
+                    <div class="stat-title text-xs">{{ t('keyQuery.usageToday') }}</div>
+                    <div class="stat-value text-lg text-warning">${{ (keyInfo.cost_today || 0).toFixed(4) }}</div>
+                  </div>
+                  <div class="stat bg-base-200/30 rounded-xl p-4">
+                    <div class="stat-title text-xs">{{ t('keyQuery.usage30d') }}</div>
+                    <div class="stat-value text-lg text-warning">${{ (keyInfo.cost_30d || 0).toFixed(4) }}</div>
+                  </div>
+                </div>
+              </template>
               <!-- quota_only 类型：显示美元消费 -->
-              <template v-if="isQuotaOnly">
+              <template v-else-if="isQuotaOnly">
                 <div class="flex items-center justify-between text-sm">
                   <span class="text-base-content/60">{{ t('keyQuery.costUsed') }} / {{ t('keyQuery.totalQuota') }}</span>
                   <span class="font-semibold">${{ (keyInfo.total_cost_usd || 0).toFixed(4) }} / ${{ (keyInfo.total_quota_usd || 0).toFixed(2) }}</span>
