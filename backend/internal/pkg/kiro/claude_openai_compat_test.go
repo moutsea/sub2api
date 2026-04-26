@@ -69,8 +69,8 @@ func TestConvertClaudeToOpenAI_OpusModel(t *testing.T) {
 	}
 	var req map[string]any
 	json.Unmarshal(openaiBody, &req)
-	if req["model"] != "gpt-5.4-codex" {
-		t.Errorf("model = %v, want gpt-5.4-codex", req["model"])
+	if req["model"] != "gpt-5.4" {
+		t.Errorf("model = %v, want gpt-5.4", req["model"])
 	}
 }
 
@@ -576,12 +576,12 @@ func TestGetOpenAIModelID(t *testing.T) {
 	}{
 		{"claude-sonnet-4-20250514", "gpt-5.3-codex"},
 		{"claude-sonnet-4-6", "gpt-5.3-codex"},
-		{"claude-opus-4-6", "gpt-5.4-codex"},
-		{"claude-opus-4-5", "gpt-5.4-codex"},
+		{"claude-opus-4-6", "gpt-5.4"},
+		{"claude-opus-4-5", "gpt-5.4"},
 		{"claude-haiku-4-5", "gpt-5.2-codex"},
-		{"unknown-model", "gpt-5.4-codex"},
+		{"unknown-model", "gpt-5.4"},
 		{"some-sonnet-variant", "gpt-5.3-codex"},
-		{"some-opus-variant", "gpt-5.4-codex"},
+		{"some-opus-variant", "gpt-5.4"},
 	}
 	for _, tt := range tests {
 		got := GetOpenAIModelID(tt.input)

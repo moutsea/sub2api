@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
@@ -24,17 +23,67 @@ var (
 	openAIModelBasePattern = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
 )
 
+const (
+	openAIPricingFallbackModel      = "gpt-5.5"
+	openAICodexPricingFallbackModel = "gpt-5.1-codex"
+)
+
+var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
+	"gpt-5.3": {
+		InputCostPerToken:               1.75e-06,
+		InputCostPerTokenPriority:       3.5e-06,
+		OutputCostPerToken:              14e-06,
+		OutputCostPerTokenPriority:      28e-06,
+		CacheReadInputTokenCost:         1.75e-07,
+		CacheReadInputTokenCostPriority: 3.5e-07,
+		SupportsServiceTier:             true,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
+	"gpt-5.4": {
+		InputCostPerToken:               2.5e-06,
+		OutputCostPerToken:              15e-06,
+		CacheReadInputTokenCost:         2.5e-07,
+		LongContextInputTokenThreshold:  272000,
+		LongContextInputCostMultiplier:  2.0,
+		LongContextOutputCostMultiplier: 1.5,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
+	"gpt-5.5": {
+		InputCostPerToken:               5e-06,
+		InputCostPerTokenPriority:       1e-05,
+		OutputCostPerToken:              30e-06,
+		OutputCostPerTokenPriority:      60e-06,
+		CacheReadInputTokenCost:         5e-07,
+		CacheReadInputTokenCostPriority: 1e-06,
+		SupportsServiceTier:             true,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
+}
+
 // LiteLLMModelPricing LiteLLM价格数据结构
 // 只保留我们需要的字段，使用指针来处理可能缺失的值
 type LiteLLMModelPricing struct {
-	InputCostPerToken           float64 `json:"input_cost_per_token"`
-	OutputCostPerToken          float64 `json:"output_cost_per_token"`
-	CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
-	CacheReadInputTokenCost     float64 `json:"cache_read_input_token_cost"`
-	LiteLLMProvider             string  `json:"litellm_provider"`
-	Mode                        string  `json:"mode"`
-	SupportsPromptCaching       bool    `json:"supports_prompt_caching"`
-	OutputCostPerImage          float64 `json:"output_cost_per_image"` // 图片生成模型每张图片价格
+	InputCostPerToken               float64 `json:"input_cost_per_token"`
+	InputCostPerTokenPriority       float64 `json:"input_cost_per_token_priority"`
+	OutputCostPerToken              float64 `json:"output_cost_per_token"`
+	OutputCostPerTokenPriority      float64 `json:"output_cost_per_token_priority"`
+	CacheCreationInputTokenCost     float64 `json:"cache_creation_input_token_cost"`
+	CacheReadInputTokenCost         float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputTokenCostPriority float64 `json:"cache_read_input_token_cost_priority"`
+	LongContextInputTokenThreshold  int     `json:"long_context_input_token_threshold,omitempty"`
+	LongContextInputCostMultiplier  float64 `json:"long_context_input_cost_multiplier,omitempty"`
+	LongContextOutputCostMultiplier float64 `json:"long_context_output_cost_multiplier,omitempty"`
+	SupportsServiceTier             bool    `json:"supports_service_tier"`
+	LiteLLMProvider                 string  `json:"litellm_provider"`
+	Mode                            string  `json:"mode"`
+	SupportsPromptCaching           bool    `json:"supports_prompt_caching"`
+	OutputCostPerImage              float64 `json:"output_cost_per_image"` // 图片生成模型每张图片价格
 }
 
 // PricingRemoteClient 远程价格数据获取接口
@@ -45,14 +94,21 @@ type PricingRemoteClient interface {
 
 // LiteLLMRawEntry 用于解析原始JSON数据
 type LiteLLMRawEntry struct {
-	InputCostPerToken           *float64 `json:"input_cost_per_token"`
-	OutputCostPerToken          *float64 `json:"output_cost_per_token"`
-	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost"`
-	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost"`
-	LiteLLMProvider             string   `json:"litellm_provider"`
-	Mode                        string   `json:"mode"`
-	SupportsPromptCaching       bool     `json:"supports_prompt_caching"`
-	OutputCostPerImage          *float64 `json:"output_cost_per_image"`
+	InputCostPerToken               *float64 `json:"input_cost_per_token"`
+	InputCostPerTokenPriority       *float64 `json:"input_cost_per_token_priority"`
+	OutputCostPerToken              *float64 `json:"output_cost_per_token"`
+	OutputCostPerTokenPriority      *float64 `json:"output_cost_per_token_priority"`
+	CacheCreationInputTokenCost     *float64 `json:"cache_creation_input_token_cost"`
+	CacheReadInputTokenCost         *float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputTokenCostPriority *float64 `json:"cache_read_input_token_cost_priority"`
+	LongContextInputTokenThreshold  *int     `json:"long_context_input_token_threshold"`
+	LongContextInputCostMultiplier  *float64 `json:"long_context_input_cost_multiplier"`
+	LongContextOutputCostMultiplier *float64 `json:"long_context_output_cost_multiplier"`
+	SupportsServiceTier             bool     `json:"supports_service_tier"`
+	LiteLLMProvider                 string   `json:"litellm_provider"`
+	Mode                            string   `json:"mode"`
+	SupportsPromptCaching           bool     `json:"supports_prompt_caching"`
+	OutputCostPerImage              *float64 `json:"output_cost_per_image"`
 }
 
 // PricingService 动态价格服务
@@ -304,6 +360,7 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		}
 
 		pricing := &LiteLLMModelPricing{
+			SupportsServiceTier:   entry.SupportsServiceTier,
 			LiteLLMProvider:       entry.LiteLLMProvider,
 			Mode:                  entry.Mode,
 			SupportsPromptCaching: entry.SupportsPromptCaching,
@@ -312,14 +369,32 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.InputCostPerToken != nil {
 			pricing.InputCostPerToken = *entry.InputCostPerToken
 		}
+		if entry.InputCostPerTokenPriority != nil {
+			pricing.InputCostPerTokenPriority = *entry.InputCostPerTokenPriority
+		}
 		if entry.OutputCostPerToken != nil {
 			pricing.OutputCostPerToken = *entry.OutputCostPerToken
+		}
+		if entry.OutputCostPerTokenPriority != nil {
+			pricing.OutputCostPerTokenPriority = *entry.OutputCostPerTokenPriority
 		}
 		if entry.CacheCreationInputTokenCost != nil {
 			pricing.CacheCreationInputTokenCost = *entry.CacheCreationInputTokenCost
 		}
 		if entry.CacheReadInputTokenCost != nil {
 			pricing.CacheReadInputTokenCost = *entry.CacheReadInputTokenCost
+		}
+		if entry.CacheReadInputTokenCostPriority != nil {
+			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
+		}
+		if entry.LongContextInputTokenThreshold != nil {
+			pricing.LongContextInputTokenThreshold = *entry.LongContextInputTokenThreshold
+		}
+		if entry.LongContextInputCostMultiplier != nil {
+			pricing.LongContextInputCostMultiplier = *entry.LongContextInputCostMultiplier
+		}
+		if entry.LongContextOutputCostMultiplier != nil {
+			pricing.LongContextOutputCostMultiplier = *entry.LongContextOutputCostMultiplier
 		}
 		if entry.OutputCostPerImage != nil {
 			pricing.OutputCostPerImage = *entry.OutputCostPerImage
@@ -653,26 +728,63 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 // 回退顺序：
 // 1. gpt-5.2-codex -> gpt-5.2（去掉后缀如 -codex, -mini, -max 等）
 // 2. gpt-5.2-20251222 -> gpt-5.2（去掉日期版本号）
-// 3. 最终回退到 DefaultTestModel (gpt-5.1-codex)
+// 3. 未公开定价的新版本回退到最近的公开 GPT-5 价格
 func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 	// 尝试的回退变体
 	variants := s.generateOpenAIModelVariants(model, openAIModelDatePattern)
+	allowStaticFallback := !strings.Contains(model, "codex")
 
+	// 1. 优先查 JSON 动态数据源（pricingData），保证远程更新的价格能即时生效
+	if pricing, ok := s.pricingData[model]; ok {
+		log.Printf("[Pricing] OpenAI dynamic pricing matched %s", model)
+		return pricing
+	}
 	for _, variant := range variants {
 		if pricing, ok := s.pricingData[variant]; ok {
-			log.Printf("[Pricing] OpenAI fallback matched %s -> %s", model, variant)
+			log.Printf("[Pricing] OpenAI dynamic pricing fallback matched %s -> %s", model, variant)
 			return pricing
 		}
 	}
 
-	// 最终回退到 DefaultTestModel
-	defaultModel := strings.ToLower(openai.DefaultTestModel)
-	if pricing, ok := s.pricingData[defaultModel]; ok {
-		log.Printf("[Pricing] OpenAI fallback to default model %s -> %s", model, defaultModel)
+	// 2. 动态源未命中时，回退到静态硬编码（仅非 codex 模型）
+	if allowStaticFallback {
+		if pricing, ok := openAIStaticPricingOverrides[model]; ok {
+			log.Printf("[Pricing] OpenAI static pricing matched %s", model)
+			return cloneLiteLLMModelPricing(pricing)
+		}
+		for _, variant := range variants {
+			if pricing, ok := openAIStaticPricingOverrides[variant]; ok {
+				log.Printf("[Pricing] OpenAI static pricing fallback matched %s -> %s", model, variant)
+				return cloneLiteLLMModelPricing(pricing)
+			}
+		}
+	}
+
+	// 3. 最终兜底：回退到最近的公开 GPT-5 价格
+	fallbackModel := openAIPricingFallbackModel
+	if strings.Contains(model, "codex") {
+		fallbackModel = openAICodexPricingFallbackModel
+	}
+	if pricing, ok := s.pricingData[fallbackModel]; ok {
+		log.Printf("[Pricing] OpenAI fallback to priced model %s -> %s", model, fallbackModel)
 		return pricing
+	}
+	if allowStaticFallback {
+		if pricing, ok := openAIStaticPricingOverrides[fallbackModel]; ok {
+			log.Printf("[Pricing] OpenAI static pricing fallback %s -> %s", model, fallbackModel)
+			return cloneLiteLLMModelPricing(pricing)
+		}
 	}
 
 	return nil
+}
+
+func cloneLiteLLMModelPricing(pricing *LiteLLMModelPricing) *LiteLLMModelPricing {
+	if pricing == nil {
+		return nil
+	}
+	cloned := *pricing
+	return &cloned
 }
 
 // generateOpenAIModelVariants 生成 OpenAI 模型的回退变体列表

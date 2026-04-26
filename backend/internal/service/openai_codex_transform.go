@@ -21,6 +21,12 @@ const (
 var codexCLIInstructions string
 
 var codexModelMap = map[string]string{
+	"gpt-5.5":        "gpt-5.5",
+	"gpt-5.5-none":   "gpt-5.5",
+	"gpt-5.5-low":    "gpt-5.5",
+	"gpt-5.5-medium": "gpt-5.5",
+	"gpt-5.5-high":   "gpt-5.5",
+	"gpt-5.5-xhigh":  "gpt-5.5",
 	// gpt-5 / gpt-5.1 系列已不再稳定可用，统一重映射到 gpt-5.2 系列。
 	"gpt-5.1-codex":            "gpt-5.2-codex",
 	"gpt-5.1-codex-low":        "gpt-5.2-codex",
@@ -60,11 +66,11 @@ var codexModelMap = map[string]string{
 	"gpt-5.4-medium":            "gpt-5.4",
 	"gpt-5.4-high":              "gpt-5.4",
 	"gpt-5.4-xhigh":             "gpt-5.4",
-	"gpt-5.4-codex":             "gpt-5.4-codex",
-	"gpt-5.4-codex-low":         "gpt-5.4-codex",
-	"gpt-5.4-codex-medium":      "gpt-5.4-codex",
-	"gpt-5.4-codex-high":        "gpt-5.4-codex",
-	"gpt-5.4-codex-xhigh":       "gpt-5.4-codex",
+	"gpt-5.4-codex":             "gpt-5.4",
+	"gpt-5.4-codex-low":         "gpt-5.4",
+	"gpt-5.4-codex-medium":      "gpt-5.4",
+	"gpt-5.4-codex-high":        "gpt-5.4",
+	"gpt-5.4-codex-xhigh":       "gpt-5.4",
 	"gpt-5.1-codex-mini":        "gpt-5.2-codex",
 	"gpt-5.1-codex-mini-medium": "gpt-5.2-codex",
 	"gpt-5.1-codex-mini-high":   "gpt-5.2-codex",
@@ -199,7 +205,7 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 
 func normalizeCodexModel(model string) string {
 	if model == "" {
-		return "gpt-5.4-codex"
+		return "gpt-5.4"
 	}
 
 	modelID := model
@@ -214,8 +220,8 @@ func normalizeCodexModel(model string) string {
 
 	normalized := canonicalizeCodexModelID(modelID)
 
-	if hasOpenAIModelPrefix(normalized, "gpt-5.4-codex") {
-		return "gpt-5.4-codex"
+	if hasOpenAIModelPrefix(normalized, "gpt-5.5") {
+		return "gpt-5.5"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.4") {
 		return "gpt-5.4"
@@ -252,7 +258,7 @@ func normalizeCodexModel(model string) string {
 		return "gpt-5.2-codex"
 	}
 	if hasOpenAIModelPrefix(normalized, "codex") {
-		return "gpt-5.4-codex"
+		return "gpt-5.4"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5") {
 		return "gpt-5.2"
@@ -261,7 +267,7 @@ func normalizeCodexModel(model string) string {
 		return ""
 	}
 
-	return "gpt-5.4-codex"
+	return "gpt-5.4"
 }
 
 func canonicalizeCodexModelID(model string) string {
@@ -379,6 +385,11 @@ func getOAuthModelFallback(currentModel string) string {
 	// 已经是 5.3，无需回退（5.3 已恢复可用）
 	if strings.Contains(lower, "gpt-5.3") {
 		return ""
+	}
+
+	// gpt-5.5 → gpt-5.4
+	if strings.Contains(lower, "gpt-5.5") {
+		return "gpt-5.4"
 	}
 
 	// gpt-5.4 → gpt-5.3-codex（OAuth 端只认 gpt-5.3-codex，不认裸名 gpt-5.3）

@@ -572,6 +572,15 @@ func TestOpenAIResponseModelMatches_DoesNotConfuseFutureVersionWithGpt51(t *test
 	}
 }
 
+func TestOpenAIResponseModelMatches_NormalizesGPT55Snapshot(t *testing.T) {
+	if !openAIResponseModelMatches("gpt-5.5-2026-04-24", "gpt-5.5") {
+		t.Fatalf("expected gpt-5.5 snapshot to match stable alias")
+	}
+	if normalized := normalizeOpenAIResponseModel("gpt-5.5-2026-04-24"); normalized != "gpt-5.5" {
+		t.Fatalf("expected gpt-5.5 snapshot to normalize, got %q", normalized)
+	}
+}
+
 func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

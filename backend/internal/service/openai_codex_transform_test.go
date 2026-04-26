@@ -37,6 +37,26 @@ func TestNormalizeCodexModel_RemapsLegacyGPT5FamiliesToGPT52Series(t *testing.T)
 	}
 }
 
+func TestNormalizeCodexModel_AcceptsGPT55Aliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "gpt55", input: "gpt-5.5", want: "gpt-5.5"},
+		{name: "gpt55 high", input: "gpt-5.5-high", want: "gpt-5.5"},
+		{name: "gpt55 codex alias", input: "gpt-5.5-codex", want: "gpt-5.5"},
+		{name: "provider gpt55 codex xhigh", input: "provider/gpt-5.5-codex-xhigh", want: "gpt-5.5"},
+		{name: "gpt55 fuzzy", input: "gpt 5.5", want: "gpt-5.5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
+		})
+	}
+}
+
 func TestNormalizeCodexModel_DoesNotConfuseFutureVersionWithGPT51(t *testing.T) {
 	tests := []string{
 		"gpt-5.10",
@@ -48,6 +68,24 @@ func TestNormalizeCodexModel_DoesNotConfuseFutureVersionWithGPT51(t *testing.T) 
 	for _, input := range tests {
 		t.Run(input, func(t *testing.T) {
 			require.Empty(t, normalizeCodexModel(input))
+		})
+	}
+}
+
+func TestGetOAuthModelFallback_PrefersGPT54BeforeOlderFallbacks(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "gpt-5.5", want: "gpt-5.4"},
+		{model: "gpt-5.5-codex", want: "gpt-5.4"},
+		{model: "gpt-5.4", want: "gpt-5.3-codex"},
+		{model: "gpt-5.3-codex", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			require.Equal(t, tt.want, getOAuthModelFallback(tt.model))
 		})
 	}
 }
@@ -106,6 +144,25 @@ func TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved(t *testing.T) {
 	store, ok := reqBody["store"].(bool)
 	require.True(t, ok)
 	require.False(t, store)
+}
+
+func TestApplyCodexOAuthTransform_GPT55CodexAliasMapsToStableModelAndEffort(t *testing.T) {
+	setupCodexCache(t)
+
+	reqBody := map[string]any{
+		"model": "gpt-5.5-codex-high",
+		"input": []any{
+			map[string]any{"type": "text", "text": "hi"},
+		},
+	}
+
+	applyCodexOAuthTransform(reqBody)
+
+	require.Equal(t, "gpt-5.5", reqBody["model"])
+
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "high", reasoning["effort"])
 }
 
 func TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse(t *testing.T) {

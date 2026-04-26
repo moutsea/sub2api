@@ -130,6 +130,23 @@
         </button>
       </div>
 
+      <div v-if="imageOutputs.length > 0" class="space-y-3">
+        <div
+          v-for="(image, index) in imageOutputs"
+          :key="index"
+          class="overflow-hidden rounded-xl border border-gray-200 bg-gray-50 p-2 dark:border-dark-500 dark:bg-dark-700"
+        >
+          <img
+            :src="image.url"
+            :alt="`generated image ${index + 1}`"
+            class="mx-auto max-h-64 rounded-lg"
+          />
+          <div class="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
+            {{ image.mimeType || 'image/png' }}
+          </div>
+        </div>
+      </div>
+
       <!-- Test Info -->
       <div class="flex items-center justify-between px-1 text-xs text-gray-500 dark:text-gray-400">
         <div class="flex items-center gap-3">
@@ -249,6 +266,11 @@ interface OutputLine {
   class: string
 }
 
+interface ImageOutput {
+  url: string
+  mimeType?: string
+}
+
 const props = defineProps<{
   show: boolean
   account: Account | null
@@ -262,11 +284,23 @@ const terminalRef = ref<HTMLElement | null>(null)
 const status = ref<'idle' | 'connecting' | 'success' | 'error'>('idle')
 const outputLines = ref<OutputLine[]>([])
 const streamingContent = ref('')
+const imageOutputs = ref<ImageOutput[]>([])
 const errorMessage = ref('')
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const loadingModels = ref(false)
 let eventSource: EventSource | null = null
+
+const selectPreferredOpenAIModel = () => {
+  const preferredIds =
+    props.account?.type === 'oauth'
+      ? ['gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2', 'gpt-4.1', 'gpt-4o']
+      : ['gpt-5.4', 'gpt-5.2', 'gpt-4.1', 'gpt-4o', 'gpt-5.1', 'gpt-5']
+  const preferred = preferredIds
+    .map((id) => availableModels.value.find((model) => model.id === id))
+    .find(Boolean)
+  selectedModelId.value = preferred?.id || availableModels.value[0].id
+}
 
 // Load available models when modal opens
 watch(
@@ -298,6 +332,8 @@ const loadAvailableModels = async () => {
           availableModels.value.find((m) => m.id === 'gemini-3-flash-preview') ||
           availableModels.value.find((m) => m.id === 'gemini-3-pro-preview')
         selectedModelId.value = preferred?.id || availableModels.value[0].id
+      } else if (props.account.platform === 'openai') {
+        selectPreferredOpenAIModel()
       } else {
         // Try to select Sonnet as default, otherwise use first model
         const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
@@ -318,6 +354,7 @@ const resetState = () => {
   status.value = 'idle'
   outputLines.value = []
   streamingContent.value = ''
+  imageOutputs.value = []
   errorMessage.value = ''
 }
 
@@ -419,6 +456,8 @@ const handleEvent = (event: {
   type: string
   text?: string
   model?: string
+  image_url?: string
+  mime_type?: string
   success?: boolean
   error?: string
 }) => {
@@ -437,6 +476,16 @@ const handleEvent = (event: {
       if (event.text) {
         streamingContent.value += event.text
         scrollToBottom()
+      }
+      break
+
+    case 'image':
+      if (event.image_url) {
+        imageOutputs.value.push({
+          url: event.image_url,
+          mimeType: event.mime_type
+        })
+        addLine(`[Image generated] ${event.mime_type || 'image/png'}`, 'text-purple-300')
       }
       break
 

@@ -106,7 +106,7 @@ func convertCCRequestToResponses(ccReqBody map[string]any) map[string]any {
 	}
 
 	// Copy supported fields directly
-	for _, key := range []string{"temperature", "top_p", "tools", "tool_choice", "prompt_cache_key"} {
+	for _, key := range []string{"temperature", "top_p", "tools", "tool_choice", "prompt_cache_key", "service_tier"} {
 		if v, ok := ccReqBody[key]; ok {
 			responsesBody[key] = v
 		}
@@ -289,6 +289,10 @@ func convertResponsesJSONToCC(responsesBody []byte, originalModel, requestID str
 			}
 		}
 	}
+	if rawServiceTier, ok := resp["service_tier"].(string); ok {
+		usage.ServiceTier = normalizeOpenAIServiceTier(rawServiceTier)
+		usage.ServiceTierPresent = true
+	}
 
 	// Build CC response
 	ccResp := map[string]any{
@@ -352,6 +356,10 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 		if response, ok := event["response"].(map[string]any); ok {
 			if id, ok := response["id"].(string); ok {
 				conv.responseID = id
+			}
+			if rawServiceTier, ok := response["service_tier"].(string); ok {
+				conv.usage.ServiceTier = normalizeOpenAIServiceTier(rawServiceTier)
+				conv.usage.ServiceTierPresent = true
 			}
 		}
 		// Send initial chunk with role
@@ -420,6 +428,10 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 	case "response.completed":
 		// Extract usage from the completed response
 		if response, ok := event["response"].(map[string]any); ok {
+			if rawServiceTier, ok := response["service_tier"].(string); ok {
+				conv.usage.ServiceTier = normalizeOpenAIServiceTier(rawServiceTier)
+				conv.usage.ServiceTierPresent = true
+			}
 			if respUsage, ok := response["usage"].(map[string]any); ok {
 				conv.usage.InputTokens = jsonInt(respUsage["input_tokens"])
 				conv.usage.OutputTokens = jsonInt(respUsage["output_tokens"])

@@ -10,12 +10,12 @@ import (
 
 // Claude model → OpenAI model mapping
 var claudeToOpenAIModelMap = map[string]string{
-	// Opus series → gpt-5.4-codex
-	"claude-opus-4-6":            "gpt-5.4-codex",
-	"claude-opus-4-6-1m":         "gpt-5.4-codex",
-	"claude-opus-4-5":            "gpt-5.4-codex",
-	"claude-opus-4-5-20251101":   "gpt-5.4-codex",
-	"claude-opus-4.5":            "gpt-5.4-codex",
+	// Opus series → gpt-5.4
+	"claude-opus-4-6":            "gpt-5.4",
+	"claude-opus-4-6-1m":         "gpt-5.4",
+	"claude-opus-4-5":            "gpt-5.4",
+	"claude-opus-4-5-20251101":   "gpt-5.4",
+	"claude-opus-4.5":            "gpt-5.4",
 	// Sonnet series → gpt-5.3-codex
 	"claude-sonnet-4-6":            "gpt-5.3-codex",
 	"claude-sonnet-4-6-1m":         "gpt-5.3-codex",
@@ -33,7 +33,7 @@ var claudeToOpenAIModelMap = map[string]string{
 	"claude-3-5-haiku-latest":   "gpt-5.2-codex",
 }
 
-const defaultOpenAIModel = "gpt-5.4-codex"
+const defaultOpenAIModel = "gpt-5.4"
 
 // GetOpenAIModelID maps a Claude model name to an OpenAI model ID.
 func GetOpenAIModelID(claudeModel string) string {
@@ -49,7 +49,7 @@ func GetOpenAIModelID(claudeModel string) string {
 		return "gpt-5.3-codex"
 	}
 	if strings.Contains(lower, "opus") {
-		return "gpt-5.4-codex"
+		return "gpt-5.4"
 	}
 	return defaultOpenAIModel
 }

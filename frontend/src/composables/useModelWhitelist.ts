@@ -28,8 +28,9 @@ const openaiModels = [
   'gpt-5.3-codex-xhigh', 'gpt-5.3-codex-high', 'gpt-5.3-codex-medium',
   'gpt-5.3-codex-low', 'gpt-5.3-codex',
   // GPT-5.4 系列
-  'gpt-5.4', 'gpt-5.4-codex-xhigh', 'gpt-5.4-codex-high',
-  'gpt-5.4-codex-medium', 'gpt-5.4-codex-low', 'gpt-5.4-codex',
+  'gpt-5.4',
+  // GPT-5.5 系列
+  'gpt-5.5',
   'chatgpt-4o-latest',
   'gpt-4o-audio-preview', 'gpt-4o-realtime-preview'
 ]
@@ -236,7 +237,7 @@ const openaiPresetMappings = [
   { label: 'GPT-5.2', from: 'gpt-5.2', to: 'gpt-5.2', color: 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400' },
   { label: 'GPT-5.3 Codex', from: 'gpt-5.3-codex', to: 'gpt-5.3-codex', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400' },
   { label: 'GPT-5.4', from: 'gpt-5.4', to: 'gpt-5.4', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
-  { label: 'GPT-5.4 Codex', from: 'gpt-5.4-codex', to: 'gpt-5.4-codex', color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400' }
+  { label: 'GPT-5.5', from: 'gpt-5.5', to: 'gpt-5.5', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' }
 ]
 
 const geminiPresetMappings = [

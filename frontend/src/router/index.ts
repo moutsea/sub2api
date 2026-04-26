@@ -119,6 +119,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/image-preview',
+    name: 'ImagePreview',
+    component: () => import('@/views/user/ImagePreviewView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Image Preview',
+      titleKey: 'imagePreview.title',
+      descriptionKey: 'imagePreview.description'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),

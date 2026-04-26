@@ -62,10 +62,13 @@ type OpenAICodexUsageSnapshot struct {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens,omitempty"`
+	ImageOutputTokens        int     `json:"image_output_tokens,omitempty"`
+	ServiceTier              *string `json:"-"`
+	ServiceTierPresent       bool    `json:"-"`
 }
 
 // OpenAIForwardResult represents the result of forwarding
@@ -73,9 +76,12 @@ type OpenAIForwardResult struct {
 	RequestID    string
 	Usage        OpenAIUsage
 	Model        string
+	ServiceTier  *string
 	Stream       bool
 	Duration     time.Duration
 	FirstTokenMs *int
+	ImageCount   int
+	ImageSize    string
 }
 
 // OpenAIGatewayService handles OpenAI API gateway operations
@@ -171,6 +177,65 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, reqBody map[s
 
 	hash := sha256.Sum256([]byte(sessionID))
 	return hex.EncodeToString(hash[:])
+}
+
+func extractOpenAIServiceTier(reqBody map[string]any) *string {
+	if reqBody == nil {
+		return nil
+	}
+	raw, ok := reqBody["service_tier"].(string)
+	if !ok {
+		return nil
+	}
+	return normalizeOpenAIServiceTier(raw)
+}
+
+func normalizeOpenAIServiceTier(raw string) *string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return nil
+	}
+	if value == "fast" {
+		value = "priority"
+	}
+	switch value {
+	case "priority", "flex":
+		return &value
+	default:
+		return nil
+	}
+}
+
+func extractOpenAIServiceTierFromJSON(body []byte) (*string, bool) {
+	if len(body) == 0 {
+		return nil, false
+	}
+
+	var envelope struct {
+		ServiceTier json.RawMessage `json:"service_tier"`
+		Response    struct {
+			ServiceTier json.RawMessage `json:"service_tier"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, false
+	}
+
+	if len(envelope.Response.ServiceTier) > 0 {
+		return normalizeOpenAIServiceTierFromRaw(envelope.Response.ServiceTier), true
+	}
+	if len(envelope.ServiceTier) > 0 {
+		return normalizeOpenAIServiceTierFromRaw(envelope.ServiceTier), true
+	}
+	return nil, false
+}
+
+func normalizeOpenAIServiceTierFromRaw(raw json.RawMessage) *string {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	return normalizeOpenAIServiceTier(value)
 }
 
 // BindStickySession sets session -> account binding with standard TTL.
@@ -629,6 +694,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// Extract model and stream from parsed body
 	reqModel, _ := reqBody["model"].(string)
 	reqStream, _ := reqBody["stream"].(bool)
+	serviceTier := extractOpenAIServiceTier(reqBody)
 	promptCacheKey := ""
 	if v, ok := reqBody["prompt_cache_key"].(string); ok {
 		promptCacheKey = strings.TrimSpace(v)
@@ -933,6 +999,7 @@ retryWithFallbackModel:
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        *usage,
 		Model:        originalModel,
+		ServiceTier:  resolvedServiceTier(usage, serviceTier),
 		Stream:       reqStream,
 		Duration:     time.Since(startTime),
 		FirstTokenMs: firstTokenMs,
@@ -1444,6 +1511,11 @@ func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
 		usage.OutputTokens = event.Response.Usage.OutputTokens
 		usage.CacheReadInputTokens = event.Response.Usage.InputTokenDetails.CachedTokens
 	}
+
+	if serviceTier, present := extractOpenAIServiceTierFromJSON([]byte(data)); present {
+		usage.ServiceTier = serviceTier
+		usage.ServiceTierPresent = true
+	}
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel, injectedInstructions string) (*OpenAIUsage, error) {
@@ -1477,6 +1549,10 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		InputTokens:          response.Usage.InputTokens,
 		OutputTokens:         response.Usage.OutputTokens,
 		CacheReadInputTokens: response.Usage.InputTokenDetails.CachedTokens,
+	}
+	if serviceTier, present := extractOpenAIServiceTierFromJSON(body); present {
+		usage.ServiceTier = serviceTier
+		usage.ServiceTierPresent = true
 	}
 
 	body = s.stripInjectedInstructionsFromResponseBody(body, injectedInstructions)
@@ -1532,6 +1608,10 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(ctx context.Context, resp *h
 			usage.OutputTokens = response.Usage.OutputTokens
 			usage.CacheReadInputTokens = response.Usage.InputTokenDetails.CachedTokens
 		}
+		if serviceTier, present := extractOpenAIServiceTierFromJSON(finalResponse); present {
+			usage.ServiceTier = serviceTier
+			usage.ServiceTierPresent = true
+		}
 		body = finalResponse
 		body = s.replaceModelInResponseBody(body, mappedModel, clientVisibleOpenAIModel(originalModel, mappedModel))
 		// Correct tool calls in final response
@@ -1554,6 +1634,13 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(ctx context.Context, resp *h
 	c.Data(resp.StatusCode, contentType, body)
 
 	return usage, nil
+}
+
+func resolvedServiceTier(usage *OpenAIUsage, requested *string) *string {
+	if usage != nil && usage.ServiceTierPresent {
+		return usage.ServiceTier
+	}
+	return requested
 }
 
 func extractCodexFinalResponse(body, injectedInstructions string) ([]byte, bool) {
@@ -1780,8 +1867,8 @@ func normalizeOpenAIResponseModel(model string) string {
 		return ""
 	}
 	switch {
-	case hasOpenAIModelPrefix(model, "gpt-5.4-codex"):
-		return "gpt-5.4-codex"
+	case hasOpenAIModelPrefix(model, "gpt-5.5"):
+		return "gpt-5.5"
 	case hasOpenAIModelPrefix(model, "gpt-5.4"):
 		return "gpt-5.4"
 	case hasOpenAIModelPrefix(model, "gpt-5.3-codex"):
@@ -1846,21 +1933,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	account := input.Account
 	subscription := input.Subscription
 
-	// 计算实际的新输入token（减去缓存读取的token）
-	// 因为 input_tokens 包含了 cache_read_tokens，而缓存读取的token不应按输入价格计费
-	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens
-	if actualInputTokens < 0 {
-		actualInputTokens = 0
-	}
-
-	// Calculate cost
-	tokens := UsageTokens{
-		InputTokens:         actualInputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-	}
-
 	// Get rate multiplier: user custom > group default > global default
 	multiplier := s.cfg.Default.RateMultiplier
 	if apiKey.GroupID != nil && apiKey.Group != nil {
@@ -1871,9 +1943,45 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 
-	cost, err := s.billingService.CalculateCost(result.Model, tokens, multiplier)
-	if err != nil {
-		cost = &CostBreakdown{ActualCost: 0}
+	var (
+		cost              *CostBreakdown
+		actualInputTokens int
+	)
+	if result.ImageCount > 0 {
+		var groupConfig *ImagePriceConfig
+		if apiKey.Group != nil {
+			groupConfig = &ImagePriceConfig{
+				Price1K: apiKey.Group.ImagePrice1K,
+				Price2K: apiKey.Group.ImagePrice2K,
+				Price4K: apiKey.Group.ImagePrice4K,
+			}
+		}
+		cost = s.billingService.CalculateImageCost(result.Model, result.ImageSize, result.ImageCount, groupConfig, multiplier)
+	} else {
+		// 计算实际的新输入token（减去缓存读取的token）
+		// 因为 input_tokens 包含了 cache_read_tokens，而缓存读取的token不应按输入价格计费
+		actualInputTokens = result.Usage.InputTokens - result.Usage.CacheReadInputTokens
+		if actualInputTokens < 0 {
+			actualInputTokens = 0
+		}
+
+		tokens := UsageTokens{
+			InputTokens:         actualInputTokens,
+			OutputTokens:        result.Usage.OutputTokens,
+			CacheCreationTokens: result.Usage.CacheCreationInputTokens,
+			CacheReadTokens:     result.Usage.CacheReadInputTokens,
+		}
+
+		serviceTier := ""
+		if result.ServiceTier != nil {
+			serviceTier = strings.TrimSpace(*result.ServiceTier)
+		}
+
+		var err error
+		cost, err = s.billingService.CalculateCostWithServiceTier(result.Model, tokens, multiplier, serviceTier)
+		if err != nil {
+			cost = &CostBreakdown{ActualCost: 0}
+		}
 	}
 
 	// Determine billing type
@@ -1889,6 +1997,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	var apiKeyIDPtr *int64
 	if apiKey.ID != 0 {
 		apiKeyIDPtr = &apiKey.ID
+	}
+	var imageSize *string
+	if result.ImageSize != "" {
+		imageSize = &result.ImageSize
 	}
 	usageLog := &UsageLog{
 		UserID:                user.ID,
@@ -1912,6 +2024,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		Stream:                result.Stream,
 		DurationMs:            &durationMs,
 		FirstTokenMs:          result.FirstTokenMs,
+		ImageCount:            result.ImageCount,
+		ImageSize:             imageSize,
 		CreatedAt:             time.Now(),
 	}
 
@@ -2309,6 +2423,7 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 
 	reqModel, _ := reqBody["model"].(string)
 	reqStream, _ := reqBody["stream"].(bool)
+	serviceTier := extractOpenAIServiceTier(reqBody)
 	originalModel := reqModel
 	bodyModified := false
 
@@ -2435,6 +2550,7 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        *usage,
 		Model:        originalModel,
+		ServiceTier:  resolvedServiceTier(usage, serviceTier),
 		Stream:       reqStream,
 		Duration:     time.Since(startTime),
 		FirstTokenMs: firstTokenMs,
@@ -2766,6 +2882,7 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 
 	// Convert CC request to Responses API format
 	responsesBody := convertCCRequestToResponses(ccReqBody)
+	serviceTier := extractOpenAIServiceTier(responsesBody)
 
 	// Apply model mapping
 	mappedModel := account.GetMappedModel(originalModel)
@@ -2969,6 +3086,7 @@ retryWithCCFallbackModel:
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        *usage,
 		Model:        originalModel,
+		ServiceTier:  resolvedServiceTier(usage, serviceTier),
 		Stream:       wantStream,
 		Duration:     time.Since(startTime),
 		FirstTokenMs: firstTokenMs,

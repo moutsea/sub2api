@@ -1213,12 +1213,12 @@ func (h *AccountHandler) RefreshKiroStates(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"message":       "Kiro states refresh completed",
-		"total":         len(accounts),
-		"refreshed":     refreshed,
-		"failed":        failed,
+		"message":        "Kiro states refresh completed",
+		"total":          len(accounts),
+		"refreshed":      refreshed,
+		"failed":         failed,
 		"status_cleared": cleared,
-		"errors":        errors,
+		"errors":         errors,
 	})
 }
 
@@ -1288,14 +1288,14 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.IsOpenAI() {
 		// For OAuth accounts: return default OpenAI models
 		if account.IsOAuth() {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, openai.DefaultModelsForAccount(true))
 			return
 		}
 
 		// For API Key accounts: check model_mapping
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, openai.DefaultModelsForAccount(false))
 			return
 		}
 

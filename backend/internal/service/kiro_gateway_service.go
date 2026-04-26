@@ -27,15 +27,6 @@ const (
 	kiroMaxRetries     = 3
 	kiroRetryBaseDelay = 1 * time.Second
 	kiroRetryMaxDelay  = 16 * time.Second
-
-	// kiroMaxCWRequestBodySize is the safe body size limit for CodeWhisperer requests (non-1M models).
-	// Used by Forward() and executeCodeWhispererRequest (WebSearch agentic loop).
-	kiroMaxCWRequestBodySize = 800 * 1024 // 800 KB
-
-	// kiroMaxCWRequestBodySize1M is the body size limit for 1M context models (4.6 series).
-	// AWSQ has relaxed the body size limit for opus-4.6 and sonnet-4.6 to support 1M context.
-	// Tested: 4MB+ payloads accepted by AWSQ as of 2026-03.
-	kiroMaxCWRequestBodySize1M = 4 * 1024 * 1024 // 4 MB
 )
 
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
@@ -44,15 +35,6 @@ type kiroEndpointConfig struct {
 	Host      string // Host header value
 	AmzTarget string // X-Amz-Target header (empty for AWSQ)
 	Name      string // Endpoint name for logging
-}
-
-// getMaxCWBodySize returns the max request body size for the given model.
-// 4.6 series (1M context) → 4MB; others → 800KB.
-func getMaxCWBodySize(model string) int {
-	if kiro.Is1MContext(model) {
-		return kiroMaxCWRequestBodySize1M
-	}
-	return kiroMaxCWRequestBodySize
 }
 
 // getKiroEndpoints returns ordered endpoint list based on account config.

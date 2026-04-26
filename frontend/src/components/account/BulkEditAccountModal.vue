@@ -716,6 +716,7 @@ const allModels = [
   { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
+  { value: 'gpt-5.5', label: 'GPT-5.5' },
   { value: 'gpt-5.2-2025-12-11', label: 'GPT-5.2' },
   { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
   { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
@@ -759,6 +760,12 @@ const presetMappings = [
     from: 'claude-opus-4-5-20251101',
     to: 'claude-sonnet-4-5-20250929',
     color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
+  },
+  {
+    label: 'GPT-5.5',
+    from: 'gpt-5.5',
+    to: 'gpt-5.5',
+    color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400'
   },
   {
     label: 'GPT-5.2',
