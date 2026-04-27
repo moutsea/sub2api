@@ -23,10 +23,9 @@ const (
 func normalizeJSONSchema(schema map[string]any) map[string]any {
 	if schema == nil {
 		return map[string]any{
-			"type":                 "object",
-			"properties":          map[string]any{},
-			"required":            []any{},
-			"additionalProperties": true,
+			"type":       "object",
+			"properties": map[string]any{},
+			"required":   []any{},
 		}
 	}
 
@@ -52,14 +51,6 @@ func normalizeJSONSchema(schema map[string]any) map[string]any {
 		schema["required"] = filtered
 	default:
 		schema["required"] = []any{}
-	}
-
-	// additionalProperties: allow bool or object, default to true
-	switch schema["additionalProperties"].(type) {
-	case bool, map[string]any:
-		// valid, keep as-is
-	default:
-		schema["additionalProperties"] = true
 	}
 
 	return schema
@@ -1329,7 +1320,7 @@ func processTools(tools []ClaudeTool, skipLimits bool) []ToolItem {
 			description += "\n<instruction>ALWAYS use Write/Edit tools for file modifications. Ensure all required parameters are provided correctly.</instruction>"
 		}
 
-		inputSchema := normalizeJSONSchema(tool.InputSchema)
+		inputSchema := SanitizeJSONSchema(normalizeJSONSchema(tool.InputSchema))
 
 		// Generate parameter hints from schema and append to description
 		// This helps the model understand required/optional parameters

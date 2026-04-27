@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/upscale"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -86,6 +87,8 @@ type OpenAIImagesRequest struct {
 	NativeOptions      []string
 	RequiredCapability OpenAIImagesCapability
 	Uploads            []OpenAIImagesUpload
+	Upscale            string
+	ReferenceImages    []string
 	Body               []byte
 	bodyHash           string
 }
@@ -186,6 +189,16 @@ func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
 		req.ExplicitSize = req.Size != ""
 	}
 	req.ResponseFormat = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "response_format").String()))
+	if upscaleResult := gjson.GetBytes(body, "upscale"); upscaleResult.Exists() {
+		req.Upscale = strings.ToLower(strings.TrimSpace(upscaleResult.String()))
+	}
+	if refResult := gjson.GetBytes(body, "reference_images"); refResult.Exists() && refResult.IsArray() {
+		for _, item := range refResult.Array() {
+			if s := strings.TrimSpace(item.String()); s != "" {
+				req.ReferenceImages = append(req.ReferenceImages, s)
+			}
+		}
+	}
 	req.HasMask = gjson.GetBytes(body, "mask").Exists()
 	for _, path := range []string{
 		"background",
@@ -265,6 +278,8 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 			req.ExplicitSize = value != ""
 		case "response_format":
 			req.ResponseFormat = strings.ToLower(value)
+		case "upscale":
+			req.Upscale = strings.ToLower(value)
 		case "stream":
 			parsed, err := strconv.ParseBool(value)
 			if err != nil {
@@ -307,12 +322,82 @@ func parseOpenAIImageDimensions(contentType string, data []byte) (int, int) {
 	return cfg.Width, cfg.Height
 }
 
+const maxReferenceImages = 4
+const maxReferenceImageBytes = 20 * 1024 * 1024
+
+func decodeReferenceImagesToUploads(req *OpenAIImagesRequest) {
+	if len(req.ReferenceImages) > maxReferenceImages {
+		req.ReferenceImages = req.ReferenceImages[:maxReferenceImages]
+	}
+	for i, input := range req.ReferenceImages {
+		data, mimeType := decodeReferenceInput(input)
+		if len(data) == 0 || len(data) > maxReferenceImageBytes {
+			continue
+		}
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		width, height := parseOpenAIImageDimensions(mimeType, data)
+		req.Uploads = append(req.Uploads, OpenAIImagesUpload{
+			FieldName:   "image",
+			FileName:    fmt.Sprintf("reference_%d.png", i),
+			ContentType: mimeType,
+			Data:        data,
+			Width:       width,
+			Height:      height,
+		})
+	}
+}
+
+func decodeReferenceInput(input string) ([]byte, string) {
+	input = strings.TrimSpace(input)
+	if strings.HasPrefix(input, "data:") {
+		return decodeDataURL(input)
+	}
+	data, err := base64.StdEncoding.DecodeString(input)
+	if err != nil {
+		data, err = base64.URLEncoding.DecodeString(input)
+		if err != nil {
+			return nil, ""
+		}
+	}
+	return data, ""
+}
+
+func decodeDataURL(dataURL string) ([]byte, string) {
+	rest := strings.TrimPrefix(dataURL, "data:")
+	idx := strings.Index(rest, ",")
+	if idx < 0 {
+		return nil, ""
+	}
+	meta := rest[:idx]
+	payload := rest[idx+1:]
+	mimeType := ""
+	if semicolon := strings.Index(meta, ";"); semicolon >= 0 {
+		mimeType = strings.TrimSpace(meta[:semicolon])
+	} else {
+		mimeType = strings.TrimSpace(meta)
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		data, err = base64.URLEncoding.DecodeString(payload)
+		if err != nil {
+			return nil, ""
+		}
+	}
+	return data, mimeType
+}
+
 func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 	if req == nil {
 		return
 	}
 	if req.N <= 0 {
 		req.N = 1
+	}
+	req.Upscale = upscale.ValidateScale(req.Upscale)
+	if len(req.ReferenceImages) > 0 && len(req.Uploads) == 0 {
+		decodeReferenceImagesToUploads(req)
 	}
 	if strings.TrimSpace(req.Model) != "" {
 		req.Model = strings.TrimSpace(req.Model)
@@ -436,15 +521,10 @@ func normalizeOpenAIImageSizeTier(size string) string {
 }
 
 func resolveOpenAIImageBillingSizeTier(account *Account, parsed *OpenAIImagesRequest) string {
-	if account != nil && account.Type == AccountTypeOAuth {
-		return "1K"
-	}
 	if parsed == nil {
 		return ""
 	}
 	// When the client omits size (ExplicitSize=false), bill at 1K tier.
-	// This matches the frontend "billed using the 1K tier" copy and avoids
-	// the normalizeOpenAIImageSizeTier("") → "2K" default.
 	if !parsed.ExplicitSize {
 		return "1K"
 	}
@@ -485,6 +565,12 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	forwardBody, forwardContentType, err := rewriteOpenAIImagesModel(body, parsed.ContentType, upstreamModel)
 	if err != nil {
 		return nil, err
+	}
+	if !parsed.Multipart && parsed.Upscale != "" {
+		forwardBody, _ = sjson.DeleteBytes(forwardBody, "upscale")
+	}
+	if !parsed.Multipart && len(parsed.ReferenceImages) > 0 {
+		forwardBody, _ = sjson.DeleteBytes(forwardBody, "reference_images")
 	}
 	if c != nil && !parsed.Multipart {
 		c.Set(OpsUpstreamRequestBodyKey, string(forwardBody))
@@ -566,7 +652,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		}
 		firstToken = ttft
 	} else {
-		nonStreamUsage, nonStreamCount, err := s.handleOpenAIImagesNonStreamingResponse(resp, c)
+		nonStreamUsage, nonStreamCount, err := s.handleOpenAIImagesNonStreamingResponse(resp, c, parsed.Upscale)
 		if err != nil {
 			return nil, err
 		}
@@ -733,12 +819,16 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 	return dst
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context) (OpenAIUsage, int, error) {
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, upscaleMode string) (OpenAIUsage, int, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 40<<20)) // 40 MB (may contain multiple base64 images)
 	if err != nil {
 		return OpenAIUsage{}, 0, err
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+
+	if upscaleMode != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		body = applyUpscaleToB64Response(body, upscaleMode)
+	}
 
 	contentType := "application/json"
 	if resp.Header.Get("Content-Type") != "" && (s.cfg == nil || !s.cfg.Security.ResponseHeaders.Enabled) {
@@ -845,6 +935,39 @@ func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
 			dst.ImageOutputTokens = parsed.ImageOutputTokens
 		}
 	}
+}
+
+func applyUpscaleToB64Response(body []byte, scale string) []byte {
+	if scale == "" || len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	data := gjson.GetBytes(body, "data")
+	if !data.Exists() || !data.IsArray() {
+		return body
+	}
+	modified := body
+	for i, item := range data.Array() {
+		b64 := item.Get("b64_json").String()
+		if b64 == "" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			continue
+		}
+		scaled, _, err := upscale.Do(raw, scale)
+		if err != nil || len(scaled) == 0 {
+			continue
+		}
+		if len(scaled) == len(raw) && &scaled[0] == &raw[0] {
+			continue
+		}
+		path := fmt.Sprintf("data.%d.b64_json", i)
+		if updated, err := sjson.SetBytes(modified, path, base64.StdEncoding.EncodeToString(scaled)); err == nil {
+			modified = updated
+		}
+	}
+	return modified
 }
 
 func extractOpenAIImageCountFromJSONBytes(body []byte) int {
@@ -965,6 +1088,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	responseBody, imageCount, err := buildOpenAIImageResponse(ctx, client, headers, conversationID, pointerInfos)
 	if err != nil {
 		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+	}
+
+	if parsed.Upscale != "" {
+		responseBody = applyUpscaleToB64Response(responseBody, parsed.Upscale)
 	}
 
 	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)

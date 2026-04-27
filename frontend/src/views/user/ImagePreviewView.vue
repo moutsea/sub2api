@@ -122,6 +122,22 @@
                 </p>
               </div>
 
+              <div>
+                <label class="input-label">{{ t('imagePreview.sizeLabel') }}</label>
+                <select v-model="form.size" class="input mt-1">
+                  <option
+                    v-for="sizeOption in sizeOptions"
+                    :key="sizeOption.value"
+                    :value="sizeOption.value"
+                  >
+                    {{ sizeOption.label }}
+                  </option>
+                </select>
+                <p class="input-hint mt-2">
+                  {{ t('imagePreview.sizeHint') }}
+                </p>
+              </div>
+
               <div v-if="mode === 'edit'">
                 <div class="flex items-center justify-between gap-3">
                   <label class="input-label">{{ t('imagePreview.sourceImageLabel') }}</label>
@@ -293,7 +309,7 @@
                     />
                   </div>
 
-                  <div class="grid grid-cols-1 gap-4 lg:grid-cols-4">
+                  <div class="grid grid-cols-2 gap-4 lg:grid-cols-2">
                     <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
                       <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-dark-400">
                         {{ t('imagePreview.meta.operation') }}
@@ -412,14 +428,18 @@ import ImageRequestPreviewModal from '@/components/user/ImageRequestPreviewModal
 
 type GptImageModel = 'gpt-image-1' | 'gpt-image-1.5' | 'gpt-image-2'
 type ImagePreviewMode = 'generate' | 'edit'
+type ImageSize = 'auto' | '1024x1024' | '1536x1024' | '1024x1536' | '1792x1024' | '1024x1792' | '2048x2048'
+type UpscaleMode = '' | '2k' | '4k'
 
-const PREVIEW_DRAFT_STORAGE_KEY = 'image_preview_draft_v2'
-const PREVIEW_RESULT_STORAGE_KEY = 'image_preview_result_v2'
+const PREVIEW_DRAFT_STORAGE_KEY = 'image_preview_draft_v3'
+const PREVIEW_RESULT_STORAGE_KEY = 'image_preview_result_v3'
 
 interface PreviewResult {
   imageUrl: string
   mimeType: string
   model: GptImageModel
+  size: ImageSize
+  upscale: UpscaleMode
   apiKeyName: string
   createdAt: Date
   mode: ImagePreviewMode
@@ -429,6 +449,8 @@ interface SubmittedRequest {
   apiKeyId: number
   mode: ImagePreviewMode
   model: GptImageModel
+  size: ImageSize
+  upscale: UpscaleMode
   prompt: string
   payload: Record<string, unknown>
   sourceImageName?: string
@@ -438,6 +460,8 @@ interface SubmittedRequest {
 interface PersistedDraftState {
   mode: ImagePreviewMode
   model: GptImageModel
+  size: ImageSize
+  upscale: UpscaleMode
   prompt: string
   selectedApiKeyId: number | null
   currentRequestId: string | null
@@ -447,6 +471,8 @@ interface PersistedDraftState {
     apiKeyId: number
     mode: ImagePreviewMode
     model: GptImageModel
+    size: ImageSize
+    upscale: UpscaleMode
     prompt: string
     sourceImageName?: string
     sourceImageType?: string
@@ -457,6 +483,8 @@ interface PersistedResultState {
   imageUrl: string
   mimeType: string
   model: GptImageModel
+  size: ImageSize
+  upscale: UpscaleMode
   apiKeyName: string
   createdAt: string
   mode: ImagePreviewMode
@@ -470,7 +498,8 @@ interface RequestPreviewState {
 }
 
 const DEFAULT_MODEL: GptImageModel = 'gpt-image-2'
-const EDIT_MODE_ENABLED = false
+const DEFAULT_SIZE: ImageSize = 'auto'
+const EDIT_MODE_ENABLED = true
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -493,6 +522,7 @@ const sourceImageUrl = ref('')
 
 const form = reactive({
   model: DEFAULT_MODEL as GptImageModel,
+  size: DEFAULT_SIZE as ImageSize,
   prompt: ''
 })
 
@@ -501,6 +531,16 @@ const modelOptions: Array<{ value: GptImageModel; label: string }> = [
   { value: 'gpt-image-1.5', label: 'GPT Image 1.5' },
   { value: 'gpt-image-1', label: 'GPT Image 1' }
 ]
+
+const sizeOptions = computed<Array<{ value: ImageSize; label: string }>>(() => [
+  { value: 'auto', label: t('imagePreview.sizeAuto') },
+  { value: '1024x1024', label: `1024x1024 (${t('imagePreview.sizeTier1K')})` },
+  { value: '1536x1024', label: `1536x1024 (${t('imagePreview.sizeTier2K')})` },
+  { value: '1024x1536', label: `1024x1536 (${t('imagePreview.sizeTier2K')})` },
+  { value: '1792x1024', label: `1792x1024 (${t('imagePreview.sizeTier2K')})` },
+  { value: '1024x1792', label: `1024x1792 (${t('imagePreview.sizeTier2K')})` },
+  { value: '2048x2048', label: `2048x2048 (${t('imagePreview.sizeTier4K')})` }
+])
 
 let activeController: AbortController | null = null
 let pendingSyncTimer: number | null = null
@@ -602,20 +642,12 @@ const currentRequestPreview = computed<RequestPreviewState | null>(() => {
   if (!selectedApiKey.value || !form.prompt.trim()) {
     return null
   }
-  const payload = buildPayload(form.model, form.prompt)
-  if (mode.value === 'generate') {
-    return buildGenerateRequestPreview(requestBaseUrl.value, selectedApiKey.value.key, payload)
+  const payload = buildPayload(form.model, form.prompt, form.size)
+  if (mode.value === 'edit' && sourceImageFile.value) {
+    const previewPayload = { ...payload, reference_images: [`(base64 data from ${sourceImageFile.value.name})`] }
+    return buildGenerateRequestPreview(requestBaseUrl.value, selectedApiKey.value.key, previewPayload)
   }
-  if (!sourceImageFile.value) {
-    return null
-  }
-  return buildEditRequestPreview(
-    requestBaseUrl.value,
-    selectedApiKey.value.key,
-    payload,
-    sourceImageFile.value.name,
-    sourceImageFile.value.type
-  )
+  return buildGenerateRequestPreview(requestBaseUrl.value, selectedApiKey.value.key, payload)
 })
 
 watch(openAIKeys, (keys) => {
@@ -629,7 +661,7 @@ watch(openAIKeys, (keys) => {
 }, { immediate: true })
 
 watch(
-  [mode, () => form.model, () => form.prompt, selectedApiKeyId, errorMessage],
+  [mode, () => form.model, () => form.size, () => form.prompt, selectedApiKeyId, errorMessage],
   () => {
     persistDraftState()
   }
@@ -667,11 +699,29 @@ function normalizeAvailableMode(nextMode?: ImagePreviewMode | null): ImagePrevie
   return nextMode === 'edit' ? 'edit' : 'generate'
 }
 
-function buildPayload(model: GptImageModel, prompt: string): Record<string, unknown> {
-  return {
+function buildPayload(model: GptImageModel, prompt: string, size: ImageSize): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
     model,
     prompt: prompt.trim(),
     response_format: 'b64_json'
+  }
+  if (size && size !== 'auto') {
+    payload.size = size
+  }
+  return payload
+}
+
+function deriveUpscaleFromSize(size: ImageSize): UpscaleMode {
+  switch (size) {
+    case '1536x1024':
+    case '1024x1536':
+    case '1792x1024':
+    case '1024x1792':
+      return '2k'
+    case '2048x2048':
+      return '4k'
+    default:
+      return ''
   }
 }
 
@@ -694,42 +744,6 @@ function buildGenerateRequestPreview(baseUrl: string, apiKey: string, payload: R
   }
 }
 
-function buildEditRequestPreview(
-  baseUrl: string,
-  apiKey: string,
-  payload: Record<string, unknown>,
-  sourceImageName?: string,
-  sourceImageType?: string
-): RequestPreviewState {
-  const endpoint = `${baseUrl}/v1/images/edits`
-  const imageFileName = sourceImageName || 'source-image.png'
-  const imageMimeType = sourceImageType || 'image/png'
-  const bodyContent = [
-    `model: ${String(payload.model || '')}`,
-    `prompt: ${String(payload.prompt || '')}`,
-    `response_format: ${String(payload.response_format || 'b64_json')}`,
-    `image: @${imageFileName} (${imageMimeType})`
-  ].join('\n')
-  const curlCommand = [
-    `curl "${endpoint}" \\`,
-    `  -H "Authorization: Bearer ${apiKey}" \\`,
-    `  -F "model=${escapeForDoubleQuotes(String(payload.model || ''))}" \\`,
-    `  -F "prompt=${escapeForDoubleQuotes(String(payload.prompt || ''))}" \\`,
-    `  -F "response_format=${escapeForDoubleQuotes(String(payload.response_format || 'b64_json'))}" \\`,
-    `  -F "image=@${escapeForDoubleQuotes(imageFileName)};type=${escapeForDoubleQuotes(imageMimeType)}"`
-  ].join('\n')
-  return {
-    endpoint,
-    bodyTitle: t('imagePreview.requestModal.formDataBody'),
-    bodyContent,
-    curlCommand
-  }
-}
-
-function escapeForDoubleQuotes(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')
-}
-
 async function loadKeys() {
   loadingKeys.value = true
   try {
@@ -741,6 +755,15 @@ async function loadKeys() {
   } finally {
     loadingKeys.value = false
   }
+}
+
+function fileToBase64DataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error('Failed to read file'))
+    reader.readAsDataURL(file)
+  })
 }
 
 function buildApiKeyOptionLabel(apiKey: ApiKey): string {
@@ -798,10 +821,76 @@ function removeStorageKey(key: string) {
   }
 }
 
+const IDB_NAME = 'image_preview_db'
+const IDB_STORE = 'images'
+const IDB_KEY = 'current_image'
+
+function openIDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+async function writeImageToIDB(imageUrl: string): Promise<void> {
+  try {
+    const db = await openIDB()
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).put(imageUrl, IDB_KEY)
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  } catch (e) {
+    console.warn('Failed to write image to IndexedDB:', e)
+  }
+}
+
+async function readImageFromIDB(): Promise<string | null> {
+  try {
+    const db = await openIDB()
+    const tx = db.transaction(IDB_STORE, 'readonly')
+    const req = tx.objectStore(IDB_STORE).get(IDB_KEY)
+    const value = await new Promise<string | null>((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result as string | null)
+      req.onerror = () => reject(req.error)
+    })
+    db.close()
+    return value || null
+  } catch {
+    return null
+  }
+}
+
+async function removeImageFromIDB(): Promise<void> {
+  try {
+    const db = await openIDB()
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).delete(IDB_KEY)
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  } catch {
+    // ignore
+  }
+}
+
 function persistDraftState() {
   const state: PersistedDraftState = {
     mode: mode.value,
     model: form.model,
+    size: form.size,
+    upscale: deriveUpscaleFromSize(form.size),
     prompt: form.prompt,
     selectedApiKeyId: selectedApiKeyId.value,
     currentRequestId: currentRequestId.value,
@@ -812,6 +901,8 @@ function persistDraftState() {
           apiKeyId: lastSubmitted.value.apiKeyId,
           mode: lastSubmitted.value.mode,
           model: lastSubmitted.value.model,
+          size: lastSubmitted.value.size,
+          upscale: lastSubmitted.value.upscale,
           prompt: lastSubmitted.value.prompt,
           sourceImageName: lastSubmitted.value.sourceImageName,
           sourceImageType: lastSubmitted.value.sourceImageType
@@ -824,25 +915,30 @@ function persistDraftState() {
 function persistResultState() {
   if (!result.value) {
     removeStorageKey(PREVIEW_RESULT_STORAGE_KEY)
+    void removeImageFromIDB()
     return
   }
 
   const state: PersistedResultState = {
-    imageUrl: result.value.imageUrl,
+    imageUrl: '',
     mimeType: result.value.mimeType,
     model: result.value.model,
+    size: result.value.size,
+    upscale: result.value.upscale,
     apiKeyName: result.value.apiKeyName,
     createdAt: result.value.createdAt.toISOString(),
     mode: result.value.mode
   }
   writeJSONStorage(PREVIEW_RESULT_STORAGE_KEY, state)
+  void writeImageToIDB(result.value.imageUrl)
 }
 
-function restorePreviewState() {
+async function restorePreviewState() {
   const draft = readJSONStorage<PersistedDraftState>(PREVIEW_DRAFT_STORAGE_KEY)
   if (draft) {
     mode.value = normalizeAvailableMode(draft.mode)
     form.model = draft.model || DEFAULT_MODEL
+    form.size = draft.size || DEFAULT_SIZE
     form.prompt = draft.prompt || ''
     selectedApiKeyId.value = draft.selectedApiKeyId ?? null
     currentRequestId.value = draft.currentRequestId ?? null
@@ -853,8 +949,10 @@ function restorePreviewState() {
           apiKeyId: draft.lastSubmitted.apiKeyId,
           mode: draft.lastSubmitted.mode,
           model: draft.lastSubmitted.model,
+          size: draft.lastSubmitted.size || DEFAULT_SIZE,
+          upscale: draft.lastSubmitted.upscale || deriveUpscaleFromSize((draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
           prompt: draft.lastSubmitted.prompt,
-          payload: buildPayload(draft.lastSubmitted.model, draft.lastSubmitted.prompt),
+          payload: buildPayload(draft.lastSubmitted.model, draft.lastSubmitted.prompt, (draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
           sourceImageName: draft.lastSubmitted.sourceImageName,
           sourceImageType: draft.lastSubmitted.sourceImageType
         }
@@ -863,18 +961,23 @@ function restorePreviewState() {
 
   const persistedResult = readJSONStorage<PersistedResultState>(PREVIEW_RESULT_STORAGE_KEY)
   if (persistedResult) {
-    result.value = {
-      imageUrl: persistedResult.imageUrl,
-      mimeType: persistedResult.mimeType,
-      model: persistedResult.model,
-      apiKeyName: persistedResult.apiKeyName,
-      createdAt: new Date(persistedResult.createdAt),
-      mode: persistedResult.mode || 'generate'
+    const imageUrl = await readImageFromIDB() || persistedResult.imageUrl || ''
+    if (imageUrl) {
+      result.value = {
+        imageUrl,
+        mimeType: persistedResult.mimeType,
+        model: persistedResult.model,
+        size: persistedResult.size || DEFAULT_SIZE,
+        upscale: persistedResult.upscale || deriveUpscaleFromSize((persistedResult.size || DEFAULT_SIZE) as ImageSize),
+        apiKeyName: persistedResult.apiKeyName,
+        createdAt: new Date(persistedResult.createdAt),
+        mode: persistedResult.mode || 'generate'
+      }
     }
   }
 }
 
-function syncFromStorage() {
+async function syncFromStorage() {
   const draft = readJSONStorage<PersistedDraftState>(PREVIEW_DRAFT_STORAGE_KEY)
   if (draft) {
     mode.value = normalizeAvailableMode(draft.mode || mode.value)
@@ -886,8 +989,10 @@ function syncFromStorage() {
           apiKeyId: draft.lastSubmitted.apiKeyId,
           mode: draft.lastSubmitted.mode,
           model: draft.lastSubmitted.model,
+          size: draft.lastSubmitted.size || DEFAULT_SIZE,
+          upscale: draft.lastSubmitted.upscale || deriveUpscaleFromSize((draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
           prompt: draft.lastSubmitted.prompt,
-          payload: buildPayload(draft.lastSubmitted.model, draft.lastSubmitted.prompt),
+          payload: buildPayload(draft.lastSubmitted.model, draft.lastSubmitted.prompt, (draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
           sourceImageName: draft.lastSubmitted.sourceImageName,
           sourceImageType: draft.lastSubmitted.sourceImageType
         }
@@ -896,13 +1001,18 @@ function syncFromStorage() {
 
   const persistedResult = readJSONStorage<PersistedResultState>(PREVIEW_RESULT_STORAGE_KEY)
   if (persistedResult) {
-    result.value = {
-      imageUrl: persistedResult.imageUrl,
-      mimeType: persistedResult.mimeType,
-      model: persistedResult.model,
-      apiKeyName: persistedResult.apiKeyName,
-      createdAt: new Date(persistedResult.createdAt),
-      mode: persistedResult.mode || 'generate'
+    const imageUrl = await readImageFromIDB() || persistedResult.imageUrl || ''
+    if (imageUrl) {
+      result.value = {
+        imageUrl,
+        mimeType: persistedResult.mimeType,
+        model: persistedResult.model,
+        size: persistedResult.size || DEFAULT_SIZE,
+        upscale: persistedResult.upscale || deriveUpscaleFromSize((persistedResult.size || DEFAULT_SIZE) as ImageSize),
+        apiKeyName: persistedResult.apiKeyName,
+        createdAt: new Date(persistedResult.createdAt),
+        mode: persistedResult.mode || 'generate'
+      }
     }
   }
 
@@ -997,11 +1107,13 @@ async function handleSubmit() {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   currentRequestId.value = requestId
 
-  const payload = buildPayload(form.model, prompt)
+  const payload = buildPayload(form.model, prompt, form.size)
   lastSubmitted.value = {
     apiKeyId: selectedApiKey.value.id,
     mode: mode.value,
     model: form.model,
+    size: form.size,
+    upscale: deriveUpscaleFromSize(form.size),
     prompt,
     payload,
     sourceImageName: mode.value === 'edit' ? sourceImageFile.value?.name : undefined,
@@ -1012,18 +1124,16 @@ async function handleSubmit() {
   startPendingSyncTimer()
 
   try {
-    const response = mode.value === 'generate'
-      ? await openAIImagesAPI.generate({
-          apiKey: selectedApiKey.value.key,
-          payload,
-          signal: activeController.signal
-        })
-      : await openAIImagesAPI.edit({
-          apiKey: selectedApiKey.value.key,
-          payload,
-          image: sourceImageFile.value!,
-          signal: activeController.signal
-        })
+    if (mode.value === 'edit' && sourceImageFile.value) {
+      const b64 = await fileToBase64DataURL(sourceImageFile.value)
+      payload.reference_images = [b64]
+    }
+
+    const response = await openAIImagesAPI.generate({
+      apiKey: selectedApiKey.value.key,
+      payload,
+      signal: activeController.signal
+    })
 
     const firstItem = response.data?.[0]
     const imageUrl = firstItem ? buildImageUrl(firstItem) : ''
@@ -1038,6 +1148,8 @@ async function handleSubmit() {
       imageUrl,
       mimeType: getMimeType(firstItem),
       model: form.model,
+      size: form.size,
+      upscale: deriveUpscaleFromSize(form.size),
       apiKeyName: selectedApiKey.value.name,
       createdAt: new Date(),
       mode: mode.value
@@ -1075,15 +1187,6 @@ function openCurrentRequestModal() {
 }
 
 function buildRequestPreviewForSubmittedRequest(request: SubmittedRequest, apiKey: string): RequestPreviewState {
-  if (request.mode === 'edit') {
-    return buildEditRequestPreview(
-      requestBaseUrl.value,
-      apiKey,
-      request.payload,
-      request.sourceImageName,
-      request.sourceImageType
-    )
-  }
   return buildGenerateRequestPreview(requestBaseUrl.value, apiKey, request.payload)
 }
 
@@ -1112,6 +1215,7 @@ async function retryLastRequest() {
   selectedApiKeyId.value = lastSubmitted.value.apiKeyId
   mode.value = lastSubmitted.value.mode
   form.model = lastSubmitted.value.model
+  form.size = lastSubmitted.value.size || DEFAULT_SIZE
   form.prompt = lastSubmitted.value.prompt
 
   if (lastSubmitted.value.mode === 'edit') {
@@ -1132,12 +1236,73 @@ function formatDateTime(date: Date): string {
   }).format(date)
 }
 
-function downloadCurrentImage() {
+function getTargetLongEdge(size: ImageSize): number {
+  switch (size) {
+    case '1536x1024':
+    case '1024x1536':
+      return 1536
+    case '1792x1024':
+    case '1024x1792':
+      return 1792
+    case '2048x2048':
+      return 2048
+    default:
+      return 0
+  }
+}
+
+async function upscaleViaCanvas(imageUrl: string, targetLongEdge: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const sw = img.naturalWidth
+      const sh = img.naturalHeight
+      const long = Math.max(sw, sh)
+      if (long >= targetLongEdge) {
+        resolve(imageUrl)
+        return
+      }
+      let dw: number, dh: number
+      if (sw >= sh) {
+        dw = targetLongEdge
+        dh = Math.round(sh * targetLongEdge / sw)
+      } else {
+        dh = targetLongEdge
+        dw = Math.round(sw * targetLongEdge / sh)
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = dw
+      canvas.height = dh
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        resolve(imageUrl)
+        return
+      }
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+      ctx.drawImage(img, 0, 0, dw, dh)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    img.onerror = () => reject(new Error('Failed to load image for upscale'))
+    img.src = imageUrl
+  })
+}
+
+async function downloadCurrentImage() {
   if (!result.value) {
     return
   }
+  let downloadUrl = result.value.imageUrl
+  const targetLongEdge = getTargetLongEdge(result.value.size)
+  if (targetLongEdge > 0) {
+    try {
+      downloadUrl = await upscaleViaCanvas(downloadUrl, targetLongEdge)
+    } catch {
+      // fallback to original
+    }
+  }
   const link = document.createElement('a')
-  link.href = result.value.imageUrl
+  link.href = downloadUrl
   link.download = buildDownloadFilename(result.value)
   document.body.appendChild(link)
   link.click()
