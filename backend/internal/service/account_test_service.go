@@ -42,7 +42,7 @@ const (
 	// testImageSSEMaxBytes is the threshold above which raw image bytes are
 	// re-encoded as JPEG before being sent over SSE to avoid multi-MB base64
 	// payloads that can overwhelm EventSource buffers and proxy timeouts.
-	testImageSSEMaxBytes = 512 * 1024 // 512 KB
+	testImageSSEMaxBytes    = 512 * 1024 // 512 KB
 	testImageSSEJPEGQuality = 80
 )
 
@@ -644,7 +644,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 	if conversationID != "" && !hasOpenAIFileServicePointerInfos(pointerInfos) {
 		s.sendEvent(c, TestEvent{Type: "content", Text: "Waiting for image generation to complete...\n"})
-		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID)
+		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID, false)
 		if pollErr != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Poll failed: %s", pollErr.Error()))
 		}

@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -39,6 +42,62 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSON(t *testing.T) {
 	require.Equal(t, "1K", parsed.SizeTier)
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 	require.False(t, parsed.Multipart)
+}
+
+func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSONReferenceRequiresOAuthAndSniffsJPEG(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var imageBody bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.White)
+	require.NoError(t, jpeg.Encode(&imageBody, img, nil))
+
+	body, err := json.Marshal(map[string]any{
+		"model":            "gpt-image-2",
+		"prompt":           "extend this image",
+		"response_format":  "b64_json",
+		"reference_images": []string{base64.StdEncoding.EncodeToString(imageBody.Bytes())},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	require.Equal(t, OpenAIImagesCapabilityOAuth, parsed.RequiredCapability)
+	require.Len(t, parsed.Uploads, 1)
+	require.Equal(t, "image/jpeg", parsed.Uploads[0].ContentType)
+	require.Equal(t, "reference_0.jpg", parsed.Uploads[0].FileName)
+	require.Equal(t, 1, parsed.Uploads[0].Width)
+	require.Equal(t, 1, parsed.Uploads[0].Height)
+}
+
+func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSONInvalidReferenceErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body, err := json.Marshal(map[string]any{
+		"model":            "gpt-image-2",
+		"prompt":           "extend this image",
+		"reference_images": []string{base64.StdEncoding.EncodeToString([]byte("not an image"))},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.Error(t, err)
+	require.Nil(t, parsed)
+	require.Contains(t, err.Error(), "reference_images")
 }
 
 func TestOpenAIImagesRequestNormalizeForOAuthIgnoresNativeOptions(t *testing.T) {
@@ -174,6 +233,19 @@ func TestExcludeOpenAIUploadedPointerInfos(t *testing.T) {
 		{Pointer: "sediment://source-image"},
 		{Pointer: "sediment://preview-image"},
 	}, filtered)
+}
+
+func TestReferenceUploadDataHashSetMatchesUploadedBytes(t *testing.T) {
+	source := []byte("source-image-bytes")
+	generated := []byte("generated-image-bytes")
+	hashes := referenceUploadDataHashSet([]openAIUploadedImage{
+		{DataSHA256: hashOpenAIImageBytes(source)},
+	})
+
+	require.True(t, isReferenceUploadData(source, hashes))
+	require.False(t, isReferenceUploadData(generated, hashes))
+	require.False(t, isReferenceUploadData(nil, hashes))
+	require.False(t, isReferenceUploadData(source, nil))
 }
 
 type errAfterDataReadCloser struct {

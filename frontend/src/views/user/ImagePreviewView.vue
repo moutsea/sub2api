@@ -140,50 +140,83 @@
 
               <div v-if="mode === 'edit'">
                 <div class="flex items-center justify-between gap-3">
-                  <label class="input-label">{{ t('imagePreview.sourceImageLabel') }}</label>
+                  <label class="input-label">
+                    {{ t('imagePreview.sourceImageLabel') }} ({{ sourceImageFiles.length }}/{{ MAX_SOURCE_IMAGES }})
+                  </label>
                   <input
                     ref="sourceFileInput"
                     type="file"
                     accept="image/*"
+                    multiple
                     class="hidden"
                     @change="handleSourceFileChange"
                   />
-                  <button type="button" class="btn btn-secondary" @click="triggerSourceFileSelect">
-                    <Icon name="upload" size="sm" class="mr-2" />
-                    {{ sourceActionText }}
+                  <button
+                    v-if="sourceImageFiles.length > 0"
+                    type="button"
+                    class="inline-flex items-center gap-1.5 text-sm font-medium text-red-600 transition-colors hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    @click="clearSourceImages"
+                  >
+                    <Icon name="trash" size="sm" />
+                    {{ t('imagePreview.clearSourceImages') }}
                   </button>
                 </div>
 
                 <div
-                  v-if="sourceImageUrl"
-                  class="mt-2 overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-900/60"
+                  v-if="sourceImageFiles.length > 0"
+                  class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3"
                 >
-                  <img
-                    :src="sourceImageUrl"
-                    :alt="t('imagePreview.sourceImageAlt')"
-                    class="h-auto max-h-[320px] w-full object-contain"
-                  />
-                  <div class="flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 text-sm dark:border-dark-700">
-                    <div class="min-w-0">
-                      <p class="truncate font-medium text-gray-900 dark:text-white">
-                        {{ sourceImageFile?.name }}
+                  <div
+                    v-for="(url, index) in sourceImageUrls"
+                    :key="url"
+                    class="group relative overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-900/60"
+                  >
+                    <img
+                      :src="url"
+                      :alt="t('imagePreview.sourceImageAlt')"
+                      class="h-32 w-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      class="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 shadow-sm transition-opacity hover:bg-black/75 group-hover:opacity-100"
+                      :aria-label="t('imagePreview.removeSourceImage')"
+                      @click.stop="removeSourceImage(index)"
+                    >
+                      <Icon name="trash" size="sm" />
+                    </button>
+                    <div class="absolute inset-x-0 bottom-0 bg-black/55 px-2 py-1.5 text-white">
+                      <p class="truncate text-xs font-medium">
+                        {{ sourceImageFiles[index]?.name }}
                       </p>
-                      <p class="mt-1 text-gray-500 dark:text-dark-400">
-                        {{ sourceImageSummary }}
+                      <p class="mt-0.5 truncate text-[11px] text-white/75">
+                        {{ formatSourceFileSummary(sourceImageFiles[index]) }}
                       </p>
                     </div>
-                    <button type="button" class="btn btn-secondary" @click="clearSourceImage">
-                      <Icon name="trash" size="sm" class="mr-2" />
-                      {{ t('imagePreview.removeSourceImage') }}
-                    </button>
                   </div>
                 </div>
 
                 <div
-                  v-else
-                  class="mt-2 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5 text-center dark:border-dark-700 dark:bg-dark-900/40"
+                  v-if="sourceImageFiles.length < MAX_SOURCE_IMAGES"
+                  role="button"
+                  tabindex="0"
+                  class="mt-2 cursor-pointer rounded-2xl border border-dashed p-5 text-center transition-colors"
+                  :class="sourceDragActive
+                    ? 'border-primary-500 bg-primary-50 text-primary-600 dark:border-primary-500 dark:bg-primary-900/20 dark:text-primary-300'
+                    : 'border-gray-300 bg-gray-50 text-gray-500 hover:border-primary-400 hover:bg-primary-50/50 dark:border-dark-700 dark:bg-dark-900/40 dark:text-dark-400 dark:hover:border-primary-600 dark:hover:bg-primary-900/10'"
+                  @click="triggerSourceFileSelect"
+                  @keydown.enter.prevent="triggerSourceFileSelect"
+                  @keydown.space.prevent="triggerSourceFileSelect"
+                  @dragenter.prevent="handleSourceDragEnter"
+                  @dragover.prevent="handleSourceDragOver"
+                  @dragleave.prevent="handleSourceDragLeave"
+                  @drop.prevent="handleSourceDrop"
                 >
-                  <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-200 text-gray-500 dark:bg-dark-800 dark:text-dark-400">
+                  <div
+                    class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl transition-colors"
+                    :class="sourceDragActive
+                      ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300'
+                      : 'bg-gray-200 text-gray-500 dark:bg-dark-800 dark:text-dark-400'"
+                  >
                     <Icon name="upload" size="xl" />
                   </div>
                   <p class="mt-4 text-sm font-semibold text-gray-900 dark:text-white">
@@ -274,16 +307,20 @@
 
               <template v-else-if="result">
                 <div class="space-y-5">
-                  <div v-if="result.mode === 'edit' && sourceImageUrl" class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  <div v-if="result.mode === 'edit' && sourceImageUrls.length > 0" class="grid grid-cols-1 gap-4 xl:grid-cols-2">
                     <div class="overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-900/60">
                       <div class="border-b border-gray-200 px-4 py-3 text-sm font-medium text-gray-900 dark:border-dark-700 dark:text-white">
-                        {{ t('imagePreview.editSourcePreviewTitle') }}
+                        {{ t('imagePreview.editSourcePreviewTitle') }} ({{ sourceImageUrls.length }})
                       </div>
-                      <img
-                        :src="sourceImageUrl"
-                        :alt="t('imagePreview.sourceImageAlt')"
-                        class="h-auto max-h-[320px] w-full object-contain"
-                      />
+                      <div class="grid grid-cols-2 gap-2 p-3">
+                        <img
+                          v-for="url in sourceImageUrls"
+                          :key="url"
+                          :src="url"
+                          :alt="t('imagePreview.sourceImageAlt')"
+                          class="h-36 w-full rounded-xl object-cover"
+                        />
+                      </div>
                     </div>
 
                     <div class="overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-900/60">
@@ -433,6 +470,7 @@ type UpscaleMode = '' | '2k' | '4k'
 
 const PREVIEW_DRAFT_STORAGE_KEY = 'image_preview_draft_v3'
 const PREVIEW_RESULT_STORAGE_KEY = 'image_preview_result_v3'
+const MAX_SOURCE_IMAGES = 4
 
 interface PreviewResult {
   imageUrl: string
@@ -453,8 +491,8 @@ interface SubmittedRequest {
   upscale: UpscaleMode
   prompt: string
   payload: Record<string, unknown>
-  sourceImageName?: string
-  sourceImageType?: string
+  sourceImageNames?: string[]
+  sourceImageTypes?: string[]
 }
 
 interface PersistedDraftState {
@@ -474,8 +512,8 @@ interface PersistedDraftState {
     size: ImageSize
     upscale: UpscaleMode
     prompt: string
-    sourceImageName?: string
-    sourceImageType?: string
+    sourceImageNames?: string[]
+    sourceImageTypes?: string[]
   } | null
 }
 
@@ -511,14 +549,15 @@ const allKeys = ref<ApiKey[]>([])
 const selectedApiKeyId = ref<number | null>(null)
 const result = ref<PreviewResult | null>(null)
 const lastSubmitted = ref<SubmittedRequest | null>(null)
-const lastSubmittedSourceFile = ref<File | null>(null)
+const lastSubmittedSourceFiles = ref<File[]>([])
 const currentRequestId = ref<string | null>(null)
 const showRequestModal = ref(false)
 const requestModalState = ref<RequestPreviewState | null>(null)
 const mode = ref<ImagePreviewMode>('generate')
 const sourceFileInput = ref<HTMLInputElement | null>(null)
-const sourceImageFile = ref<File | null>(null)
-const sourceImageUrl = ref('')
+const sourceImageFiles = ref<File[]>([])
+const sourceImageUrls = ref<string[]>([])
+const sourceDragActive = ref(false)
 
 const form = reactive({
   model: DEFAULT_MODEL as GptImageModel,
@@ -622,29 +661,19 @@ const canSubmit = computed(() =>
   Boolean(
     selectedApiKey.value &&
     form.prompt.trim().length > 0 &&
-    (mode.value === 'generate' || sourceImageFile.value)
+    (mode.value === 'generate' || sourceImageFiles.value.length > 0)
   )
 )
-const sourceActionText = computed(() =>
-  sourceImageFile.value ? t('imagePreview.replaceSourceImage') : t('imagePreview.uploadSourceImage')
-)
-const sourceImageSummary = computed(() => {
-  if (!sourceImageFile.value) {
-    return ''
-  }
-  const sizeKb = Math.max(1, Math.round(sourceImageFile.value.size / 1024))
-  return t('imagePreview.sourceImageSummary', {
-    type: sourceImageFile.value.type || 'image/*',
-    sizeKb
-  })
-})
 const currentRequestPreview = computed<RequestPreviewState | null>(() => {
   if (!selectedApiKey.value || !form.prompt.trim()) {
     return null
   }
   const payload = buildPayload(form.model, form.prompt, form.size)
-  if (mode.value === 'edit' && sourceImageFile.value) {
-    const previewPayload = { ...payload, reference_images: [`(base64 data from ${sourceImageFile.value.name})`] }
+  if (mode.value === 'edit' && sourceImageFiles.value.length > 0) {
+    const previewPayload = {
+      ...payload,
+      reference_images: sourceImageFiles.value.map((file) => `(base64 data from ${file.name})`)
+    }
     return buildGenerateRequestPreview(requestBaseUrl.value, selectedApiKey.value.key, previewPayload)
   }
   return buildGenerateRequestPreview(requestBaseUrl.value, selectedApiKey.value.key, payload)
@@ -682,7 +711,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   activeController?.abort()
   stopPendingSyncTimer()
-  revokeSourceImageUrl()
+  revokeSourceImageUrls()
 })
 
 function setMode(nextMode: ImagePreviewMode) {
@@ -904,8 +933,8 @@ function persistDraftState() {
           size: lastSubmitted.value.size,
           upscale: lastSubmitted.value.upscale,
           prompt: lastSubmitted.value.prompt,
-          sourceImageName: lastSubmitted.value.sourceImageName,
-          sourceImageType: lastSubmitted.value.sourceImageType
+          sourceImageNames: lastSubmitted.value.sourceImageNames,
+          sourceImageTypes: lastSubmitted.value.sourceImageTypes
         }
       : null
   }
@@ -953,8 +982,8 @@ async function restorePreviewState() {
           upscale: draft.lastSubmitted.upscale || deriveUpscaleFromSize((draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
           prompt: draft.lastSubmitted.prompt,
           payload: buildPayload(draft.lastSubmitted.model, draft.lastSubmitted.prompt, (draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
-          sourceImageName: draft.lastSubmitted.sourceImageName,
-          sourceImageType: draft.lastSubmitted.sourceImageType
+          sourceImageNames: draft.lastSubmitted.sourceImageNames,
+          sourceImageTypes: draft.lastSubmitted.sourceImageTypes
         }
       : null
   }
@@ -993,8 +1022,8 @@ async function syncFromStorage() {
           upscale: draft.lastSubmitted.upscale || deriveUpscaleFromSize((draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
           prompt: draft.lastSubmitted.prompt,
           payload: buildPayload(draft.lastSubmitted.model, draft.lastSubmitted.prompt, (draft.lastSubmitted.size || DEFAULT_SIZE) as ImageSize),
-          sourceImageName: draft.lastSubmitted.sourceImageName,
-          sourceImageType: draft.lastSubmitted.sourceImageType
+          sourceImageNames: draft.lastSubmitted.sourceImageNames,
+          sourceImageTypes: draft.lastSubmitted.sourceImageTypes
         }
       : null
   }
@@ -1042,20 +1071,54 @@ function stopPendingSyncTimer() {
   }
 }
 
-function revokeSourceImageUrl() {
-  if (sourceImageUrl.value.startsWith('blob:')) {
-    URL.revokeObjectURL(sourceImageUrl.value)
-  }
-  sourceImageUrl.value = ''
+function revokeSourceImageUrls(urls: string[] = sourceImageUrls.value) {
+  urls.forEach((url) => {
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url)
+    }
+  })
 }
 
-function setSourceImageFile(file: File | null) {
-  revokeSourceImageUrl()
-  sourceImageFile.value = file
-  if (file) {
-    sourceImageUrl.value = URL.createObjectURL(file)
+function setSourceImageFiles(files: File[]) {
+  revokeSourceImageUrls()
+  sourceImageFiles.value = files
+  sourceImageUrls.value = files.map((file) => URL.createObjectURL(file))
+  if (sourceFileInput.value) {
+    sourceFileInput.value.value = ''
   }
-  if (!file && sourceFileInput.value) {
+}
+
+function appendSourceImageFiles(files: File[]) {
+  const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+  if (imageFiles.length === 0) {
+    appStore.showError(t('imagePreview.sourceImageInvalid'))
+    return
+  }
+  const remaining = MAX_SOURCE_IMAGES - sourceImageFiles.value.length
+  if (remaining <= 0) {
+    appStore.showWarning(t('imagePreview.sourceImageLimit', { count: MAX_SOURCE_IMAGES }))
+    return
+  }
+
+  const filesToAdd = imageFiles.slice(0, remaining)
+  sourceImageFiles.value = [...sourceImageFiles.value, ...filesToAdd]
+  sourceImageUrls.value = [
+    ...sourceImageUrls.value,
+    ...filesToAdd.map((file) => URL.createObjectURL(file))
+  ]
+  if (imageFiles.length > filesToAdd.length) {
+    appStore.showWarning(t('imagePreview.sourceImageLimit', { count: MAX_SOURCE_IMAGES }))
+  }
+}
+
+function removeSourceImage(index: number) {
+  const url = sourceImageUrls.value[index]
+  if (url?.startsWith('blob:')) {
+    URL.revokeObjectURL(url)
+  }
+  sourceImageFiles.value = sourceImageFiles.value.filter((_, itemIndex) => itemIndex !== index)
+  sourceImageUrls.value = sourceImageUrls.value.filter((_, itemIndex) => itemIndex !== index)
+  if (sourceFileInput.value) {
     sourceFileInput.value.value = ''
   }
 }
@@ -1069,20 +1132,52 @@ function triggerSourceFileSelect() {
 
 function handleSourceFileChange(event: Event) {
   const target = event.target as HTMLInputElement
-  const file = target.files?.[0] || null
-  if (!file) {
+  const files = Array.from(target.files || [])
+  if (files.length === 0) {
     return
   }
-  if (!file.type.startsWith('image/')) {
-    appStore.showError(t('imagePreview.sourceImageInvalid'))
-    target.value = ''
-    return
-  }
-  setSourceImageFile(file)
+  appendSourceImageFiles(files)
+  target.value = ''
 }
 
-function clearSourceImage() {
-  setSourceImageFile(null)
+function handleSourceDragEnter() {
+  sourceDragActive.value = true
+}
+
+function handleSourceDragOver() {
+  sourceDragActive.value = true
+}
+
+function handleSourceDragLeave(event: DragEvent) {
+  const currentTarget = event.currentTarget as HTMLElement | null
+  const relatedTarget = event.relatedTarget as Node | null
+  if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+    return
+  }
+  sourceDragActive.value = false
+}
+
+function handleSourceDrop(event: DragEvent) {
+  sourceDragActive.value = false
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (files.length > 0) {
+    appendSourceImageFiles(files)
+  }
+}
+
+function clearSourceImages() {
+  setSourceImageFiles([])
+}
+
+function formatSourceFileSummary(file?: File): string {
+  if (!file) {
+    return ''
+  }
+  const sizeKb = Math.max(1, Math.round(file.size / 1024))
+  return t('imagePreview.sourceImageSummary', {
+    type: file.type || 'image/*',
+    sizeKb
+  })
 }
 
 async function handleSubmit() {
@@ -1095,7 +1190,7 @@ async function handleSubmit() {
     appStore.showError(t('imagePreview.promptRequired'))
     return
   }
-  if (mode.value === 'edit' && !sourceImageFile.value) {
+  if (mode.value === 'edit' && sourceImageFiles.value.length === 0) {
     appStore.showError(t('imagePreview.sourceImageRequired'))
     return
   }
@@ -1108,6 +1203,13 @@ async function handleSubmit() {
   currentRequestId.value = requestId
 
   const payload = buildPayload(form.model, prompt, form.size)
+  const sourceFilesForRequest = mode.value === 'edit' ? [...sourceImageFiles.value] : []
+  const previewPayload = sourceFilesForRequest.length > 0
+    ? {
+        ...payload,
+        reference_images: sourceFilesForRequest.map((file) => `(base64 data from ${file.name})`)
+      }
+    : payload
   lastSubmitted.value = {
     apiKeyId: selectedApiKey.value.id,
     mode: mode.value,
@@ -1115,18 +1217,17 @@ async function handleSubmit() {
     size: form.size,
     upscale: deriveUpscaleFromSize(form.size),
     prompt,
-    payload,
-    sourceImageName: mode.value === 'edit' ? sourceImageFile.value?.name : undefined,
-    sourceImageType: mode.value === 'edit' ? sourceImageFile.value?.type : undefined
+    payload: previewPayload,
+    sourceImageNames: sourceFilesForRequest.map((file) => file.name),
+    sourceImageTypes: sourceFilesForRequest.map((file) => file.type)
   }
-  lastSubmittedSourceFile.value = mode.value === 'edit' ? sourceImageFile.value : null
+  lastSubmittedSourceFiles.value = sourceFilesForRequest
   persistDraftState()
   startPendingSyncTimer()
 
   try {
-    if (mode.value === 'edit' && sourceImageFile.value) {
-      const b64 = await fileToBase64DataURL(sourceImageFile.value)
-      payload.reference_images = [b64]
+    if (sourceFilesForRequest.length > 0) {
+      payload.reference_images = await Promise.all(sourceFilesForRequest.map(fileToBase64DataURL))
     }
 
     const response = await openAIImagesAPI.generate({
@@ -1219,11 +1320,11 @@ async function retryLastRequest() {
   form.prompt = lastSubmitted.value.prompt
 
   if (lastSubmitted.value.mode === 'edit') {
-    if (!lastSubmittedSourceFile.value) {
+    if (lastSubmittedSourceFiles.value.length === 0) {
       appStore.showError(t('imagePreview.editRetrySourceUnavailable'))
       return
     }
-    setSourceImageFile(lastSubmittedSourceFile.value)
+    setSourceImageFiles(lastSubmittedSourceFiles.value)
   }
 
   await handleSubmit()

@@ -555,6 +555,8 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
 	case OpenAIImagesCapabilityNative:
 		return a.Type == AccountTypeAPIKey
+	case OpenAIImagesCapabilityOAuth:
+		return a.Type == AccountTypeOAuth
 	default:
 		return true
 	}
