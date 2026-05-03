@@ -1,6 +1,9 @@
 package kiro
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestExtractTokenUsage_NormalizesInputWithCache(t *testing.T) {
 	input, output, cacheCreation, cacheRead, has := extractTokenUsage(map[string]any{
@@ -80,4 +83,144 @@ func TestParseCompleteResponseWithNameRestore_UsesUpstreamTokenUsage(t *testing.
 	if resp.CacheReadTokens != 5 {
 		t.Fatalf("cache_read_input_tokens=%d, want 5", resp.CacheReadTokens)
 	}
+}
+
+func TestAwsEventStreamParser_EnterPlanModeEmptyInputDoesNotInjectSoftLimit(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	events := parser.Process([]byte(`{"toolUseId":"toolu_plan","name":"EnterPlanMode","stop":true}`))
+	events = append(events, parser.Finish()...)
+
+	var sawToolStart, sawToolStop bool
+	for _, event := range events {
+		switch event.Type {
+		case EventContentBlockStart:
+			if event.BlockType.Kind == BlockToolUse && event.BlockType.ToolName == "EnterPlanMode" {
+				sawToolStart = true
+			}
+		case EventToolUseInputDelta:
+			t.Fatalf("EnterPlanMode with empty input should not emit input delta, got %q", event.PartialJSON)
+		case EventToolUseStop:
+			sawToolStop = true
+		}
+	}
+	if !sawToolStart {
+		t.Fatal("expected EnterPlanMode tool_use start")
+	}
+	if !sawToolStop {
+		t.Fatal("expected EnterPlanMode tool_use stop")
+	}
+}
+
+func TestBuildClaudeNonStreamResponse_EnterPlanModeEmptyInputIsEmptyObject(t *testing.T) {
+	payload := []byte(`{"toolUseId":"toolu_plan","name":"EnterPlanMode","stop":true}`)
+	resp := ParseCompleteResponseWithNameRestore(payload, nil)
+	claudeResp := BuildClaudeNonStreamResponse("msg_test", "claude-sonnet-4-20250514", 1, resp)
+
+	content, ok := claudeResp["content"].([]map[string]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content = %#v, want one tool_use block", claudeResp["content"])
+	}
+	input, ok := content[0]["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input = %#v, want map", content[0]["input"])
+	}
+	if len(input) != 0 {
+		t.Fatalf("EnterPlanMode input = %#v, want empty object", input)
+	}
+}
+
+func TestAwsEventStreamParser_ThinkingTagsMaximallySplit(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-opus-4-6")
+	var events []StreamEvent
+	for _, part := range []string{
+		"\n",
+		"\n",
+		"<thin",
+		"king>",
+		"\n",
+		"hello",
+		"</thi",
+		"nking>",
+		"\n",
+		"\n",
+		"world",
+	} {
+		events = append(events, parser.Process(mustContentPayload(t, part))...)
+	}
+	events = append(events, parser.Finish()...)
+
+	var thinking, text string
+	for _, event := range events {
+		switch event.Type {
+		case EventThinkingDelta:
+			thinking += event.Text
+		case EventTextDelta:
+			text += event.Text
+		}
+	}
+	if thinking != "hello" {
+		t.Fatalf("thinking = %q, want %q", thinking, "hello")
+	}
+	if text != "world" {
+		t.Fatalf("text = %q, want %q", text, "world")
+	}
+}
+
+func TestStreamEventConverter_ThinkingStopEmitsSignature(t *testing.T) {
+	converter := NewStreamEventConverter("msg_test", "claude-opus-4-6", 1)
+	var events []ClaudeSSEEvent
+	events = append(events, converter.ConvertEvent(StreamEvent{
+		Type:      EventContentBlockStart,
+		Index:     0,
+		BlockType: ContentBlockType{Kind: BlockThinking},
+	})...)
+	events = append(events, converter.ConvertEvent(StreamEvent{Type: EventThinkingDelta, Index: 0, Text: "secret"})...)
+	events = append(events, converter.ConvertEvent(StreamEvent{Type: EventContentBlockStop, Index: 0})...)
+
+	if len(events) < 4 {
+		t.Fatalf("events len = %d, want at least 4: %#v", len(events), events)
+	}
+	signatureEvent := events[len(events)-2]
+	delta, _ := signatureEvent.Data["delta"].(map[string]any)
+	if delta["type"] != "signature_delta" {
+		t.Fatalf("penultimate event delta type = %v, want signature_delta; events=%#v", delta["type"], events)
+	}
+	if delta["signature"] == "" {
+		t.Fatal("signature_delta signature should not be empty")
+	}
+	if events[len(events)-1].EventType != "content_block_stop" {
+		t.Fatalf("last event = %s, want content_block_stop", events[len(events)-1].EventType)
+	}
+}
+
+func TestBuildClaudeNonStreamResponse_IncludesThinkingBlock(t *testing.T) {
+	payload := append(mustContentPayload(t, "<thinking>\nsecret</thinking>\n\nanswer"), []byte(`{"stop":true}`)...)
+	resp := ParseCompleteResponseWithNameRestore(payload, nil)
+	claudeResp := BuildClaudeNonStreamResponse("msg_test", "claude-opus-4-6", 1, resp)
+
+	content, ok := claudeResp["content"].([]map[string]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("content = %#v, want thinking + text blocks", claudeResp["content"])
+	}
+	if content[0]["type"] != "thinking" {
+		t.Fatalf("first block type = %v, want thinking", content[0]["type"])
+	}
+	if content[0]["thinking"] != "secret" {
+		t.Fatalf("thinking = %q, want secret", content[0]["thinking"])
+	}
+	if content[0]["signature"] == "" {
+		t.Fatal("thinking signature should not be empty")
+	}
+	if content[1]["type"] != "text" || content[1]["text"] != "answer" {
+		t.Fatalf("second block = %#v, want text answer", content[1])
+	}
+}
+
+func mustContentPayload(t *testing.T, content string) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]string{"content": content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }

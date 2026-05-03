@@ -72,10 +72,11 @@ type AwsEventStreamParser struct {
 	sawThinking      bool
 
 	// Thinking tag parsing state
-	inThinkingBlock    bool
-	thinkingExtracted  bool            // Once thinking is extracted, all subsequent content is text
-	thinkingBlockIndex *uint32
-	pendingContent     strings.Builder // Buffer for partial tag matching
+	inThinkingBlock             bool
+	thinkingExtracted           bool // Once thinking is extracted, all subsequent content is text
+	thinkingBlockIndex          *uint32
+	stripThinkingLeadingNewline bool
+	pendingContent              strings.Builder // Buffer for partial tag matching
 
 	parseErrorCount int
 }
@@ -157,6 +158,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		p.thinkingBlockIndex = nil
 		p.inThinkingBlock = false
 		p.thinkingExtracted = false
+		p.stripThinkingLeadingNewline = false
 		p.pendingContent.Reset()
 		return events
 	}
@@ -165,10 +167,8 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 	for toolID, acc := range p.toolAccumulators {
 		if acc.started {
 			accumulated := acc.inputBuffer.String()
-			if DetectToolInputTruncation(acc.name, accumulated) {
+			if shouldReportToolInputTruncation(acc.name, accumulated) {
 				log.Printf("[kiro-truncation] stream-finish tool=%s TRUNCATED", acc.name)
-				softJSON, _ := json.Marshal(BuildSoftLimitInput())
-				events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: string(softJSON)})
 			}
 			events = append(events,
 				StreamEvent{Type: EventToolUseStop, ToolID: toolID},
@@ -186,6 +186,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 	if p.inThinkingBlock {
 		// Check if buffer ends with </thinking> (boundary case: no \n\n at stream end)
 		combined := pendingStr
+		combined = p.stripThinkingLeadingNewlineIfNeeded(combined)
 		if endPos := findRealThinkingEndTagAtBufferEnd(combined); endPos >= 0 {
 			// Emit thinking content before the tag
 			thinkingContent := combined[:endPos]
@@ -208,6 +209,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 			}
 			p.inThinkingBlock = false
 			p.thinkingExtracted = true
+			p.stripThinkingLeadingNewline = false
 			// Remaining after tag as text
 			afterPos := endPos + len(ThinkingEndTag)
 			remaining := strings.TrimLeft(combined[afterPos:], " \t\n\r")
@@ -239,6 +241,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 		events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
 		p.thinkingBlockIndex = nil
 		p.inThinkingBlock = false
+		p.stripThinkingLeadingNewline = false
 	}
 
 	// Close text block
@@ -279,6 +282,7 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 
 	p.buffer = nil
 	p.pendingContent.Reset()
+	p.stripThinkingLeadingNewline = false
 	return events
 }
 
@@ -615,10 +619,8 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		isStop := payload.Stop != nil && *payload.Stop
 		if isStop {
 			accumulated := acc.inputBuffer.String()
-			if DetectToolInputTruncation(acc.name, accumulated) {
-				log.Printf("[kiro-truncation] tool=%s id=%s TRUNCATED at stop, injecting SOFT_LIMIT", acc.name, toolID)
-				softJSON, _ := json.Marshal(BuildSoftLimitInput())
-				events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: string(softJSON)})
+			if shouldReportToolInputTruncation(acc.name, accumulated) {
+				log.Printf("[kiro-truncation] tool=%s id=%s TRUNCATED at stop", acc.name, toolID)
 			}
 			delete(p.toolAccumulators, toolID)
 			events = append(events,
@@ -684,6 +686,7 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		p.pendingContent.Reset()
 
 		if p.inThinkingBlock {
+			pendingStr = p.stripThinkingLeadingNewlineIfNeeded(pendingStr)
 			// Check if buffer ends with </thinking> (boundary: stop arrives right after end tag)
 			if endPos := findRealThinkingEndTagAtBufferEnd(pendingStr); endPos >= 0 {
 				thinkingContent := pendingStr[:endPos]
@@ -706,6 +709,7 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 				}
 				p.inThinkingBlock = false
 				p.thinkingExtracted = true
+				p.stripThinkingLeadingNewline = false
 				// Remaining after tag as text
 				afterPos := endPos + len(ThinkingEndTag)
 				remaining := strings.TrimLeft(pendingStr[afterPos:], " \t\n\r")
@@ -737,6 +741,7 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
 			p.thinkingBlockIndex = nil
 			p.inThinkingBlock = false
+			p.stripThinkingLeadingNewline = false
 		}
 
 		if p.textBlockIndex != nil {
@@ -788,6 +793,7 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
 			p.thinkingBlockIndex = nil
 			p.inThinkingBlock = false
+			p.stripThinkingLeadingNewline = false
 		}
 		if p.textBlockIndex != nil {
 			idx := *p.textBlockIndex
@@ -985,6 +991,21 @@ func BuildClaudeThinkingDelta(index int, thinking string) ClaudeSSEEvent {
 	}
 }
 
+// BuildClaudeSignatureDelta builds a content_block_delta event for thinking signatures.
+func BuildClaudeSignatureDelta(index int, signature string) ClaudeSSEEvent {
+	return ClaudeSSEEvent{
+		EventType: "content_block_delta",
+		Data: map[string]any{
+			"type":  "content_block_delta",
+			"index": index,
+			"delta": map[string]any{
+				"type":      "signature_delta",
+				"signature": signature,
+			},
+		},
+	}
+}
+
 // BuildClaudeInputJSONDelta builds a content_block_delta event for tool input
 func BuildClaudeInputJSONDelta(index int, partialJSON string) ClaudeSSEEvent {
 	return ClaudeSSEEvent{
@@ -1083,6 +1104,7 @@ type StreamEventConverter struct {
 
 	activeTextBlockIndex     *uint32
 	activeThinkingBlockIndex *uint32
+	thinkingBuffer           strings.Builder
 	toolIDToBlockIndex       map[string]uint32
 	blockIndexToToolID       map[uint32]string
 
@@ -1258,6 +1280,7 @@ func (c *StreamEventConverter) handleThinkingDelta(e StreamEvent) []ClaudeSSEEve
 
 	// Estimate tokens
 	c.totalOutputTokens += (len(e.Text) + 3) / 4
+	c.thinkingBuffer.WriteString(e.Text)
 
 	return []ClaudeSSEEvent{BuildClaudeThinkingDelta(int(idx), e.Text)}
 }
@@ -1281,7 +1304,13 @@ func (c *StreamEventConverter) handleBlockStop(e StreamEvent) []ClaudeSSEEvent {
 		c.activeTextBlockIndex = nil
 	}
 	if c.activeThinkingBlockIndex != nil && *c.activeThinkingBlockIndex == adjustedIndex {
+		signature := syntheticThinkingSignature(c.thinkingBuffer.String())
+		c.thinkingBuffer.Reset()
 		c.activeThinkingBlockIndex = nil
+		return []ClaudeSSEEvent{
+			BuildClaudeSignatureDelta(int(adjustedIndex), signature),
+			BuildClaudeContentBlockStop(int(adjustedIndex)),
+		}
 	}
 	if toolID, ok := c.blockIndexToToolID[adjustedIndex]; ok {
 		delete(c.blockIndexToToolID, adjustedIndex)
@@ -1359,6 +1388,7 @@ func (c *StreamEventConverter) BuildFinalEvents() []ClaudeSSEEvent {
 // CompleteResponse represents a parsed complete response
 type CompleteResponse struct {
 	Text          string
+	Thinking      string
 	ToolCalls     []ToolCallData
 	ContextPct    float64 // Context usage percentage from backend
 	HasTokenUsage bool
@@ -1391,6 +1421,7 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 
 	resp := &CompleteResponse{}
 	var textParts []string
+	var thinkingParts []string
 	toolInputs := make(map[string]string) // toolID -> accumulated input JSON
 
 	restoreName := func(name string) string {
@@ -1407,6 +1438,8 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 		switch e.Type {
 		case EventTextDelta:
 			textParts = append(textParts, e.Text)
+		case EventThinkingDelta:
+			thinkingParts = append(thinkingParts, e.Text)
 		case EventContentBlockStart:
 			if e.BlockType.Kind == BlockToolUse {
 				resp.ToolCalls = append(resp.ToolCalls, ToolCallData{
@@ -1434,22 +1467,29 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 	for _, part := range textParts {
 		resp.Text += part
 	}
+	for _, part := range thinkingParts {
+		resp.Thinking += part
+	}
 
 	// Assign accumulated inputs to tool calls
 	for i := range resp.ToolCalls {
 		if input, ok := toolInputs[resp.ToolCalls[i].ID]; ok {
-			if DetectToolInputTruncation(resp.ToolCalls[i].Name, input) {
-				log.Printf("[kiro-truncation] non-stream tool=%s TRUNCATED, injecting SOFT_LIMIT", resp.ToolCalls[i].Name)
-				softInput, _ := json.Marshal(BuildSoftLimitInput())
-				resp.ToolCalls[i].ArgumentsRaw = string(softInput)
+			if shouldReportToolInputTruncation(resp.ToolCalls[i].Name, input) {
+				log.Printf("[kiro-truncation] non-stream tool=%s TRUNCATED", resp.ToolCalls[i].Name)
 				resp.ToolCalls[i].IsTruncated = true
-			} else {
-				resp.ToolCalls[i].ArgumentsRaw = input
 			}
+			resp.ToolCalls[i].ArgumentsRaw = input
 		}
 	}
 
 	return resp
+}
+
+func shouldReportToolInputTruncation(toolName, rawInput string) bool {
+	if strings.TrimSpace(rawInput) == "" {
+		return false
+	}
+	return DetectToolInputTruncation(toolName, rawInput)
 }
 
 // BuildClaudeNonStreamResponse builds a complete Claude response from parsed data
@@ -1457,9 +1497,22 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 	content := make([]map[string]any, 0)
 
 	if resp.Text != "" {
+		if resp.Thinking != "" {
+			content = append(content, map[string]any{
+				"type":      "thinking",
+				"thinking":  resp.Thinking,
+				"signature": syntheticThinkingSignature(resp.Thinking),
+			})
+		}
 		content = append(content, map[string]any{
 			"type": "text",
 			"text": resp.Text,
+		})
+	} else if resp.Thinking != "" {
+		content = append(content, map[string]any{
+			"type":      "thinking",
+			"thinking":  resp.Thinking,
+			"signature": syntheticThinkingSignature(resp.Thinking),
 		})
 	}
 
@@ -1483,6 +1536,9 @@ func BuildClaudeNonStreamResponse(messageID, model string, inputTokens int, resp
 	// Output tokens: prefer upstream value, fall back to local estimate
 	outputTokens := resp.OutputTokens
 	if outputTokens <= 0 {
+		if resp.Thinking != "" {
+			outputTokens += (len(resp.Thinking) + 3) / 4
+		}
 		if resp.Text != "" {
 			outputTokens += (len(resp.Text) + 3) / 4
 		}
@@ -1699,6 +1755,7 @@ func (p *AwsEventStreamParser) flushThinkingBeforeToolUse() []StreamEvent {
 	if p.inThinkingBlock {
 		pending := p.pendingContent.String()
 		p.pendingContent.Reset()
+		pending = p.stripThinkingLeadingNewlineIfNeeded(pending)
 
 		if endPos := findRealThinkingEndTagAtBufferEnd(pending); endPos >= 0 {
 			thinkingContent := pending[:endPos]
@@ -1721,6 +1778,7 @@ func (p *AwsEventStreamParser) flushThinkingBeforeToolUse() []StreamEvent {
 			}
 			p.inThinkingBlock = false
 			p.thinkingExtracted = true
+			p.stripThinkingLeadingNewline = false
 
 			// Remaining after tag as text
 			afterPos := endPos + len(ThinkingEndTag)
@@ -1743,6 +1801,20 @@ func (p *AwsEventStreamParser) flushThinkingBeforeToolUse() []StreamEvent {
 	return events
 }
 
+func (p *AwsEventStreamParser) stripThinkingLeadingNewlineIfNeeded(content string) string {
+	if !p.stripThinkingLeadingNewline {
+		return content
+	}
+	if strings.HasPrefix(content, "\n") {
+		p.stripThinkingLeadingNewline = false
+		return strings.TrimPrefix(content, "\n")
+	}
+	if content != "" {
+		p.stripThinkingLeadingNewline = false
+	}
+	return content
+}
+
 // parseContentWithThinking parses content for <thinking> tags and emits appropriate events.
 // Aligned with kiro.rs process_content_with_thinking.
 //
@@ -1761,6 +1833,8 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 
 	for len(processContent) > 0 {
 		if p.inThinkingBlock {
+			processContent = p.stripThinkingLeadingNewlineIfNeeded(processContent)
+
 			// Inside thinking block — look for real </thinking>\n\n
 			endIdx := findRealThinkingEndTag(processContent)
 			if endIdx >= 0 {
@@ -1785,6 +1859,7 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 				}
 				p.inThinkingBlock = false
 				p.thinkingExtracted = true
+				p.stripThinkingLeadingNewline = false
 				// Skip </thinking>\n\n
 				processContent = processContent[endIdx+len(ThinkingEndTag)+2:]
 			} else {
@@ -1831,10 +1906,9 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 					p.inTextBlock = false
 				}
 				p.inThinkingBlock = true
+				p.stripThinkingLeadingNewline = true
 				p.sawThinking = true
 				processContent = processContent[startIdx+len(ThinkingStartTag):]
-				// Strip leading newline after <thinking> tag (kiro.rs behavior)
-				processContent = strings.TrimPrefix(processContent, "\n")
 			} else {
 				// No start tag — check for partial match at end
 				reserveLen := len(ThinkingStartTag) - 1

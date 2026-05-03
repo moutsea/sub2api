@@ -19,12 +19,15 @@ func TestSimplifyInputSchema(t *testing.T) {
 		{
 			name: "simple schema with type",
 			input: map[string]any{
-				"type":        "object",
-				"description": "A complex schema",
-				"$schema":     "http://json-schema.org/draft-07/schema#",
+				"type":                 "object",
+				"description":          "A complex schema",
+				"$schema":              "http://json-schema.org/draft-07/schema#",
+				"additionalProperties": false,
 			},
 			expected: map[string]any{
-				"type": "object",
+				"type":                 "object",
+				"$schema":              "http://json-schema.org/draft-07/schema#",
+				"additionalProperties": false,
 			},
 		},
 		{
@@ -75,9 +78,12 @@ func TestSimplifyInputSchema(t *testing.T) {
 			if _, ok := result["description"]; ok {
 				t.Error("description should be removed")
 			}
-			// Check $schema is removed
-			if _, ok := result["$schema"]; ok {
-				t.Error("$schema should be removed")
+			// Check $schema is preserved when present
+			if expectedSchema, ok := tt.expected["$schema"]; ok && result["$schema"] != expectedSchema {
+				t.Errorf("$schema mismatch: expected %v, got %v", expectedSchema, result["$schema"])
+			}
+			if expectedAdditional, ok := tt.expected["additionalProperties"]; ok && result["additionalProperties"] != expectedAdditional {
+				t.Errorf("additionalProperties mismatch: expected %v, got %v", expectedAdditional, result["additionalProperties"])
 			}
 		})
 	}
@@ -291,5 +297,22 @@ func TestCopyMap(t *testing.T) {
 	}
 	if copied["key2"].(map[string]any)["nested"] != "value" {
 		t.Error("nested copy was modified when original changed")
+	}
+}
+
+func TestShortenToolName_AlignedWithKiroRS(t *testing.T) {
+	longName := "mcp__very_long_server_name_for_testing__" + strings.Repeat("create_plan_segment_", 4)
+	short := ShortenToolName(longName)
+	if short == longName {
+		t.Fatal("expected long tool name to be shortened")
+	}
+	if len(short) > ToolNameLimit {
+		t.Fatalf("short name length = %d, want <= %d", len(short), ToolNameLimit)
+	}
+	if !strings.Contains(short, "_") {
+		t.Fatalf("short name = %q, want hash suffix separator", short)
+	}
+	if ShortenToolName(longName) != short {
+		t.Fatal("shortening should be deterministic")
 	}
 }

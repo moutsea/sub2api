@@ -119,6 +119,16 @@
                   {{ t('nav.apiKeys') }}
                 </router-link>
 
+                <button
+                  type="button"
+                  class="dropdown-item w-full cursor-not-allowed opacity-50 hover:bg-transparent hover:text-gray-700 dark:hover:bg-transparent dark:hover:text-gray-300"
+                  disabled
+                  aria-disabled="true"
+                >
+                  <Icon name="creditCard" size="sm" />
+                  {{ t('nav.recharge') }}
+                </button>
+
               </div>
 
               <!-- Contact Support (only show if configured) -->

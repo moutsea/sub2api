@@ -4,9 +4,9 @@
 package kiro
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"log"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -49,6 +49,9 @@ func simplifyInputSchema(schema map[string]any) map[string]any {
 	simplified := make(map[string]any)
 
 	// Keep essential fields
+	if schemaURI, ok := schema["$schema"]; ok {
+		simplified["$schema"] = schemaURI
+	}
 	if t, ok := schema["type"]; ok {
 		simplified["type"] = t
 	}
@@ -57,6 +60,13 @@ func simplifyInputSchema(schema map[string]any) map[string]any {
 	}
 	if required, ok := schema["required"]; ok {
 		simplified["required"] = required
+	}
+	if additionalProps, ok := schema["additionalProperties"]; ok {
+		if additionalPropsMap, ok := additionalProps.(map[string]any); ok {
+			simplified["additionalProperties"] = simplifyInputSchema(additionalPropsMap)
+		} else {
+			simplified["additionalProperties"] = additionalProps
+		}
 	}
 
 	// Recursively process properties
@@ -75,11 +85,6 @@ func simplifyInputSchema(schema map[string]any) map[string]any {
 	// Process items for array types
 	if items, ok := schema["items"].(map[string]any); ok {
 		simplified["items"] = simplifyInputSchema(items)
-	}
-
-	// Process additionalProperties if present
-	if additionalProps, ok := schema["additionalProperties"].(map[string]any); ok {
-		simplified["additionalProperties"] = simplifyInputSchema(additionalProps)
 	}
 
 	// Process anyOf, oneOf, allOf
@@ -251,83 +256,89 @@ func copyMap(m map[string]any) map[string]any {
 
 // ==================== Tool Name Shortening ====================
 
-// ToolNameLimit is the maximum length for tool names (Kiro API limit)
-const ToolNameLimit = 64
+// ToolNameLimit is the maximum length for tool names (Kiro API limit).
+// Aligned with kiro.rs TOOL_NAME_MAX_LEN.
+const ToolNameLimit = 63
 
 // ShortenToolName shortens a tool name to fit within the limit.
-// For mcp__ prefixed names, it preserves the prefix and last segment.
+// Aligned with kiro.rs: deterministic prefix + "_" + 8-char SHA256 suffix.
 func ShortenToolName(name string) string {
 	if len(name) <= ToolNameLimit {
 		return name
 	}
 
-	// Special handling for MCP tools (mcp__server__toolname)
-	if strings.HasPrefix(name, "mcp__") {
-		idx := strings.LastIndex(name, "__")
-		if idx > 0 {
-			candidate := "mcp__" + name[idx+2:]
-			if len(candidate) > ToolNameLimit {
-				return candidate[:ToolNameLimit]
-			}
-			return candidate
-		}
-	}
+	hash := sha256.Sum256([]byte(name))
+	hashSuffix := fmtHex8(hash[:])
+	prefixLimit := ToolNameLimit - 1 - len(hashSuffix)
+	prefix := truncateUTF8Bytes(name, prefixLimit)
+	return prefix + "_" + hashSuffix
+}
 
-	return name[:ToolNameLimit]
+func fmtHex8(data []byte) string {
+	const hex = "0123456789abcdef"
+	out := make([]byte, 8)
+	for i := 0; i < 4; i++ {
+		out[i*2] = hex[data[i]>>4]
+		out[i*2+1] = hex[data[i]&0x0f]
+	}
+	return string(out)
+}
+
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	end := maxBytes
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	if end <= 0 {
+		return ""
+	}
+	return s[:end]
 }
 
 // BuildToolNameMap generates unique short names for a list of tool names.
 // Returns a map of original name -> shortened name.
 func BuildToolNameMap(names []string) map[string]string {
-	used := make(map[string]struct{})
 	m := make(map[string]string)
 
-	baseCandidate := func(n string) string {
-		if len(n) <= ToolNameLimit {
-			return n
-		}
-		if strings.HasPrefix(n, "mcp__") {
-			idx := strings.LastIndex(n, "__")
-			if idx > 0 {
-				cand := "mcp__" + n[idx+2:]
-				if len(cand) > ToolNameLimit {
-					return cand[:ToolNameLimit]
-				}
-				return cand
-			}
-		}
-		return n[:ToolNameLimit]
-	}
-
-	makeUnique := func(cand string) string {
-		if _, ok := used[cand]; !ok {
-			return cand
-		}
-		base := cand
-		for i := 1; ; i++ {
-			suffix := "_" + strconv.Itoa(i)
-			allowed := ToolNameLimit - len(suffix)
-			if allowed < 0 {
-				allowed = 0
-			}
-			tmp := base
-			if len(tmp) > allowed {
-				tmp = tmp[:allowed]
-			}
-			tmp = tmp + suffix
-			if _, ok := used[tmp]; !ok {
-				return tmp
-			}
-		}
-	}
-
 	for _, n := range names {
-		cand := baseCandidate(n)
-		uniq := makeUnique(cand)
-		used[uniq] = struct{}{}
-		m[n] = uniq
+		m[n] = ShortenToolName(n)
 	}
 	return m
+}
+
+func BuildToolNameMapFromClaudeTools(tools []ClaudeTool) map[string]string {
+	var toolNames []string
+	for _, tool := range tools {
+		if tool.Name == "" {
+			continue
+		}
+		if isWebSearchToolName(tool.Name) || isWebSearchToolType(tool.Type) {
+			continue
+		}
+		toolNames = append(toolNames, tool.Name)
+	}
+	return BuildToolNameMap(toolNames)
+}
+
+func mapToolName(name string, toolNameMap map[string]string) string {
+	if name == "" {
+		return name
+	}
+	if toolNameMap != nil {
+		if mapped, ok := toolNameMap[name]; ok {
+			return mapped
+		}
+		mapped := ShortenToolName(name)
+		toolNameMap[name] = mapped
+		return mapped
+	}
+	return ShortenToolName(name)
 }
 
 // BuildReverseToolNameMap builds a reverse map (short -> original) from the forward map.
@@ -343,21 +354,10 @@ func BuildReverseToolNameMap(forwardMap map[string]string) map[string]string {
 // This is used in response transformation to restore original tool names.
 // Note: web_search tools are excluded since they are not shortened.
 func BuildReverseMapFromClaudeTools(tools []ClaudeTool) map[string]string {
-	var toolNames []string
-	for _, tool := range tools {
-		if tool.Name == "" {
-			continue
-		}
-		// Exclude web_search tools (they are not shortened)
-		if isWebSearchToolName(tool.Name) || isWebSearchToolType(tool.Type) {
-			continue
-		}
-		toolNames = append(toolNames, tool.Name)
-	}
-	if len(toolNames) == 0 {
+	forwardMap := BuildToolNameMapFromClaudeTools(tools)
+	if len(forwardMap) == 0 {
 		return nil
 	}
-	forwardMap := BuildToolNameMap(toolNames)
 	return BuildReverseToolNameMap(forwardMap)
 }
 

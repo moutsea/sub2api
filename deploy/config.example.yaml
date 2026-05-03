@@ -106,6 +106,28 @@ security:
     insecure_skip_verify: false
 
 # =============================================================================
+# Payment Configuration
+# 支付配置
+# =============================================================================
+payment:
+  stripe:
+    # Enable user recharge via Stripe Checkout
+    # 启用用户侧 Stripe 充值
+    enabled: true
+    # Stripe secret key. Prefer PAYMENT_STRIPE_SECRET_KEY in production.
+    # Stripe Secret Key。生产环境建议使用 PAYMENT_STRIPE_SECRET_KEY 环境变量。
+    secret_key: ""
+    # Stripe webhook signing secret. Required for /api/v1/payments/stripe/webhook.
+    # Stripe Webhook 签名密钥，/api/v1/payments/stripe/webhook 必填。
+    webhook_secret: ""
+    # RMB currency code for Stripe
+    # Stripe 人民币币种代码
+    currency: "cny"
+    # Minimum recharge amount in RMB. 0 means no extra minimum beyond amount > 0.
+    # 最低充值金额（人民币）。0 表示除金额必须大于 0 外不设置额外最低额。
+    min_recharge_amount: 0
+
+# =============================================================================
 # Gateway Configuration
 # 网关配置
 # =============================================================================

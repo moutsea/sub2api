@@ -19,6 +19,9 @@ func RegisterCommonRoutes(r *gin.Engine, h *handler.Handlers) {
 	// 兼容旧路由
 	r.GET("/api/v1/temp-api-keys/query", h.TempAPIKeyQuery.Query)
 
+	// Stripe 支付回调（Stripe 通过签名头鉴权，不使用 JWT）
+	r.POST("/api/v1/payments/stripe/webhook", h.Payment.StripeWebhook)
+
 	// Claude Code 遥测日志（忽略，直接返回200）
 	r.POST("/api/event_logging/batch", func(c *gin.Context) {
 		c.Status(http.StatusOK)

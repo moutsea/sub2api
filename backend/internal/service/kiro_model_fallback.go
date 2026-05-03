@@ -183,6 +183,7 @@ func (s *KiroGatewayService) prepareCodeWhispererPayload(
 
 	reqCopy := *claudeReq
 	reqCopy.Model = upstreamModel
+	kiro.ApplyThinkingDefaultsFromModelName(&reqCopy)
 
 	cwReq, err := kiro.TransformClaudeToCodeWhisperer(&reqCopy, profileArn, ginCtx)
 	if err != nil {

@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -180,6 +181,210 @@ func TestMergeMessages_TextAndThinking(t *testing.T) {
 			t.Errorf("expected thinking to be overwritten to 'new', got %q", target.Thinking.Content)
 		}
 	})
+}
+
+func TestGenerateThinkingPrefix_AdaptiveMatchesKiroRS(t *testing.T) {
+	req := &ClaudeRequest{
+		Thinking: map[string]any{"type": "adaptive"},
+		OutputConfig: map[string]any{
+			"effort": "medium",
+		},
+	}
+
+	got := generateThinkingPrefix(req)
+	want := "<thinking_mode>adaptive</thinking_mode><thinking_effort>medium</thinking_effort>"
+	if got != want {
+		t.Fatalf("generateThinkingPrefix() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "<max_thinking_length>") {
+		t.Fatalf("adaptive prefix should not contain max_thinking_length: %q", got)
+	}
+}
+
+func TestGenerateThinkingPrefix_AdaptiveNormalizesEffort(t *testing.T) {
+	req := &ClaudeRequest{
+		Thinking: map[string]any{"type": "adaptive"},
+		OutputConfig: map[string]any{
+			"effort": "xhigh",
+		},
+	}
+
+	got := generateThinkingPrefix(req)
+	want := "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>"
+	if got != want {
+		t.Fatalf("generateThinkingPrefix() = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeJSONSchema_AlignsKiroRSDefaults(t *testing.T) {
+	input := map[string]any{
+		"$schema":              nil,
+		"type":                 nil,
+		"properties":           nil,
+		"required":             nil,
+		"additionalProperties": nil,
+	}
+
+	got := normalizeJSONSchema(input)
+	if got["$schema"] != jsonSchemaDraft07 {
+		t.Fatalf("$schema = %v, want %s", got["$schema"], jsonSchemaDraft07)
+	}
+	if got["type"] != "object" {
+		t.Fatalf("type = %v, want object", got["type"])
+	}
+	if _, ok := got["properties"].(map[string]any); !ok {
+		t.Fatalf("properties = %T, want map[string]any", got["properties"])
+	}
+	if required, ok := got["required"].([]any); !ok || len(required) != 0 {
+		t.Fatalf("required = %#v, want empty []any", got["required"])
+	}
+	if got["additionalProperties"] != true {
+		t.Fatalf("additionalProperties = %v, want true", got["additionalProperties"])
+	}
+}
+
+func TestProcessTools_PreservesCreatePlanSchemaConstraints(t *testing.T) {
+	tools := []ClaudeTool{
+		{
+			Name:        "update_plan",
+			Description: "",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"plan": map[string]any{
+						"type":     "array",
+						"minItems": float64(1),
+						"items": map[string]any{
+							"type":                 "object",
+							"additionalProperties": false,
+							"properties": map[string]any{
+								"step":   map[string]any{"type": "string", "minLength": float64(1)},
+								"status": map[string]any{"type": "string", "enum": []any{"pending", "in_progress", "completed"}},
+							},
+							"required": []any{"step", "status"},
+						},
+					},
+				},
+				"required": []any{"plan"},
+			},
+		},
+	}
+
+	processed := processTools(tools, true, BuildToolNameMapFromClaudeTools(tools))
+	if len(processed) != 1 || processed[0].Standard == nil {
+		t.Fatalf("expected one standard tool, got %#v", processed)
+	}
+	spec := processed[0].Standard.ToolSpecification
+	if !strings.HasPrefix(spec.Description, "Tool: update_plan") {
+		t.Fatalf("description = %q, want fallback tool description", spec.Description)
+	}
+	schema := spec.InputSchema.JSON
+	if schema["additionalProperties"] != false {
+		t.Fatalf("top-level additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	plan := schema["properties"].(map[string]any)["plan"].(map[string]any)
+	if plan["minItems"] != float64(1) {
+		t.Fatalf("plan.minItems = %v, want 1", plan["minItems"])
+	}
+	item := plan["items"].(map[string]any)
+	if item["additionalProperties"] != false {
+		t.Fatalf("plan.items.additionalProperties = %v, want false", item["additionalProperties"])
+	}
+	step := item["properties"].(map[string]any)["step"].(map[string]any)
+	if step["minLength"] != float64(1) {
+		t.Fatalf("step.minLength = %v, want 1", step["minLength"])
+	}
+}
+
+func TestDetermineChatTriggerType_AlwaysManualForToolChoice(t *testing.T) {
+	for _, toolChoice := range []any{
+		map[string]any{"type": "any"},
+		map[string]any{"type": "tool", "name": "update_plan"},
+		"required",
+	} {
+		got := determineChatTriggerType(&ClaudeRequest{
+			Tools:      []ClaudeTool{{Name: "update_plan", InputSchema: map[string]any{"type": "object"}}},
+			ToolChoice: toolChoice,
+		})
+		if got != "MANUAL" {
+			t.Fatalf("determineChatTriggerType(%#v) = %q, want MANUAL", toolChoice, got)
+		}
+	}
+}
+
+func TestIsToolChoiceRequired_ClaudeAnyAndTool(t *testing.T) {
+	for _, toolChoice := range []any{
+		"required",
+		map[string]any{"type": "required"},
+		map[string]any{"type": "any"},
+		map[string]any{"type": "tool", "name": "update_plan"},
+	} {
+		if !isToolChoiceRequired(toolChoice) {
+			t.Fatalf("isToolChoiceRequired(%#v) = false, want true", toolChoice)
+		}
+	}
+	if isToolChoiceRequired(map[string]any{"type": "auto"}) {
+		t.Fatal("isToolChoiceRequired(auto) = true, want false")
+	}
+}
+
+func TestTransformClaudeToCodeWhisperer_MapsHistoryToolNames(t *testing.T) {
+	longName := "mcp__very_long_server_name_for_testing__" + strings.Repeat("create_plan_segment_", 4)
+	req := &ClaudeRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "make a plan"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "tool_use", "id": "toolu_1", "name": longName, "input": map[string]any{"plan": []any{}}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"},
+			}},
+		},
+		Tools: []ClaudeTool{{
+			Name:        longName,
+			Description: "Create a plan",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		}},
+	}
+
+	cwReq, err := TransformClaudeToCodeWhisperer(req, "", nil)
+	if err != nil {
+		t.Fatalf("TransformClaudeToCodeWhisperer error: %v", err)
+	}
+
+	var historyToolName string
+	for _, entry := range cwReq.ConversationState.History {
+		if entry.Assistant != nil && len(entry.Assistant.ToolUses) > 0 {
+			historyToolName = entry.Assistant.ToolUses[0].Name
+			break
+		}
+	}
+	if historyToolName == "" {
+		t.Fatal("expected history tool_use")
+	}
+	if historyToolName == longName {
+		t.Fatalf("history tool name was not shortened")
+	}
+	if len(historyToolName) > ToolNameLimit {
+		t.Fatalf("history tool name length = %d, want <= %d", len(historyToolName), ToolNameLimit)
+	}
+
+	tools := cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools
+	if len(tools) != 1 || tools[0].Standard == nil {
+		t.Fatalf("expected one current tool, got %#v", tools)
+	}
+	currentToolName := tools[0].Standard.ToolSpecification.Name
+	if currentToolName != historyToolName {
+		t.Fatalf("current tool name = %q, history tool name = %q", currentToolName, historyToolName)
+	}
+	if original := BuildReverseMapFromClaudeTools(req.Tools)[currentToolName]; original != longName {
+		t.Fatalf("reverse tool name = %q, want %q", original, longName)
+	}
 }
 
 // ==================== buildAssistantHistoryEntry Tests ====================

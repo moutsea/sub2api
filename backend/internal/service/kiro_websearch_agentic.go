@@ -183,6 +183,13 @@ func isClaudeBuiltinWebSearch(tool kiro.ClaudeTool) bool {
 func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, claudeReq *kiro.ClaudeRequest) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-WebSearch] account=%s", account.Name)
 
+	if !account.IsKiroApiKey() && kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
+		log.Printf("%s enabled thinking mode from model alias: %s", prefix, claudeReq.Model)
+		if newBody, err := json.Marshal(claudeReq); err == nil {
+			body = newBody
+		}
+	}
+
 	freeTier := s.isKiroFreeTier(account)
 
 	// Free 订阅类型账号不支持 Opus，自动降级为 Sonnet 4.5

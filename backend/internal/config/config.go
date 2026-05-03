@@ -42,6 +42,7 @@ type Config struct {
 	CORS         CORSConfig                 `mapstructure:"cors"`
 	Security     SecurityConfig             `mapstructure:"security"`
 	Billing      BillingConfig              `mapstructure:"billing"`
+	Payment      PaymentConfig              `mapstructure:"payment"`
 	Turnstile    TurnstileConfig            `mapstructure:"turnstile"`
 	Database     DatabaseConfig             `mapstructure:"database"`
 	Redis        RedisConfig                `mapstructure:"redis"`
@@ -190,6 +191,18 @@ type ProxyProbeConfig struct {
 
 type BillingConfig struct {
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
+}
+
+type PaymentConfig struct {
+	Stripe StripePaymentConfig `mapstructure:"stripe"`
+}
+
+type StripePaymentConfig struct {
+	Enabled           bool    `mapstructure:"enabled"`
+	SecretKey         string  `mapstructure:"secret_key"`
+	WebhookSecret     string  `mapstructure:"webhook_secret"`
+	Currency          string  `mapstructure:"currency"`
+	MinRechargeAmount float64 `mapstructure:"min_recharge_amount"`
 }
 
 type CircuitBreakerConfig struct {
@@ -588,6 +601,12 @@ func Load() (*Config, error) {
 	cfg.Security.ResponseHeaders.AdditionalAllowed = normalizeStringSlice(cfg.Security.ResponseHeaders.AdditionalAllowed)
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
+	cfg.Payment.Stripe.SecretKey = strings.TrimSpace(cfg.Payment.Stripe.SecretKey)
+	cfg.Payment.Stripe.WebhookSecret = strings.TrimSpace(cfg.Payment.Stripe.WebhookSecret)
+	cfg.Payment.Stripe.Currency = strings.ToLower(strings.TrimSpace(cfg.Payment.Stripe.Currency))
+	if cfg.Payment.Stripe.Currency == "" {
+		cfg.Payment.Stripe.Currency = "cny"
+	}
 
 	if cfg.JWT.Secret == "" {
 		secret, err := generateJWTSecret(64)
@@ -678,6 +697,13 @@ func setDefaults() {
 	viper.SetDefault("billing.circuit_breaker.failure_threshold", 5)
 	viper.SetDefault("billing.circuit_breaker.reset_timeout_seconds", 30)
 	viper.SetDefault("billing.circuit_breaker.half_open_requests", 3)
+
+	// Payment
+	viper.SetDefault("payment.stripe.enabled", true)
+	viper.SetDefault("payment.stripe.secret_key", "")
+	viper.SetDefault("payment.stripe.webhook_secret", "")
+	viper.SetDefault("payment.stripe.currency", "cny")
+	viper.SetDefault("payment.stripe.min_recharge_amount", 0)
 
 	// Turnstile
 	viper.SetDefault("turnstile.required", false)
@@ -803,8 +829,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.log_signature_debug", false)
-	viper.SetDefault("gateway.request_jitter_min_ms", 0)  // 默认禁用抖动（设为 0）
-	viper.SetDefault("gateway.request_jitter_max_ms", 0)  // 启用示例：min=700, max=2200
+	viper.SetDefault("gateway.request_jitter_min_ms", 0) // 默认禁用抖动（设为 0）
+	viper.SetDefault("gateway.request_jitter_max_ms", 0) // 启用示例：min=700, max=2200
 	viper.SetDefault("gateway.max_body_size", int64(100*1024*1024))
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationAccountProxy)
 	// HTTP 上游连接池配置（针对 5000+ 并发用户优化）
@@ -929,6 +955,12 @@ func (c *Config) Validate() error {
 		if c.Billing.CircuitBreaker.HalfOpenRequests <= 0 {
 			return fmt.Errorf("billing.circuit_breaker.half_open_requests must be positive")
 		}
+	}
+	if c.Payment.Stripe.MinRechargeAmount < 0 {
+		return fmt.Errorf("payment.stripe.min_recharge_amount must be non-negative")
+	}
+	if c.Payment.Stripe.Currency != "" && len(c.Payment.Stripe.Currency) != 3 {
+		return fmt.Errorf("payment.stripe.currency must be a 3-letter ISO currency code")
 	}
 	if c.Database.MaxOpenConns <= 0 {
 		return fmt.Errorf("database.max_open_conns must be positive")

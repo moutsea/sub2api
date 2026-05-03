@@ -117,6 +117,15 @@ services:
       - SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS=${SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS:-}
 
       # =======================================================================
+      # Payment Configuration (Stripe Checkout)
+      # =======================================================================
+      - PAYMENT_STRIPE_ENABLED=${PAYMENT_STRIPE_ENABLED:-true}
+      - PAYMENT_STRIPE_SECRET_KEY=${PAYMENT_STRIPE_SECRET_KEY:-}
+      - PAYMENT_STRIPE_WEBHOOK_SECRET=${PAYMENT_STRIPE_WEBHOOK_SECRET:-}
+      - PAYMENT_STRIPE_CURRENCY=${PAYMENT_STRIPE_CURRENCY:-cny}
+      - PAYMENT_STRIPE_MIN_RECHARGE_AMOUNT=${PAYMENT_STRIPE_MIN_RECHARGE_AMOUNT:-0}
+
+      # =======================================================================
       # Update Configuration (在线更新配置)
       # =======================================================================
       # Proxy for accessing GitHub (online updates + pricing data)

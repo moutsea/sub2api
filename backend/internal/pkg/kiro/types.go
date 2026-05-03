@@ -4,6 +4,7 @@ package kiro
 import (
 	"encoding/json"
 	"log"
+	"strings"
 )
 
 // AWSQ API endpoint
@@ -54,8 +55,42 @@ func GetModelID(claudeModel string) string {
 	if modelID, ok := ModelMap[claudeModel]; ok {
 		return modelID
 	}
+	normalizedModel := strings.TrimSuffix(strings.ToLower(claudeModel), "-thinking")
+	if modelID, ok := ModelMap[normalizedModel]; ok {
+		return modelID
+	}
 	log.Printf("[kiro-ModelMap] WARN model_fallback: %q not in ModelMap, using default %s", claudeModel, DefaultModelID)
 	return DefaultModelID
+}
+
+// IsThinkingModelName reports whether the requested model name is the Kiro
+// convenience "-thinking" variant.
+func IsThinkingModelName(model string) bool {
+	return strings.Contains(strings.ToLower(model), "thinking")
+}
+
+// ApplyThinkingDefaultsFromModelName enables Kiro thinking mode when callers
+// choose a model alias containing "thinking", matching kiro.rs behavior.
+func ApplyThinkingDefaultsFromModelName(req *ClaudeRequest) bool {
+	if req == nil || !IsThinkingModelName(req.Model) {
+		return false
+	}
+
+	modelLower := strings.ToLower(req.Model)
+	isOpus46 := strings.Contains(modelLower, "opus") &&
+		(strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6"))
+
+	if isOpus46 {
+		req.Thinking = map[string]any{"type": "adaptive", "budget_tokens": float64(DefaultThinkingBudgetTokens)}
+		if req.OutputConfig == nil {
+			req.OutputConfig = map[string]any{}
+		}
+		req.OutputConfig["effort"] = "high"
+		return true
+	}
+
+	req.Thinking = map[string]any{"type": "enabled", "budget_tokens": float64(DefaultThinkingBudgetTokens)}
+	return true
 }
 
 // ==================== Request Types ====================

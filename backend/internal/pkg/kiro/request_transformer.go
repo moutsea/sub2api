@@ -12,8 +12,9 @@ import (
 
 // Constants for tool processing
 const (
-	MaxFunctionTools              = 50  // Max number of function tools
-	ToolDocThresholdLength        = 500 // Threshold for moving description to system prompt
+	MaxFunctionTools       = 50  // Max number of function tools
+	ToolDocThresholdLength = 500 // Threshold for moving description to system prompt
+	jsonSchemaDraft07      = "http://json-schema.org/draft-07/schema#"
 )
 
 // normalizeJSONSchema fixes common type issues in MCP tool JSON schemas.
@@ -22,25 +23,118 @@ const (
 // Aligned with kiro.rs normalize_json_schema().
 func normalizeJSONSchema(schema map[string]any) map[string]any {
 	if schema == nil {
-		return map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-			"required":   []any{},
+		return defaultObjectJSONSchema()
+	}
+
+	return normalizeJSONSchemaMap(copyMap(schema), true)
+}
+
+func defaultObjectJSONSchema() map[string]any {
+	return map[string]any{
+		"$schema":              jsonSchemaDraft07,
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"required":             []any{},
+		"additionalProperties": true,
+	}
+}
+
+func normalizeJSONSchemaMap(schema map[string]any, root bool) map[string]any {
+	if schema == nil {
+		if root {
+			return defaultObjectJSONSchema()
+		}
+		return map[string]any{}
+	}
+
+	if root {
+		if s, ok := schema["$schema"].(string); !ok || s == "" {
+			schema["$schema"] = jsonSchemaDraft07
 		}
 	}
 
-	// type: must be a non-empty string
 	if t, ok := schema["type"].(string); !ok || t == "" {
-		schema["type"] = "object"
+		if root || schemaHasObjectShape(schema) {
+			schema["type"] = "object"
+		}
 	}
 
-	// properties: must be an object
-	if _, ok := schema["properties"].(map[string]any); !ok {
-		schema["properties"] = map[string]any{}
+	if isObjectSchema(schema, root) {
+		if _, ok := schema["properties"].(map[string]any); !ok {
+			schema["properties"] = map[string]any{}
+		}
+		schema["required"] = normalizeRequiredList(schema["required"])
+		switch additionalProperties := schema["additionalProperties"].(type) {
+		case bool:
+		case map[string]any:
+			schema["additionalProperties"] = normalizeJSONSchemaMap(additionalProperties, false)
+		default:
+			schema["additionalProperties"] = true
+		}
 	}
 
-	// required: must be a string array (filter out non-strings, replace null)
-	switch req := schema["required"].(type) {
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for name, value := range properties {
+			properties[name] = normalizeJSONSchemaValue(value)
+		}
+	}
+
+	switch items := schema["items"].(type) {
+	case map[string]any:
+		schema["items"] = normalizeJSONSchemaMap(items, false)
+	case []any:
+		for i, item := range items {
+			items[i] = normalizeJSONSchemaValue(item)
+		}
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := schema[key].([]any); ok {
+			for i, item := range arr {
+				arr[i] = normalizeJSONSchemaValue(item)
+			}
+		}
+	}
+
+	return schema
+}
+
+func normalizeJSONSchemaValue(value any) any {
+	if m, ok := value.(map[string]any); ok {
+		return normalizeJSONSchemaMap(m, false)
+	}
+	if arr, ok := value.([]any); ok {
+		for i, item := range arr {
+			arr[i] = normalizeJSONSchemaValue(item)
+		}
+		return arr
+	}
+	return value
+}
+
+func schemaHasObjectShape(schema map[string]any) bool {
+	if _, ok := schema["properties"]; ok {
+		return true
+	}
+	if _, ok := schema["required"]; ok {
+		return true
+	}
+	_, ok := schema["additionalProperties"]
+	return ok
+}
+
+func isObjectSchema(schema map[string]any, root bool) bool {
+	if root {
+		return true
+	}
+	if t, ok := schema["type"].(string); ok && t == "object" {
+		return true
+	}
+	return schemaHasObjectShape(schema)
+}
+
+func normalizeRequiredList(value any) []any {
+	switch req := value.(type) {
 	case []any:
 		filtered := make([]any, 0, len(req))
 		for _, v := range req {
@@ -48,12 +142,18 @@ func normalizeJSONSchema(schema map[string]any) map[string]any {
 				filtered = append(filtered, s)
 			}
 		}
-		schema["required"] = filtered
+		return filtered
+	case []string:
+		filtered := make([]any, 0, len(req))
+		for _, s := range req {
+			if s != "" {
+				filtered = append(filtered, s)
+			}
+		}
+		return filtered
 	default:
-		schema["required"] = []any{}
+		return []any{}
 	}
-
-	return schema
 }
 
 // generateParameterHints extracts parameter requirements from input_schema and generates hints
@@ -132,6 +232,7 @@ type TransformContext struct {
 	ConvID       string            // Conversation ID
 	AgentContID  string            // Agent continuation ID
 	ToolUseIDMap map[string]string // tool_use_id -> tool_name mapping
+	ToolNameMap  map[string]string // original tool name -> shortened tool name
 	MsgCounter   int               // Message counter
 	Is1MContext  bool              // Whether the model supports 1M context (4.6 series: skip truncation/compression)
 }
@@ -178,6 +279,7 @@ func NewTransformContext(model string, ginCtx *gin.Context, claudeReq ...*Claude
 		ConvID:       convID,
 		AgentContID:  agentContID,
 		ToolUseIDMap: make(map[string]string),
+		ToolNameMap:  make(map[string]string),
 		MsgCounter:   0,
 		Is1MContext:  is1MCtx,
 	}
@@ -196,17 +298,33 @@ func (ctx *TransformContext) RegisterToolUse(toolUseID, toolName string) {
 	}
 }
 
+func (ctx *TransformContext) MapToolName(toolName string) string {
+	if toolName == "" {
+		return toolName
+	}
+	if ctx == nil {
+		return ShortenToolName(toolName)
+	}
+	if mapped, ok := ctx.ToolNameMap[toolName]; ok {
+		return mapped
+	}
+	mapped := ShortenToolName(toolName)
+	ctx.ToolNameMap[toolName] = mapped
+	return mapped
+}
+
 // ClaudeRequest represents the incoming Claude API request
 type ClaudeRequest struct {
-	Model       string         `json:"model"`
-	Messages    []ClaudeMessage `json:"messages"`
-	System      any            `json:"system,omitempty"`
-	Tools       []ClaudeTool   `json:"tools,omitempty"`
-	ToolChoice  any            `json:"tool_choice,omitempty"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-	Thinking    map[string]any `json:"thinking,omitempty"`
+	Model        string          `json:"model"`
+	Messages     []ClaudeMessage `json:"messages"`
+	System       any             `json:"system,omitempty"`
+	Tools        []ClaudeTool    `json:"tools,omitempty"`
+	ToolChoice   any             `json:"tool_choice,omitempty"`
+	MaxTokens    int             `json:"max_tokens,omitempty"`
+	Temperature  *float64        `json:"temperature,omitempty"`
+	Stream       bool            `json:"stream,omitempty"`
+	Thinking     map[string]any  `json:"thinking,omitempty"`
+	OutputConfig map[string]any  `json:"output_config,omitempty"`
 }
 
 // TransformClaudeToCodeWhisperer transforms a Claude request to CodeWhisperer format
@@ -243,7 +361,8 @@ func TransformClaudeToCodeWhisperer(claudeReq *ClaudeRequest, profileArn string,
 	historyMsgs := messages[:len(messages)-1]
 
 	// Process tools (truncate long descriptions, skip limits for 1M context models)
-	processedTools := processTools(claudeReq.Tools, ctx.Is1MContext)
+	ctx.ToolNameMap = BuildToolNameMapFromClaudeTools(claudeReq.Tools)
+	processedTools := processTools(claudeReq.Tools, ctx.Is1MContext, ctx.ToolNameMap)
 
 	// If last message is assistant, it becomes part of history
 	if currentMsg.Role == "assistant" {
@@ -630,6 +749,32 @@ func maxThinkingBudgetForMaxTokens() int {
 	return KiroFixedMaxTokens / 2
 }
 
+func normalizeAdaptiveThinkingEffort(effort string) string {
+	switch effort {
+	case "low", "medium", "high":
+		return effort
+	default:
+		return "high"
+	}
+}
+
+func adaptiveThinkingEffort(claudeReq *ClaudeRequest) string {
+	if claudeReq == nil {
+		return "high"
+	}
+	if claudeReq.Thinking != nil {
+		if effort, ok := claudeReq.Thinking["thinking_effort"].(string); ok && effort != "" {
+			return normalizeAdaptiveThinkingEffort(effort)
+		}
+	}
+	if claudeReq.OutputConfig != nil {
+		if effort, ok := claudeReq.OutputConfig["effort"].(string); ok && effort != "" {
+			return normalizeAdaptiveThinkingEffort(effort)
+		}
+	}
+	return "high"
+}
+
 // generateThinkingPrefix generates the thinking mode XML prefix for AWSQ.
 // Reference: kiro.rs converter.rs generate_thinking_prefix
 func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
@@ -660,13 +805,8 @@ func generateThinkingPrefix(claudeReq *ClaudeRequest) string {
 		return fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", budgetTokens)
 
 	case "adaptive":
-		effort := "high"
-		// Check for thinking_effort in the thinking config itself
-		if e, ok := claudeReq.Thinking["thinking_effort"].(string); ok && e != "" {
-			effort = e
-		}
-		// Cap adaptive thinking to 50% of max_tokens to prevent thinking-only responses
-		return fmt.Sprintf("<thinking_mode>adaptive</thinking_mode><thinking_effort>%s</thinking_effort><max_thinking_length>%d</max_thinking_length>", effort, budgetCap)
+		effort := adaptiveThinkingEffort(claudeReq)
+		return fmt.Sprintf("<thinking_mode>adaptive</thinking_mode><thinking_effort>%s</thinking_effort>", effort)
 	}
 
 	return ""
@@ -790,7 +930,7 @@ func isToolChoiceRequired(toolChoice any) bool {
 		return tc == "required"
 	case map[string]any:
 		if tcType, ok := tc["type"].(string); ok {
-			return tcType == "required"
+			return tcType == "required" || tcType == "any" || tcType == "tool"
 		}
 	}
 	return false
@@ -932,10 +1072,11 @@ func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *His
 				continue // skip duplicate tool_use ID
 			}
 			seen[tu.ID] = true
-			ctx.RegisterToolUse(tu.ID, tu.Name)
+			toolName := ctx.MapToolName(tu.Name)
+			ctx.RegisterToolUse(tu.ID, toolName)
 			toolUses = append(toolUses, ToolUseEntry{
 				ToolUseID: tu.ID,
-				Name:      tu.Name,
+				Name:      toolName,
 				Input:     tu.Input,
 			})
 		}
@@ -1061,8 +1202,11 @@ func ensureHistoryToolsDefined(history []HistoryEntry, tools []ToolItem) []ToolI
 								Description: "Tool used in conversation history",
 								InputSchema: InputSchema{
 									JSON: map[string]any{
-										"type":       "object",
-										"properties": map[string]any{},
+										"$schema":              jsonSchemaDraft07,
+										"type":                 "object",
+										"properties":           map[string]any{},
+										"required":             []any{},
+										"additionalProperties": true,
 									},
 								},
 							},
@@ -1255,20 +1399,11 @@ func buildContinueMessage(ctx *TransformContext, tools []ToolItem) CurrentMessag
 
 // processTools processes tools, truncating long descriptions and applying compression if needed.
 // When skipLimits is true (opus-4-6), dynamic compression is bypassed.
-// Tool count limit (50) and name length limit (64 chars) are always enforced as AWSQ hard constraints.
-func processTools(tools []ClaudeTool, skipLimits bool) []ToolItem {
+// Tool count limit (50) and name length limit are always enforced as AWSQ hard constraints.
+func processTools(tools []ClaudeTool, skipLimits bool, toolNameMap map[string]string) []ToolItem {
 	if len(tools) == 0 {
 		return nil
 	}
-
-	// Build short name map for all tools first
-	var toolNames []string
-	for _, tool := range tools {
-		if tool.Name != "" && !isWebSearchTool(tool.Name) && !isWebSearchToolByType(tool) {
-			toolNames = append(toolNames, tool.Name)
-		}
-	}
-	shortNameMap := BuildToolNameMap(toolNames)
 
 	var cwTools []ToolItem
 	functionCount := 0
@@ -1314,13 +1449,16 @@ func processTools(tools []ClaudeTool, skipLimits bool) []ToolItem {
 		functionCount++
 
 		description := tool.Description
+		if strings.TrimSpace(description) == "" {
+			description = "Tool: " + tool.Name
+		}
 
 		if isWriteOrEditTool(tool.Name) {
 			description += "\n\n<constraint>Content per operation MUST NOT exceed 400 lines or 12000 characters. For larger content, split into multiple operations.</constraint>"
 			description += "\n<instruction>ALWAYS use Write/Edit tools for file modifications. Ensure all required parameters are provided correctly.</instruction>"
 		}
 
-		inputSchema := SanitizeJSONSchema(normalizeJSONSchema(tool.InputSchema))
+		inputSchema := normalizeJSONSchema(tool.InputSchema)
 
 		// Generate parameter hints from schema and append to description
 		// This helps the model understand required/optional parameters
@@ -1338,11 +1476,8 @@ func processTools(tools []ClaudeTool, skipLimits bool) []ToolItem {
 			}
 		}
 
-		// Apply shortened name (AWSQ has 64-char tool name limit, always enforced)
-		toolName := tool.Name
-		if short, ok := shortNameMap[tool.Name]; ok {
-			toolName = short
-		}
+		// Apply shortened name (AWSQ tool name limit, always enforced)
+		toolName := mapToolName(tool.Name, toolNameMap)
 
 		cwTools = append(cwTools, ToolItem{
 			Standard: &CodeWhispererTool{
@@ -1393,15 +1528,9 @@ func isWebSearchTool(name string) bool {
 
 // determineChatTriggerType determines the chat trigger type
 func determineChatTriggerType(claudeReq *ClaudeRequest) string {
-	if claudeReq == nil || len(claudeReq.Tools) == 0 {
-		return "MANUAL"
-	}
-
-	if tc, ok := claudeReq.ToolChoice.(map[string]any); ok {
-		if tcType, _ := tc["type"].(string); tcType == "any" || tcType == "tool" {
-			return "AUTO"
-		}
-	}
+	// Aligned with kiro.rs: AUTO mode can make Kiro validate/generate tool
+	// parameters differently and has been observed to cause upstream request/tool
+	// errors. Keep the trigger manual and express tool_choice via prompt hints.
 	return "MANUAL"
 }
 

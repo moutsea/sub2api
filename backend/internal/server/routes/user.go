@@ -62,6 +62,13 @@ func RegisterUserRoutes(
 			redeem.GET("/history", h.Redeem.GetHistory)
 		}
 
+		// 余额充值
+		payments := authenticated.Group("/payments")
+		{
+			payments.GET("", h.Payment.List)
+			payments.POST("/checkout", h.Payment.CreateCheckoutSession)
+		}
+
 		// 用户订阅
 		subscriptions := authenticated.Group("/subscriptions")
 		{

@@ -119,6 +119,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/recharge',
+    name: 'Recharge',
+    component: () => import('@/views/user/RechargeView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Recharge',
+      titleKey: 'recharge.title',
+      descriptionKey: 'recharge.description'
+    }
+  },
+  {
     path: '/image-preview',
     name: 'ImagePreview',
     component: () => import('@/views/user/ImagePreviewView.vue'),
