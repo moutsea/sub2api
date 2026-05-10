@@ -32,6 +32,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	// Ensure stream is set (Kiro always uses streaming internally)
 	wantStream := claudeReq.Stream
+	if !account.IsKiroApiKey() && kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
+		log.Printf("%s enabled thinking mode from model alias: %s", prefix, claudeReq.Model)
+	}
 
 	freeTier := s.isKiroFreeTier(account)
 
@@ -286,19 +289,20 @@ endpointDone:
 	// Calculate cache tokens (cache_read + cache_creation coexist)
 	// CW path: cap to model-specific context window
 	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.GetContextWindowLimit(originalModel))
+	thinkingEnabled := kiro.IsThinkingConfigEnabled(claudeReq)
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 
 	if wantStream {
-		result, err := s.handleOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens)
+		result, err := s.handleOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
 		if err != nil {
 			return nil, err
 		}
 		usage = result.usage
 		firstTokenMs = result.firstTokenMs
 	} else {
-		result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens)
+		result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
 		if err != nil {
 			return nil, err
 		}

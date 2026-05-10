@@ -14,6 +14,7 @@ type KiroResponseParser struct{}
 // ParseResult represents parsed response result
 type ParseResult struct {
 	TextContent string
+	Thinking    string
 	ToolCalls   []ToolCall
 }
 
@@ -24,16 +25,24 @@ type ToolCall struct {
 	Arguments map[string]any
 }
 
-// ParseComplete parses a complete (non-streaming) Kiro response
-func (p *KiroResponseParser) ParseComplete(data []byte) (*ParseResult, error) {
-	// Use kiro package's parser
-	completeResp := kiro.ParseCompleteResponse(data)
+// ParseComplete parses a complete (non-streaming) Kiro response.
+//
+// thinkingEnabled MUST reflect whether the upstream request had thinking enabled
+// (via kiro.IsThinkingConfigEnabled). When true, <thinking>...</thinking> tags
+// are parsed as a separate Thinking field rather than being included in
+// TextContent. Callers that feed TextContent back into a follow-up request
+// context (e.g. the WebSearch agentic loop) MUST pass the correct value to
+// avoid leaking private reasoning into assistant messages.
+func (p *KiroResponseParser) ParseComplete(data []byte, thinkingEnabled bool) (*ParseResult, error) {
+	// Use kiro package's parser with thinking-mode awareness
+	completeResp := kiro.ParseCompleteResponseWithNameRestoreAndThinking(data, nil, thinkingEnabled)
 	if completeResp == nil {
 		return &ParseResult{}, nil
 	}
 
 	result := &ParseResult{
 		TextContent: completeResp.Text,
+		Thinking:    completeResp.Thinking,
 		ToolCalls:   make([]ToolCall, 0, len(completeResp.ToolCalls)),
 	}
 

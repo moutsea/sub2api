@@ -131,6 +131,7 @@ func TestBuildClaudeNonStreamResponse_EnterPlanModeEmptyInputIsEmptyObject(t *te
 
 func TestAwsEventStreamParser_ThinkingTagsMaximallySplit(t *testing.T) {
 	parser := NewAwsEventStreamParser("msg_test", "claude-opus-4-6")
+	parser.SetThinkingEnabled(true)
 	var events []StreamEvent
 	for _, part := range []string{
 		"\n",
@@ -166,6 +167,46 @@ func TestAwsEventStreamParser_ThinkingTagsMaximallySplit(t *testing.T) {
 	}
 }
 
+func TestAwsEventStreamParser_ThinkingEnabledKeepsDelayedStartPreludeAsText(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-opus-4-6")
+	parser.SetThinkingEnabled(true)
+
+	var events []StreamEvent
+	for _, part := range []string{
+		"I need to reason privately before the tag. ",
+		"<thinking>\nsecret</thinking>\n\nanswer",
+	} {
+		events = append(events, parser.Process(mustContentPayload(t, part))...)
+	}
+	events = append(events, parser.Process([]byte(`{"stop":true}`))...)
+
+	thinking, text := collectThinkingAndText(events)
+	if thinking != "secret" {
+		t.Fatalf("thinking = %q, want secret", thinking)
+	}
+	if text != "I need to reason privately before the tag. answer" {
+		t.Fatalf("text = %q, want prelude + answer", text)
+	}
+}
+
+func TestAwsEventStreamParser_ThinkingEnabledUntaggedContentRemainsText(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-opus-4-6")
+	parser.SetThinkingEnabled(true)
+
+	answer := "This is a normal answer without thinking tags."
+	var events []StreamEvent
+	events = append(events, parser.Process(mustContentPayload(t, answer))...)
+	events = append(events, parser.Process([]byte(`{"stop":true}`))...)
+
+	thinking, text := collectThinkingAndText(events)
+	if thinking != "" {
+		t.Fatalf("thinking = %q, want empty", thinking)
+	}
+	if text != answer {
+		t.Fatalf("text = %q, want answer", text)
+	}
+}
+
 func TestStreamEventConverter_ThinkingStopEmitsSignature(t *testing.T) {
 	converter := NewStreamEventConverter("msg_test", "claude-opus-4-6", 1)
 	var events []ClaudeSSEEvent
@@ -195,7 +236,7 @@ func TestStreamEventConverter_ThinkingStopEmitsSignature(t *testing.T) {
 
 func TestBuildClaudeNonStreamResponse_IncludesThinkingBlock(t *testing.T) {
 	payload := append(mustContentPayload(t, "<thinking>\nsecret</thinking>\n\nanswer"), []byte(`{"stop":true}`)...)
-	resp := ParseCompleteResponseWithNameRestore(payload, nil)
+	resp := ParseCompleteResponseWithNameRestoreAndThinking(payload, nil, true)
 	claudeResp := BuildClaudeNonStreamResponse("msg_test", "claude-opus-4-6", 1, resp)
 
 	content, ok := claudeResp["content"].([]map[string]any)
@@ -214,6 +255,19 @@ func TestBuildClaudeNonStreamResponse_IncludesThinkingBlock(t *testing.T) {
 	if content[1]["type"] != "text" || content[1]["text"] != "answer" {
 		t.Fatalf("second block = %#v, want text answer", content[1])
 	}
+}
+
+func collectThinkingAndText(events []StreamEvent) (string, string) {
+	var thinking, text string
+	for _, event := range events {
+		switch event.Type {
+		case EventThinkingDelta:
+			thinking += event.Text
+		case EventTextDelta:
+			text += event.Text
+		}
+	}
+	return thinking, text
 }
 
 func mustContentPayload(t *testing.T, content string) []byte {

@@ -13,6 +13,7 @@ backend/bin/
 backend/server
 backend/sub2api
 backend/main
+backend/test_kiro_refresh
 
 # Go 测试二进制
 *.test

@@ -17,6 +17,8 @@ type PaymentHandler struct {
 	paymentService *service.PaymentService
 }
 
+const paymentCheckoutURLExpiryGrace = 5 * time.Minute
+
 func NewPaymentHandler(paymentService *service.PaymentService) *PaymentHandler {
 	return &PaymentHandler{paymentService: paymentService}
 }
@@ -52,7 +54,7 @@ func toPaymentOrderDTO(o *service.PaymentOrder) paymentOrderDTO {
 		dto.PaidAt = &s
 	}
 	if (o.Status == service.PaymentStatusPending || o.Status == service.PaymentStatusCreated) && o.CheckoutURL != "" {
-		if o.ExpiresAt == nil || o.ExpiresAt.After(time.Now()) {
+		if o.ExpiresAt == nil || o.ExpiresAt.After(time.Now().Add(paymentCheckoutURLExpiryGrace)) {
 			dto.CheckoutURL = &o.CheckoutURL
 			if o.ExpiresAt != nil {
 				s := o.ExpiresAt.Format(time.RFC3339)

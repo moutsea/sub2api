@@ -167,6 +167,35 @@ func extractToolResultText(content any) string {
 	return ""
 }
 
+// buildWebSearchAssistantContent constructs the assistant message content for
+// a WebSearch follow-up request.
+//
+// Thinking is intentionally omitted: private reasoning must neither be leaked
+// as plain text (the original bug) nor preserved as an unsigned thinking block.
+// Unsigned thinking blocks are not valid Claude Extended Thinking history
+// entries (the real API requires an upstream signature), and the WebSearch
+// loop only needs "assistant invoked web_search with these args" plus the
+// subsequent tool_result — the model's private reasoning is not part of that
+// contract.
+func buildWebSearchAssistantContent(parseResult *ParseResult) []map[string]any {
+	var assistantContent []map[string]any
+	if parseResult.TextContent != "" {
+		assistantContent = append(assistantContent, map[string]any{
+			"type": "text",
+			"text": parseResult.TextContent,
+		})
+	}
+	for _, tc := range parseResult.ToolCalls {
+		assistantContent = append(assistantContent, map[string]any{
+			"type":  "tool_use",
+			"id":    tc.ID,
+			"name":  tc.Name,
+			"input": tc.Arguments,
+		})
+	}
+	return assistantContent
+}
+
 // isClaudeBuiltinWebSearch checks if the tool is Claude's built-in web_search
 // Claude's built-in web_search has Type field like "web_search_20250305"
 // MCP tools have Type="" even if named "web_search"
@@ -269,8 +298,9 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 
-		// Parse response
-		parseResult, err := parser.ParseComplete(respBody)
+		// Parse response with thinking-mode awareness to avoid leaking
+		// <thinking> content into follow-up assistant context.
+		parseResult, err := parser.ParseComplete(respBody, kiro.IsThinkingConfigEnabled(currentReq))
 		if err != nil {
 			return nil, fmt.Errorf("parse response: %w", err)
 		}
@@ -304,22 +334,8 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 			return s.Forward(ctx, c, account, filterWebSearchTools(&finalReq))
 		}
 
-		// Build assistant content
-		var assistantContent []map[string]any
-		if parseResult.TextContent != "" {
-			assistantContent = append(assistantContent, map[string]any{
-				"type": "text",
-				"text": parseResult.TextContent,
-			})
-		}
-		for _, tc := range parseResult.ToolCalls {
-			assistantContent = append(assistantContent, map[string]any{
-				"type":  "tool_use",
-				"id":    tc.ID,
-				"name":  tc.Name,
-				"input": tc.Arguments,
-			})
-		}
+		// Build assistant content with private thinking intentionally omitted.
+		assistantContent := buildWebSearchAssistantContent(parseResult)
 
 		// Build follow-up request
 		currentReq = BuildFollowUpRequest(currentReq, assistantContent, toolResults)
@@ -369,8 +385,8 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 
-		// Parse response
-		parseResult, err := parser.ParseComplete(respBody)
+		// Parse response with thinking-mode awareness (see non-stream path for rationale).
+		parseResult, err := parser.ParseComplete(respBody, kiro.IsThinkingConfigEnabled(currentReq))
 		if err != nil {
 			return nil, fmt.Errorf("parse response: %w", err)
 		}
@@ -407,22 +423,8 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 			return s.Forward(ctx, c, account, filterWebSearchTools(&streamReq))
 		}
 
-		// Build assistant content
-		var assistantContent []map[string]any
-		if parseResult.TextContent != "" {
-			assistantContent = append(assistantContent, map[string]any{
-				"type": "text",
-				"text": parseResult.TextContent,
-			})
-		}
-		for _, tc := range parseResult.ToolCalls {
-			assistantContent = append(assistantContent, map[string]any{
-				"type":  "tool_use",
-				"id":    tc.ID,
-				"name":  tc.Name,
-				"input": tc.Arguments,
-			})
-		}
+		// Build assistant content with private thinking intentionally omitted.
+		assistantContent := buildWebSearchAssistantContent(parseResult)
 
 		// Build follow-up request
 		currentReq = BuildFollowUpRequest(currentReq, assistantContent, toolResults)

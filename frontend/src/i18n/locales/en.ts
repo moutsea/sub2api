@@ -716,7 +716,7 @@ export default {
     stripeHint: 'You will be redirected to Stripe Checkout.',
     confirm: 'Confirm and Pay',
     creating: 'Creating payment...',
-    invalidAmount: 'Please enter an amount greater than 0',
+    invalidAmount: 'Please enter an amount of at least ¥5.00',
     createFailed: 'Failed to create payment. Please try again later.',
     successPending: 'Payment completed or is being confirmed.',
     cancelled: 'Payment was cancelled. You can choose an amount and try again.',

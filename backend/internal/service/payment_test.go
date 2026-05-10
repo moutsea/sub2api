@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
 
@@ -191,4 +192,13 @@ func (f *fakePaymentRepo) CreditStripePaymentOrder(_ context.Context, completion
 		return nil, false, f.creditErr
 	}
 	return f.creditResult, f.creditResult != nil, nil
+}
+
+func (f *fakePaymentRepo) ListByUserID(_ context.Context, _ int64, params pagination.PaginationParams) ([]PaymentOrder, *pagination.PaginationResult, error) {
+	return nil, &pagination.PaginationResult{
+		Total:    0,
+		Page:     params.Page,
+		PageSize: params.Limit(),
+		Pages:    0,
+	}, nil
 }

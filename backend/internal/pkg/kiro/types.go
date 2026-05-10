@@ -66,13 +66,30 @@ func GetModelID(claudeModel string) string {
 // IsThinkingModelName reports whether the requested model name is the Kiro
 // convenience "-thinking" variant.
 func IsThinkingModelName(model string) bool {
-	return strings.Contains(strings.ToLower(model), "thinking")
+	normalizedModel := strings.TrimSpace(strings.ToLower(model))
+	return strings.HasSuffix(normalizedModel, "-thinking")
+}
+
+// IsThinkingConfigEnabled reports whether a Claude request explicitly enables
+// Kiro thinking output. A non-nil {"type":"disabled"} config must not be
+// treated as enabled.
+func IsThinkingConfigEnabled(req *ClaudeRequest) bool {
+	if req == nil || req.Thinking == nil {
+		return false
+	}
+	thinkingType, _ := req.Thinking["type"].(string)
+	switch strings.TrimSpace(strings.ToLower(thinkingType)) {
+	case "enabled", "adaptive":
+		return true
+	default:
+		return false
+	}
 }
 
 // ApplyThinkingDefaultsFromModelName enables Kiro thinking mode when callers
-// choose a model alias containing "thinking", matching kiro.rs behavior.
+// choose the "-thinking" model alias, matching kiro.rs behavior.
 func ApplyThinkingDefaultsFromModelName(req *ClaudeRequest) bool {
-	if req == nil || !IsThinkingModelName(req.Model) {
+	if req == nil || req.Thinking != nil || !IsThinkingModelName(req.Model) {
 		return false
 	}
 
@@ -85,7 +102,9 @@ func ApplyThinkingDefaultsFromModelName(req *ClaudeRequest) bool {
 		if req.OutputConfig == nil {
 			req.OutputConfig = map[string]any{}
 		}
-		req.OutputConfig["effort"] = "high"
+		if effort, ok := req.OutputConfig["effort"].(string); !ok || effort == "" {
+			req.OutputConfig["effort"] = "high"
+		}
 		return true
 	}
 

@@ -830,10 +830,11 @@ endpointDone:
 	// Calculate cache tokens to pass to handlers (cache_read + cache_creation coexist)
 	// CW path: cap to model-specific context window
 	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, contextWindowLimit)
+	thinkingEnabled := kiro.IsThinkingConfigEnabled(claudeReq)
 
 	if claudeReq.Stream {
 		// Streaming response
-		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold)
+		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold, thinkingEnabled)
 		if err != nil {
 			log.Printf("%s status=stream_error error=%v", prefix, err)
 			return nil, err
@@ -843,7 +844,7 @@ endpointDone:
 		usageFromUpstream = streamRes.usageFromUpstream
 	} else {
 		// Non-streaming response
-		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold)
+		streamRes, err := s.handleNonStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, cacheEstimation.MeetsCacheThreshold, thinkingEnabled)
 		if err != nil {
 			log.Printf("%s status=non_stream_error error=%v", prefix, err)
 			return nil, err
@@ -903,7 +904,7 @@ type kiroStreamResult struct {
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool, thinkingEnabled bool) (*kiroStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -920,6 +921,7 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 
 	// Create AWS EventStream parser
 	parser := kiro.NewAwsEventStreamParser(messageID, originalModel)
+	parser.SetThinkingEnabled(thinkingEnabled)
 
 	// Create stream event converter
 	converter := kiro.NewStreamEventConverter(messageID, originalModel, inputTokens)
@@ -1216,7 +1218,7 @@ finishStream:
 }
 
 // handleNonStreamingResponse handles non-streaming response from CodeWhisperer
-func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool) (*kiroStreamResult, error) {
+func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool, thinkingEnabled bool) (*kiroStreamResult, error) {
 	// Read entire response
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
@@ -1229,7 +1231,7 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 
 	// Parse complete response with tool name restoration
 	messageID := "msg_" + uuid.New().String()[:24]
-	parsedResp := kiro.ParseCompleteResponseWithNameRestore(respBody, toolNameReverseMap)
+	parsedResp := kiro.ParseCompleteResponseWithNameRestoreAndThinking(respBody, toolNameReverseMap, thinkingEnabled)
 
 	// Calculate input tokens from context percentage if available
 	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size

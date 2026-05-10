@@ -72,6 +72,7 @@ type AwsEventStreamParser struct {
 	sawThinking      bool
 
 	// Thinking tag parsing state
+	thinkingEnabled             bool
 	inThinkingBlock             bool
 	thinkingExtracted           bool // Once thinking is extracted, all subsequent content is text
 	thinkingBlockIndex          *uint32
@@ -88,9 +89,22 @@ func NewAwsEventStreamParser(messageID, model string) *AwsEventStreamParser {
 	return &AwsEventStreamParser{
 		messageID:        messageID,
 		model:            model,
+		thinkingEnabled:  IsThinkingModelName(model),
 		maxBufferSize:    defaultMaxBufferSize,
 		toolAccumulators: make(map[string]*toolAccumulator),
 	}
+}
+
+// SetThinkingEnabled tells the parser whether this upstream request was made
+// in Kiro thinking mode. It must be called before the first Process call.
+// When disabled, content is forwarded as plain text and <thinking> tags are
+// not parsed into Claude thinking blocks.
+func (p *AwsEventStreamParser) SetThinkingEnabled(enabled bool) {
+	if len(p.buffer) > 0 || p.messageStarted || p.pendingContent.Len() > 0 || p.inThinkingBlock || p.thinkingExtracted || p.sawThinking {
+		log.Printf("[kiro-parser] ignored SetThinkingEnabled(%v) after parsing started", enabled)
+		return
+	}
+	p.thinkingEnabled = enabled
 }
 
 // SetMaxBufferSize sets the maximum buffer size
@@ -231,7 +245,9 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 			}
 		}
 	} else if pendingStr != "" {
-		// Not in thinking block — emit pending as text
+		// Not in thinking block — emit pending as text.
+		// Aligned with kiro.rs generate_final_events: if no real <thinking>
+		// tag was seen, buffered content is a normal answer, not hidden thinking.
 		events = append(events, p.emitTextDelta(pendingStr)...)
 	}
 
@@ -731,7 +747,10 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 				}
 			}
 		} else if pendingStr != "" {
-			// Not in thinking block — emit pending as text
+			// Not in thinking block — emit pending as text.
+			// If the stream ends before any real <thinking> tag appears, this is
+			// normal assistant output. Treating it as thinking leaves clients with
+			// no result.
 			events = append(events, p.emitTextDelta(pendingStr)...)
 		}
 
@@ -1415,7 +1434,14 @@ func ParseCompleteResponse(data []byte) *CompleteResponse {
 
 // ParseCompleteResponseWithNameRestore parses a complete response and restores tool names
 func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[string]string) *CompleteResponse {
+	return ParseCompleteResponseWithNameRestoreAndThinking(data, toolNameReverseMap, false)
+}
+
+// ParseCompleteResponseWithNameRestoreAndThinking parses a complete response
+// and restores tool names with explicit thinking-mode awareness.
+func ParseCompleteResponseWithNameRestoreAndThinking(data []byte, toolNameReverseMap map[string]string, thinkingEnabled bool) *CompleteResponse {
 	parser := NewAwsEventStreamParser("", "")
+	parser.SetThinkingEnabled(thinkingEnabled)
 	events := parser.Process(data)
 	events = append(events, parser.Finish()...)
 
@@ -1825,6 +1851,18 @@ func (p *AwsEventStreamParser) stripThinkingLeadingNewlineIfNeeded(content strin
 // 4. Partial tag buffering for cross-chunk tag detection
 func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []StreamEvent {
 	var events []StreamEvent
+	if contentDelta == "" {
+		return nil
+	}
+
+	if !p.thinkingEnabled {
+		if p.pendingContent.Len() > 0 {
+			pending := p.pendingContent.String()
+			p.pendingContent.Reset()
+			contentDelta = pending + contentDelta
+		}
+		return p.emitTextDelta(contentDelta)
+	}
 
 	// Combine pending content with new content for processing
 	p.pendingContent.WriteString(contentDelta)
@@ -1892,10 +1930,11 @@ func (p *AwsEventStreamParser) parseContentWithThinking(contentDelta string) []S
 			// Not in thinking block and thinking not yet extracted — look for <thinking>
 			startIdx := findRealThinkingStartTag(processContent)
 			if startIdx >= 0 {
-				// Found start tag — emit text before it
+				// Found start tag — emit non-whitespace content before it as text,
+				// matching kiro.rs. If no real <thinking> tag appears yet, the
+				// prefix cannot be safely distinguished from normal assistant text.
 				textBefore := processContent[:startIdx]
 				if textBefore != "" && strings.TrimSpace(textBefore) != "" {
-					// Skip whitespace-only content before thinking (adaptive mode \n\n)
 					events = append(events, p.emitTextDelta(textBefore)...)
 				}
 				// Close text block before entering thinking

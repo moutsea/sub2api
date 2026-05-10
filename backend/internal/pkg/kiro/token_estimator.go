@@ -112,10 +112,8 @@ func EstimateInputTokens(req *ClaudeRequest) int {
 	totalTokens += estimateToolDocTokens(req.Tools)
 
 	// 6. Thinking prefix (~20 tokens when enabled)
-	if req.Thinking != nil {
-		if thinkingType, _ := req.Thinking["type"].(string); thinkingType != "" {
-			totalTokens += 20
-		}
+	if IsThinkingConfigEnabled(req) {
+		totalTokens += 20
 	}
 
 	// 7. System prompt wrapping tags (~10 tokens)
@@ -688,10 +686,8 @@ func estimateFixedTokens(req *ClaudeRequest) int {
 	tokens += estimateToolDocTokens(req.Tools)
 
 	// Thinking prefix
-	if req.Thinking != nil {
-		if thinkingType, _ := req.Thinking["type"].(string); thinkingType != "" {
-			tokens += 20
-		}
+	if IsThinkingConfigEnabled(req) {
+		tokens += 20
 	}
 
 	// System prompt wrapping tags

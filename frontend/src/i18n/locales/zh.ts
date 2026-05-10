@@ -712,7 +712,7 @@ export default {
     stripeHint: '点击确认后将跳转到 Stripe Checkout。',
     confirm: '确认并前往支付',
     creating: '正在创建支付...',
-    invalidAmount: '请输入大于 0 的充值金额',
+    invalidAmount: '请输入不低于 ¥5.00 的充值金额',
     createFailed: '创建支付失败，请稍后重试',
     successPending: '支付已完成或正在确认中。',
     cancelled: '支付已取消，您可以重新选择金额后再次发起充值。',

@@ -84,7 +84,7 @@
                 v-model="customAmount"
                 type="number"
                 inputmode="decimal"
-                min="0"
+                :min="minRechargeAmount"
                 step="0.01"
                 class="input py-3 pl-9 text-lg"
                 :placeholder="t('recharge.customPlaceholder')"
@@ -193,7 +193,7 @@
             </template>
             <template #cell-actions="{ row }">
               <a
-                v-if="row.checkout_url"
+                v-if="canContinuePayment(row)"
                 :href="row.checkout_url"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -224,7 +224,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { paymentsAPI, type PaymentMethod } from '@/api'
@@ -241,6 +241,8 @@ const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
+const minRechargeAmount = 5
+const checkoutExpiryGraceMs = 5 * 60 * 1000
 const presetAmounts = [50, 100, 200, 500, 1000, 2000]
 const selectedAmount = ref(50)
 const customAmount = ref('')
@@ -248,6 +250,8 @@ const paymentMethod = ref<PaymentMethod>('wechat_pay')
 const submitting = ref(false)
 const statusMessage = ref('')
 const statusType = ref<'success' | 'warning'>('success')
+const nowMs = ref(Date.now())
+let nowTimer: number | undefined
 
 const user = computed(() => authStore.user)
 
@@ -279,7 +283,7 @@ const effectiveAmountText = computed(() => {
   return Math.max(effectiveAmount.value, 0).toFixed(2)
 })
 
-const canSubmit = computed(() => effectiveAmount.value > 0 && Number.isFinite(effectiveAmount.value))
+const canSubmit = computed(() => effectiveAmount.value >= minRechargeAmount && Number.isFinite(effectiveAmount.value))
 
 function selectAmount(amount: number) {
   selectedAmount.value = amount
@@ -351,6 +355,17 @@ function formatTime(iso: string) {
   }
 }
 
+function canContinuePayment(row: PaymentOrder) {
+  if (!row.checkout_url) {
+    return false
+  }
+  if (!row.expires_at) {
+    return true
+  }
+  const expiresAt = new Date(row.expires_at).getTime()
+  return Number.isFinite(expiresAt) && expiresAt - nowMs.value > checkoutExpiryGraceMs
+}
+
 async function loadOrders() {
   ordersLoading.value = true
   try {
@@ -380,6 +395,10 @@ function handleOrderPageSizeChange(size: number) {
 }
 
 onMounted(async () => {
+  nowTimer = window.setInterval(() => {
+    nowMs.value = Date.now()
+  }, 60_000)
+
   const status = String(route.query.status || '')
   if (status === 'success') {
     statusType.value = 'success'
@@ -394,6 +413,12 @@ onMounted(async () => {
     statusMessage.value = t('recharge.cancelled')
   }
   loadOrders()
+})
+
+onBeforeUnmount(() => {
+  if (nowTimer !== undefined) {
+    window.clearInterval(nowTimer)
+  }
 })
 </script>
 

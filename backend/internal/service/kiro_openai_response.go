@@ -25,6 +25,7 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	originalModel string, inputTokens int,
 	toolNameReverseMap map[string]string,
 	cacheCreationTokens, cacheReadTokens int,
+	thinkingEnabled bool,
 ) (*kiroOpenAIStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
@@ -41,6 +42,7 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 
 	// CW EventStream parser
 	parser := kiro.NewAwsEventStreamParser(messageID, originalModel)
+	parser.SetThinkingEnabled(thinkingEnabled)
 
 	// OpenAI stream converter
 	converter := kiro.NewOpenAIStreamConverter(messageID, originalModel, inputTokens)
@@ -145,6 +147,7 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 	originalModel string, inputTokens int,
 	toolNameReverseMap map[string]string,
 	cacheCreationTokens, cacheReadTokens int,
+	thinkingEnabled bool,
 ) (*kiroOpenAIStreamResult, error) {
 	messageID := "chatcmpl-" + uuid.New().String()[:24]
 
@@ -156,6 +159,7 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 
 	// Parse CW response through the event stream parser
 	parser := kiro.NewAwsEventStreamParser(messageID, originalModel)
+	parser.SetThinkingEnabled(thinkingEnabled)
 	events := parser.Process(respBody)
 	events = append(events, parser.Finish()...)
 

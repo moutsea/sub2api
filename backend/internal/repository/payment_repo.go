@@ -13,6 +13,8 @@ type paymentRepository struct {
 	db *sql.DB
 }
 
+const stripeMinimumPaidRatioPermille int64 = 700
+
 func NewPaymentRepository(db *sql.DB) service.PaymentRepository {
 	return &paymentRepository{db: db}
 }
@@ -100,7 +102,11 @@ func (r *paymentRepository) CreditStripePaymentOrder(ctx context.Context, comple
 	if err != nil {
 		return nil, false, err
 	}
-	if completion.AmountCents > 0 && completion.AmountCents != order.AmountCents {
+	// Stripe promotion codes reduce checkout.session.amount_total after the
+	// order is created. Allow discounted totals only when the paid amount is
+	// still at least 70% of the original order amount.
+	if completion.AmountCents > order.AmountCents ||
+		completion.AmountCents < minimumAcceptedStripeAmountCents(order.AmountCents) {
 		if err := r.markMismatchInTx(ctx, tx, order.ID, completion); err != nil {
 			return nil, false, err
 		}
@@ -172,6 +178,17 @@ func (r *paymentRepository) CreditStripePaymentOrder(ctx context.Context, comple
 	order.StripePaymentIntentID = completion.PaymentIntentID
 	order.StripeEventID = completion.EventID
 	return order, true, nil
+}
+
+func minimumAcceptedStripeAmountCents(orderAmountCents int64) int64 {
+	if orderAmountCents <= 0 {
+		return 1
+	}
+	minimum := (orderAmountCents*stripeMinimumPaidRatioPermille + 999) / 1000
+	if minimum < 1 {
+		return 1
+	}
+	return minimum
 }
 
 func (r *paymentRepository) getOrderForUpdate(ctx context.Context, tx *sql.Tx, sessionID string) (*service.PaymentOrder, error) {
@@ -289,15 +306,24 @@ func requireAffected(res sql.Result, notFound error) error {
 }
 
 func (r *paymentRepository) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]service.PaymentOrder, *pagination.PaginationResult, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var total int64
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM payment_orders WHERE user_id = $1`, userID).Scan(&total); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM payment_orders WHERE user_id = $1`, userID).Scan(&total); err != nil {
 		return nil, nil, err
 	}
 	if total == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, nil, err
+		}
 		return nil, paginationResultFromTotal(0, params), nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id, user_id, amount, amount_cents, currency, provider, payment_method,
 		       COALESCE(stripe_session_id, ''), COALESCE(stripe_payment_intent_id, ''),
 		       COALESCE(stripe_event_id, ''), status, COALESCE(checkout_url, ''),
@@ -335,6 +361,9 @@ func (r *paymentRepository) ListByUserID(ctx context.Context, userID int64, para
 		orders = append(orders, o)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
 	return orders, paginationResultFromTotal(total, params), nil
