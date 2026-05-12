@@ -37,17 +37,40 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
-// getKiroEndpoints returns ordered endpoint list based on account config.
-// Non-1M models share the ~810KB body size limit; 4.6 series supports much larger bodies.
-// Priority: preferred_endpoint config > default (AWSQ first, CW fallback).
-// AWSQ supports thinking; CW does not. Always prefer AWSQ.
-// If AWSQ returns 400 for profileArn, the caller handles failover to CW.
-func getKiroEndpoints(account *Account) []kiroEndpointConfig {
-	// Request routing always uses us-east-1 regardless of account's token region.
-	// Verified: EU accounts (e.g. eu-north-1 IdC) can send requests to us-east-1 endpoints.
+// getKiroEndpoints returns ordered endpoint list based on config + account.
+//
+// Endpoint family (global) selects which upstream domain family to use:
+//   - "kiro"   (default): runtime.us-east-1.kiro.dev — no fallback, as AWS official
+//     firewall docs no longer list codewhisperer.*.amazonaws.com.
+//   - "legacy"          : q.us-east-1.amazonaws.com + codewhisperer.us-east-1.amazonaws.com
+//     as fallback, preserving the previous dual-endpoint behavior.
+//
+// Per-account preferred_endpoint only applies to the legacy family (controls order
+// between AWSQ and CodeWhisperer). The kiro family returns a single endpoint.
+//
+// Request routing always uses us-east-1 regardless of account's token region.
+// Verified: EU accounts (e.g. eu-north-1 IdC) can send requests to us-east-1 endpoints.
+func getKiroEndpoints(account *Account, cfg *config.Config) []kiroEndpointConfig {
+	family := kiro.ServiceEndpointFamilyKiro
+	if cfg != nil {
+		family = kiro.NormalizeServiceEndpointFamily(cfg.Kiro.ServiceEndpointFamily)
+	}
+
+	// Kiro family: single endpoint, no fallback (codewhisperer.*.amazonaws.com deprecated).
+	if family == kiro.ServiceEndpointFamilyKiro {
+		host := kiro.RuntimeHost(kiro.DefaultRegion, family)
+		return []kiroEndpointConfig{{
+			URL:  kiro.GenerateAssistantResponseURL(kiro.DefaultRegion, family),
+			Host: host,
+			Name: "KiroRuntime",
+		}}
+	}
+
+	// Legacy family: dual endpoint with account-level preference.
+	// AWSQ supports thinking; CW does not. Default order is AWSQ first.
 	awsq := kiroEndpointConfig{
-		URL:  "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
-		Host: "q.us-east-1.amazonaws.com",
+		URL:  kiro.GenerateAssistantResponseURL(kiro.DefaultRegion, kiro.ServiceEndpointFamilyLegacy),
+		Host: kiro.RuntimeHost(kiro.DefaultRegion, kiro.ServiceEndpointFamilyLegacy),
 		Name: "AWSQ",
 	}
 	cw := kiroEndpointConfig{
@@ -295,7 +318,12 @@ func (s *KiroGatewayService) triggerAsyncSubscriptionFetch(account *Account) {
 			}
 
 			fetcher := kiro.NewUsageLimitsFetcher(nil)
-			limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL)
+			usageProfileArn, err := resolveKiroProfileArn(ctx, account, s.tokenProvider, s.accountRepo, "[kiro-freeTier]")
+			if err != nil {
+				log.Printf("[kiro-freeTier] profile_arn missing for account %s: %v", accountName, err)
+				return nil, err
+			}
+			limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL, "", usageProfileArn)
 			if err != nil {
 				log.Printf("[kiro-freeTier] async fetch failed for account %s: %v", accountName, err)
 				return nil, err
@@ -492,21 +520,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	// Priority: in-memory cache (synchronous with token refresh) > account snapshot > database.
 	// The in-memory cache eliminates the race condition where async DB write from
 	// token refresh hasn't completed yet when this request reads profileArn.
-	profileArn := ""
-	if s.tokenProvider != nil {
-		profileArn = s.tokenProvider.GetProfileArn(account.ID)
-	}
-	if profileArn == "" {
-		profileArn = account.GetKiroProfileArn()
-	}
-	if profileArn == "" && s.accountRepo != nil {
-		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
-		if err == nil && freshAccount != nil {
-			profileArn = freshAccount.GetKiroProfileArn()
-			if profileArn != "" {
-				log.Printf("%s profile_arn recovered from db (snapshot was stale)", prefix)
-			}
-		}
+	profileArn, err := resolveKiroProfileArn(ctx, account, s.tokenProvider, s.accountRepo, prefix)
+	if err != nil {
+		return nil, err
 	}
 
 	// Transform Claude request to CodeWhisperer format
@@ -521,7 +537,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Build endpoint list (primary + fallback)
-	endpoints := getKiroEndpoints(account)
+	endpoints := getKiroEndpoints(account, s.cfg)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account, freeTier)
@@ -903,14 +919,32 @@ type kiroStreamResult struct {
 	usageFromUpstream bool
 }
 
+func isRenderableKiroStreamEvent(event kiro.StreamEvent) bool {
+	switch event.Type {
+	case kiro.EventTextDelta, kiro.EventThinkingDelta:
+		return event.Text != ""
+	case kiro.EventToolUseInputDelta:
+		return event.PartialJSON != ""
+	case kiro.EventContentBlockStart:
+		return event.BlockType.Kind == kiro.BlockToolUse
+	default:
+		return false
+	}
+}
+
+func isRenderableKiroCompleteResponse(resp *kiro.CompleteResponse) bool {
+	return resp != nil && (resp.Text != "" || resp.Thinking != "" || len(resp.ToolCalls) > 0)
+}
+
+func kiroEmptyStreamFailover(reason string) *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode: http.StatusBadGateway,
+		Message:    reason,
+	}
+}
+
 // handleStreamingResponse handles streaming response from CodeWhisperer
 func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, inputTokens int, toolNameReverseMap map[string]string, cacheCreationTokens, cacheReadTokens int, cachingEnabled bool, thinkingEnabled bool) (*kiroStreamResult, error) {
-	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Status(http.StatusOK)
-
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return nil, errors.New("streaming not supported")
@@ -934,23 +968,38 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 		converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
 	}
 
-	// Send initial events
-	initialEvents := converter.BuildInitialEvents()
-	for _, event := range initialEvents {
-		sseStr, err := kiro.FormatClaudeSSE(event)
-		if err != nil {
-			continue
-		}
-		if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
-			return nil, err
-		}
+	webSearchEvents := GetWebSearchEvents(c)
+	if len(webSearchEvents) > 0 {
+		converter.SetContentBlockOffset(len(webSearchEvents) * 2)
 	}
-	flusher.Flush()
 
-	// Inject web search events (server_tool_use + web_search_tool_result) if present
-	if wsEvents := GetWebSearchEvents(c); len(wsEvents) > 0 {
+	streamCommitted := false
+	sawRenderableEvent := false
+	var pendingClaudeEvents []kiro.ClaudeSSEEvent
+
+	commitStream := func() error {
+		if streamCommitted {
+			return nil
+		}
+		c.Header("Content-Type", "text/event-stream; charset=utf-8")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		for _, event := range converter.BuildInitialEvents() {
+			sseStr, err := kiro.FormatClaudeSSE(event)
+			if err != nil {
+				continue
+			}
+			if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
+				return err
+			}
+		}
+
+		// Inject web search events (server_tool_use + web_search_tool_result) if present.
 		blockIndex := 0
-		for _, wsEvt := range wsEvents {
+		for _, wsEvt := range webSearchEvents {
 			wsSSEEvents := buildWebSearchSSEEvents(wsEvt, blockIndex)
 			for _, evt := range wsSSEEvents {
 				sseStr, err := kiro.FormatClaudeSSE(evt)
@@ -958,13 +1007,42 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 					continue
 				}
 				if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
-					return nil, err
+					return err
 				}
 			}
 			blockIndex += 2 // each search produces 2 blocks (server_tool_use + web_search_tool_result)
 		}
-		converter.SetContentBlockOffset(blockIndex)
+
+		streamCommitted = true
 		flusher.Flush()
+		return nil
+	}
+
+	writeClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
+		if len(events) == 0 {
+			return nil
+		}
+		if !streamCommitted {
+			pendingClaudeEvents = append(pendingClaudeEvents, events...)
+			if !sawRenderableEvent {
+				return nil
+			}
+			if err := commitStream(); err != nil {
+				return err
+			}
+			events = pendingClaudeEvents
+			pendingClaudeEvents = nil
+		}
+		for _, claudeEvent := range events {
+			sseStr, err := kiro.FormatClaudeSSE(claudeEvent)
+			if err != nil {
+				continue
+			}
+			if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	var firstTokenMs *int
@@ -1032,6 +1110,9 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 		if errorEventSent {
 			return
 		}
+		if !streamCommitted {
+			return
+		}
 		errorEventSent = true
 		errEvent := kiro.BuildClaudeError("overloaded_error", reason)
 		if sseStr, err := kiro.FormatClaudeSSE(errEvent); err == nil {
@@ -1044,6 +1125,9 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 		select {
 		case <-c.Request.Context().Done():
 			log.Printf("Stream context cancelled (kiro): %v", c.Request.Context().Err())
+			if !streamCommitted {
+				return nil, c.Request.Context().Err()
+			}
 			goto finishStream
 
 		case chunk, ok := <-chunkCh:
@@ -1060,6 +1144,9 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 					goto finishStream
 				}
 				log.Printf("Stream read error (kiro): %v", chunk.err)
+				if !streamCommitted {
+					return nil, kiroEmptyStreamFailover("kiro_stream_read_error")
+				}
 				sendErrorEvent("stream_read_error")
 				goto finishStream
 			}
@@ -1069,8 +1156,11 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 			// Process chunk through parser
 			events := parser.Process(chunk.data)
 			for _, event := range events {
+				if isRenderableKiroStreamEvent(event) {
+					sawRenderableEvent = true
+				}
 				// Track first token time
-				if firstTokenMs == nil && (event.Type == kiro.EventTextDelta || event.Type == kiro.EventToolUseInputDelta) {
+				if firstTokenMs == nil && (event.Type == kiro.EventTextDelta || event.Type == kiro.EventThinkingDelta || event.Type == kiro.EventToolUseInputDelta) {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 				}
@@ -1094,30 +1184,42 @@ func (s *KiroGatewayService) handleStreamingResponse(c *gin.Context, resp *http.
 					}
 				}
 
+				if event.Type == kiro.EventError && !streamCommitted {
+					msg := sanitizeUpstreamErrorMessage(event.ErrorMessage)
+					if msg == "" {
+						msg = "kiro_stream_error"
+					}
+					return nil, kiroEmptyStreamFailover(msg)
+				}
+
 				// Convert to Claude SSE events
 				claudeEvents := converter.ConvertEvent(event)
-				for _, claudeEvent := range claudeEvents {
-					sseStr, err := kiro.FormatClaudeSSE(claudeEvent)
-					if err != nil {
-						continue
-					}
-					if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
+				if err := writeClaudeEvents(claudeEvents); err != nil {
+					if streamCommitted {
 						sendErrorEvent("write_failed")
-						goto finishStream
 					}
+					goto finishStream
 				}
 			}
-			flusher.Flush()
+			if streamCommitted {
+				flusher.Flush()
+			}
 
 		case <-intervalCh:
 			if time.Since(lastDataAt) < streamInterval {
 				continue
 			}
 			log.Printf("Stream data interval timeout (kiro): no data for %v", streamInterval)
+			if !streamCommitted {
+				return nil, kiroEmptyStreamFailover("kiro_stream_timeout_before_first_event")
+			}
 			sendErrorEvent("stream_timeout")
 			goto finishStream
 
 		case <-keepaliveTicker.C:
+			if !streamCommitted {
+				continue
+			}
 			if time.Since(lastDataAt) < keepaliveInterval {
 				continue
 			}
@@ -1133,14 +1235,26 @@ finishStream:
 	// Finish parsing and get remaining events
 	finalParserEvents := parser.Finish()
 	for _, event := range finalParserEvents {
-		claudeEvents := converter.ConvertEvent(event)
-		for _, claudeEvent := range claudeEvents {
-			sseStr, err := kiro.FormatClaudeSSE(claudeEvent)
-			if err != nil {
-				continue
-			}
-			_, _ = c.Writer.Write([]byte(sseStr))
+		if isRenderableKiroStreamEvent(event) {
+			sawRenderableEvent = true
 		}
+		if firstTokenMs == nil && (event.Type == kiro.EventTextDelta || event.Type == kiro.EventThinkingDelta || event.Type == kiro.EventToolUseInputDelta) {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
+		claudeEvents := converter.ConvertEvent(event)
+		if err := writeClaudeEvents(claudeEvents); err != nil {
+			if streamCommitted {
+				sendErrorEvent("write_failed")
+			}
+			break
+		}
+	}
+
+	if !sawRenderableEvent {
+		log.Printf("Kiro upstream returned empty stream before downstream commit: duration=%v parse_errors=%d message_stopped=%v",
+			time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
+		return nil, kiroEmptyStreamFailover("kiro_empty_stream")
 	}
 
 	// Set context percentage before building final events
@@ -1162,14 +1276,14 @@ finishStream:
 
 	// Send final events
 	finalEvents := converter.BuildFinalEvents()
-	for _, event := range finalEvents {
-		sseStr, err := kiro.FormatClaudeSSE(event)
-		if err != nil {
-			continue
+	if err := writeClaudeEvents(finalEvents); err != nil {
+		if streamCommitted {
+			sendErrorEvent("write_failed")
 		}
-		_, _ = c.Writer.Write([]byte(sseStr))
 	}
-	flusher.Flush()
+	if streamCommitted {
+		flusher.Flush()
+	}
 
 	// Calculate input tokens from context percentage if available
 	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size
@@ -1232,6 +1346,10 @@ func (s *KiroGatewayService) handleNonStreamingResponse(c *gin.Context, resp *ht
 	// Parse complete response with tool name restoration
 	messageID := "msg_" + uuid.New().String()[:24]
 	parsedResp := kiro.ParseCompleteResponseWithNameRestoreAndThinking(respBody, toolNameReverseMap, thinkingEnabled)
+	if !isRenderableKiroCompleteResponse(parsedResp) {
+		log.Printf("Kiro upstream returned empty non-stream response before downstream commit: duration=%v body_size=%d", time.Since(startTime), len(respBody))
+		return nil, kiroEmptyStreamFailover("kiro_empty_response")
+	}
 
 	// Calculate input tokens from context percentage if available
 	// Note: Kiro's contextPct may only reflect current turn, not cumulative context size
@@ -1634,18 +1752,9 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	}
 
 	// Get profile ARN (in-memory cache > snapshot > db)
-	profileArn := ""
-	if s.tokenProvider != nil {
-		profileArn = s.tokenProvider.GetProfileArn(account.ID)
-	}
-	if profileArn == "" {
-		profileArn = account.GetKiroProfileArn()
-	}
-	if profileArn == "" && s.accountRepo != nil {
-		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
-		if err == nil && freshAccount != nil {
-			profileArn = freshAccount.GetKiroProfileArn()
-		}
+	profileArn, err := resolveKiroProfileArn(ctx, account, s.tokenProvider, s.accountRepo, "[kiro-TestConnection]")
+	if err != nil {
+		return nil, err
 	}
 
 	// Build test request
@@ -1681,7 +1790,7 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	proxyURL := s.resolveProxyURL(ctx, account, testFreeTier)
 
 	// Build endpoint list (test connection: small request)
-	endpoints := getKiroEndpoints(account)
+	endpoints := getKiroEndpoints(account, s.cfg)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account, testFreeTier)

@@ -593,6 +593,25 @@ gemini:
         cooldown_minutes: 5
 
 # =============================================================================
+# Kiro Upstream Configuration (Kiro 上游端点配置)
+# =============================================================================
+kiro:
+  # Kiro service endpoint family
+  # Kiro 服务端点族
+  #
+  # - "kiro"   (default): routes chat/MCP to runtime.<region>.kiro.dev and
+  #                       usage/preference queries to management.<region>.kiro.dev.
+  #                       This is the current, AWS-announced endpoint family.
+  # - "legacy"          : routes to q.<region>.amazonaws.com + codewhisperer.us-east-1.amazonaws.com.
+  #                       These domains are marked for deprecation per AWS
+  #                       firewall docs (https://kiro.dev/docs/cli/privacy-and-security/firewalls/).
+  #                       Use only as a short-term fallback if new domains misbehave.
+  #
+  # Switch to "legacy" only if you need to temporarily route through the
+  # deprecated q.*.amazonaws.com domains. Default value is recommended.
+  service_endpoint_family: "kiro"
+
+# =============================================================================
 # Update Configuration (在线更新配置)
 # =============================================================================
 update:

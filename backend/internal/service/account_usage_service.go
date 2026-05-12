@@ -547,7 +547,12 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 
 	// 4. 调用 API 获取积分信息（Q 服务仅部署在 us-east-1 和 eu-central-1，固定使用 us-east-1）
 	fetcher := kiro.NewUsageLimitsFetcher(nil) // Use default HTTP client
-	limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL)
+	profileArn, err := resolveKiroProfileArn(ctx, account, s.kiroTokenProvider, s.accountRepo, "[AccountUsage]")
+	if err != nil {
+		log.Printf("[AccountUsage] Failed to resolve Kiro profile ARN for account %d: %v", account.ID, err)
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+	limits, err := fetcher.FetchUsageLimits(ctx, accessToken, "us-east-1", proxyURL, "", profileArn)
 	if err != nil {
 		log.Printf("[AccountUsage] Failed to fetch Kiro usage limits for account %d: %v", account.ID, err)
 		// Return empty on error (don't fail the whole request)

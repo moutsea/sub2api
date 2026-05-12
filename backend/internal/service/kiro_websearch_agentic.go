@@ -454,18 +454,9 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	}
 
 	// Get profile ARN (in-memory cache > snapshot > db)
-	profileArn := ""
-	if s.tokenProvider != nil {
-		profileArn = s.tokenProvider.GetProfileArn(account.ID)
-	}
-	if profileArn == "" {
-		profileArn = account.GetKiroProfileArn()
-	}
-	if profileArn == "" && s.accountRepo != nil {
-		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
-		if err == nil && freshAccount != nil {
-			profileArn = freshAccount.GetKiroProfileArn()
-		}
+	profileArn, err := resolveKiroProfileArn(ctx, account, s.tokenProvider, s.accountRepo, prefix)
+	if err != nil {
+		return nil, err
 	}
 
 	// Resolve URL images and compress before CW transformation.
@@ -483,7 +474,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	}
 
 	// Build endpoint list (primary + fallback) — same as Forward()
-	endpoints := getKiroEndpoints(account)
+	endpoints := getKiroEndpoints(account, s.cfg)
 
 	// Generate machine ID for User-Agent headers (Free-tier: may rotate randomly)
 	machineID := s.resolveMachineID(account, execFreeTier)

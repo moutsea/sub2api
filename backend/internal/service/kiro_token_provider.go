@@ -48,11 +48,11 @@ const (
 	kiroDefaultCooldown          = 30 * time.Second
 	kiroRefreshBackoffBase       = time.Minute
 	kiroRefreshBackoffMax        = 30 * time.Minute
-	kiroTokenRefreshBuffer       = 60 * time.Second  // Refresh token 60s before expiry
-	kiroCooldownRecoveryInterval = 30 * time.Second  // Check cooldown accounts every 30s
-	kiroBannedRecoveryInterval   = 10 * time.Minute  // Check banned accounts every 10min
-	kiroDBErrorRecoveryInterval  = 15 * time.Minute  // Check DB error accounts every 15min
-	kiroMaxRefreshFailures       = 3                 // Mark as banned after 3 consecutive failures
+	kiroTokenRefreshBuffer       = 60 * time.Second // Refresh token 60s before expiry
+	kiroCooldownRecoveryInterval = 30 * time.Second // Check cooldown accounts every 30s
+	kiroBannedRecoveryInterval   = 10 * time.Minute // Check banned accounts every 10min
+	kiroDBErrorRecoveryInterval  = 15 * time.Minute // Check DB error accounts every 15min
+	kiroMaxRefreshFailures       = 3                // Mark as banned after 3 consecutive failures
 )
 
 // KiroTokenState represents the runtime state of a Kiro account token
@@ -454,6 +454,7 @@ func (p *KiroTokenProvider) refreshIdCToken(ctx context.Context, account *Accoun
 		RefreshToken: newRefreshToken,
 		ExpiresAt:    expiresAt,
 		Region:       region,
+		ProfileArn:   account.GetKiroProfileArn(),
 	}, nil
 }
 
@@ -1235,7 +1236,13 @@ func (p *KiroTokenProvider) recoverDBDeletedAccounts() {
 			proxyURL = account.Proxy.URL()
 		}
 		fetcher := kiro.NewUsageLimitsFetcher(nil)
-		limits, err := fetcher.FetchUsageLimits(ctx, tokenInfo.AccessToken, "us-east-1", proxyURL)
+		usageProfileArn := account.GetKiroProfileArn()
+		if usageProfileArn == "" && account.IsKiroSSOOIDC() {
+			log.Printf("[KiroToken] Deleted account %d (%s) missing profile_arn, skipping restore", account.ID, account.Name)
+			failed++
+			continue
+		}
+		limits, err := fetcher.FetchUsageLimits(ctx, tokenInfo.AccessToken, "us-east-1", proxyURL, "", usageProfileArn)
 		if err != nil {
 			log.Printf("[KiroToken] Deleted account %d (%s) usage fetch failed, skipping restore: %v", account.ID, account.Name, err)
 			failed++
@@ -1245,8 +1252,18 @@ func (p *KiroTokenProvider) recoverDBDeletedAccounts() {
 		if creditsInfo == nil || creditsInfo.TotalCredits <= 0 || creditsInfo.AvailableCredits <= 0 {
 			log.Printf("[KiroToken] Deleted account %d (%s) has no valid credits (total=%.2f, available=%.2f), skipping restore",
 				account.ID, account.Name,
-				func() float64 { if creditsInfo != nil { return creditsInfo.TotalCredits }; return 0 }(),
-				func() float64 { if creditsInfo != nil { return creditsInfo.AvailableCredits }; return 0 }())
+				func() float64 {
+					if creditsInfo != nil {
+						return creditsInfo.TotalCredits
+					}
+					return 0
+				}(),
+				func() float64 {
+					if creditsInfo != nil {
+						return creditsInfo.AvailableCredits
+					}
+					return 0
+				}())
 			failed++
 			continue
 		}

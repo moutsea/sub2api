@@ -1945,6 +1945,9 @@ export default {
         socialDesc: 'Kiro 桌面应用',
         idcDesc: 'AWS IAM Identity Center',
         apikeyDesc: '自定义 Claude API 端点',
+        profileArn: 'Profile ARN',
+        profileArnPlaceholder: 'arn:aws:codewhisperer:us-east-1:...:profile/...',
+        profileArnHint: 'IdC 必填。可从 Kiro 的 profile.json 获取，例如 ~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/profile.json',
         // Overage
         overageTitle: '超额使用',
         overageDesc: '开启后，基础额度用完可继续使用，按超额费率计费直到超额上限',
@@ -1971,11 +1974,13 @@ export default {
         selectFile: '选择文件',
         orPasteJson: '或粘贴 JSON',
         batchJsonPlaceholderSocial: '[{\'{\'}\"refreshToken\": \"...\"{\'}\'}] 或 {\'{\'}\"tokens\": [{\'{\'}\"refreshToken\": \"...\"{\'}\'}]{\'}\'}',
-        batchJsonPlaceholderIdc: '[{\'{\'}\"refreshToken\": \"...\", \"clientId\": \"...\", \"clientSecret\": \"...\"{\'}\'}]',
+        batchJsonPlaceholderIdc: '[{\'{\'}\"refreshToken\": \"...\", \"clientId\": \"...\", \"clientSecret\": \"...\", \"profileArn\": \"...\"{\'}\'}]',
         defaultClientId: '默认 Client ID（可选）',
         defaultClientIdHint: '用于补全 JSON 中缺失的 clientId',
         defaultClientSecret: '默认 Client Secret（可选）',
         defaultClientSecretHint: '用于补全 JSON 中缺失的 clientSecret',
+        defaultProfileArn: '默认 Profile ARN',
+        defaultProfileArnHint: '用于补全 JSON 中缺失的 profileArn/profile_arn',
         parseJson: '解析 JSON',
         parsedTokens: '已解析 {count} 个 Token',
         // Errors
@@ -1987,6 +1992,7 @@ export default {
         jsonParseError: 'JSON 解析失败，请检查格式',
         pleaseParseFirst: '请先解析 JSON',
         pleaseEnterIdcCredentials: '请输入 Client ID 和 Client Secret',
+        pleaseEnterIdcProfileArn: '请输入 IdC 账号有效的 Profile ARN',
         // Success messages
         batchImportSuccess: '成功导入 {count} 个账号',
         batchImportPartial: '导入完成：{success} 成功，{fail} 失败',

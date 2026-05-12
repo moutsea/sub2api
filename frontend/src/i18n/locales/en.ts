@@ -1833,6 +1833,9 @@ export default {
         socialDesc: 'Kiro Desktop App',
         idcDesc: 'AWS IAM Identity Center',
         apikeyDesc: 'Custom Claude API Endpoint',
+        profileArn: 'Profile ARN',
+        profileArnPlaceholder: 'arn:aws:codewhisperer:us-east-1:...:profile/...',
+        profileArnHint: 'Required for IdC. In Kiro, see profile.json, e.g. ~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/profile.json',
         // Overage
         overageTitle: 'Overage Usage',
         overageDesc: 'When enabled, usage can continue beyond base quota at overage rate until overage cap',
@@ -1859,11 +1862,13 @@ export default {
         selectFile: 'Select File',
         orPasteJson: 'Or paste JSON',
         batchJsonPlaceholderSocial: '[{\'{\'}\"refreshToken\": \"...\"{\'}\'}] or {\'{\'}\"tokens\": [{\'{\'}\"refreshToken\": \"...\"{\'}\'}]{\'}\'}',
-        batchJsonPlaceholderIdc: '[{\'{\'}\"refreshToken\": \"...\", \"clientId\": \"...\", \"clientSecret\": \"...\"{\'}\'}]',
+        batchJsonPlaceholderIdc: '[{\'{\'}\"refreshToken\": \"...\", \"clientId\": \"...\", \"clientSecret\": \"...\", \"profileArn\": \"...\"{\'}\'}]',
         defaultClientId: 'Default Client ID (Optional)',
         defaultClientIdHint: 'Used to fill missing clientId in JSON',
         defaultClientSecret: 'Default Client Secret (Optional)',
         defaultClientSecretHint: 'Used to fill missing clientSecret in JSON',
+        defaultProfileArn: 'Default Profile ARN',
+        defaultProfileArnHint: 'Used to fill missing profileArn/profile_arn in JSON',
         parseJson: 'Parse JSON',
         parsedTokens: 'Parsed {count} tokens',
         // Errors
@@ -1875,6 +1880,7 @@ export default {
         jsonParseError: 'JSON parse error, please check format',
         pleaseParseFirst: 'Please parse JSON first',
         pleaseEnterIdcCredentials: 'Please enter Client ID and Client Secret',
+        pleaseEnterIdcProfileArn: 'Please enter a valid Profile ARN for IdC accounts',
         // Success messages
         batchImportSuccess: 'Successfully imported {count} accounts',
         batchImportPartial: 'Import completed: {success} succeeded, {fail} failed'

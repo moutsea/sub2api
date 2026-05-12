@@ -62,7 +62,17 @@ type Config struct {
 	RunMode      string                     `mapstructure:"run_mode" yaml:"run_mode"`
 	Timezone     string                     `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
 	Gemini       GeminiConfig               `mapstructure:"gemini"`
+	Kiro         KiroConfig                 `mapstructure:"kiro"`
 	Update       UpdateConfig               `mapstructure:"update"`
+}
+
+// KiroConfig controls Kiro/CodeWhisperer upstream routing.
+//
+// ServiceEndpointFamily selects which upstream domain family to use:
+//   - "kiro":   runtime.<region>.kiro.dev + management.<region>.kiro.dev (current)
+//   - "legacy": q.<region>.amazonaws.com (deprecated per AWS firewall docs)
+type KiroConfig struct {
+	ServiceEndpointFamily string `mapstructure:"service_endpoint_family"`
 }
 
 type GeminiConfig struct {
@@ -875,6 +885,10 @@ func setDefaults() {
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
 	viper.SetDefault("gemini.quota.policy", "")
+
+	// Kiro service endpoint family — default to new kiro.dev domains.
+	// Set to "legacy" to fall back to q.<region>.amazonaws.com (deprecated).
+	viper.SetDefault("kiro.service_endpoint_family", "kiro")
 }
 
 func (c *Config) Validate() error {

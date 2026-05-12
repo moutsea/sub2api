@@ -18,6 +18,7 @@ import (
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
@@ -114,6 +115,12 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+
+	// Install process-wide default for Kiro upstream endpoint family.
+	// Callers that don't have access to cfg (e.g. AccountUsageService, KiroTokenProvider)
+	// fall back to this default via resolveFamily().
+	kiro.SetDefaultServiceEndpointFamily(kiro.NormalizeServiceEndpointFamily(cfg.Kiro.ServiceEndpointFamily))
+
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
 	}

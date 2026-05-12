@@ -510,10 +510,21 @@
             {{ t('admin.accounts.tempUnschedulable.addRule') }}
           </button>
         </div>
-      </div>
+	      </div>
 
-      <!-- Intercept Warmup Requests (Anthropic only) -->
-      <div
+	      <div v-if="isKiroIdcAccount" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+	        <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }} *</label>
+	        <input
+	          v-model="editKiroProfileArn"
+	          type="text"
+	          class="input font-mono text-sm"
+	          :placeholder="t('admin.accounts.kiro.profileArnPlaceholder')"
+	        />
+	        <p class="input-hint">{{ t('admin.accounts.kiro.profileArnHint') }}</p>
+	      </div>
+
+	      <!-- Intercept Warmup Requests (Anthropic only) -->
+	      <div
         v-if="account?.platform === 'anthropic'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
@@ -929,6 +940,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
+const editKiroProfileArn = ref('')
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 
@@ -983,6 +995,19 @@ const defaultBaseUrl = computed(() => {
   return 'https://api.anthropic.com'
 })
 
+const isKiroIdcAccount = computed(() => {
+  if (!props.account || props.account.platform !== 'kiro' || props.account.type === 'apikey') return false
+  const credentials = props.account.credentials as Record<string, unknown> | undefined
+  return credentials?.auth_type === 'idc' || Boolean(credentials?.client_id && credentials?.client_secret)
+})
+
+const normalizeKiroProfileArn = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('arn:aws:codewhisperer:')) return undefined
+  return trimmed
+}
+
 const form = reactive({
   name: '',
   notes: '',
@@ -1026,6 +1051,12 @@ watch(
       const credentials = newAccount.credentials as Record<string, unknown> | undefined
       interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
       autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
+      editKiroProfileArn.value =
+        typeof credentials?.profile_arn === 'string'
+          ? credentials.profile_arn
+          : typeof credentials?.profileArn === 'string'
+            ? credentials.profileArn
+            : ''
 
       // Load mixed scheduling setting (only for antigravity accounts)
       const extra = newAccount.extra as Record<string, unknown> | undefined
@@ -1441,6 +1472,16 @@ const handleSubmit = async () => {
         newCredentials.intercept_warmup_requests = true
       } else {
         delete newCredentials.intercept_warmup_requests
+      }
+      if (isKiroIdcAccount.value) {
+        const profileArn = normalizeKiroProfileArn(editKiroProfileArn.value)
+        if (!profileArn) {
+          appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcProfileArn'))
+          submitting.value = false
+          return
+        }
+        newCredentials.profile_arn = profileArn
+        delete newCredentials.profileArn
       }
       if (!applyTempUnschedConfig(newCredentials)) {
         submitting.value = false

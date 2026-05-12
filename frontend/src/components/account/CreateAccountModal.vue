@@ -885,6 +885,16 @@
               />
             </div>
           </div>
+          <div v-if="kiroAuthType === 'idc'">
+            <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }} *</label>
+            <input
+              v-model="kiroProfileArn"
+              type="text"
+              class="input font-mono text-sm"
+              :placeholder="t('admin.accounts.kiro.profileArnPlaceholder')"
+            />
+            <p class="input-hint">{{ t('admin.accounts.kiro.profileArnHint') }}</p>
+          </div>
         </div>
 
         <!-- Batch Import -->
@@ -971,6 +981,15 @@
                 :placeholder="t('admin.accounts.kiro.defaultClientSecretHint')"
               />
             </div>
+          </div>
+          <div v-if="kiroAuthType === 'idc'">
+            <label class="input-label">{{ t('admin.accounts.kiro.defaultProfileArn') }}</label>
+            <input
+              v-model="kiroProfileArn"
+              type="text"
+              class="input font-mono text-sm"
+              :placeholder="t('admin.accounts.kiro.defaultProfileArnHint')"
+            />
           </div>
 
           <!-- Parsed tokens count -->
@@ -2156,13 +2175,15 @@ const kiroAuthType = ref<'social' | 'idc' | 'apikey'>('social') // Kiro auth typ
 const kiroInputMode = ref<'single' | 'batch'>('single') // Kiro input mode
 const kiroClientId = ref('') // For IdC auth
 const kiroClientSecret = ref('') // For IdC auth
+const kiroProfileArn = ref('') // For IdC auth
 const kiroApiKeyValue = ref('') // For apikey auth
 const kiroBaseUrl = ref('') // For apikey auth
 const kiroBatchJson = ref('') // For batch import
 const kiroIsDragging = ref(false) // For drag-drop
-const kiroParsedTokens = ref<Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }>>([])
+type KiroParsedToken = { refreshToken: string; clientId?: string; clientSecret?: string; profileArn?: string; name?: string; region?: string }
+const kiroParsedTokens = ref<KiroParsedToken[]>([])
 const kiroParseError = ref('')
-const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> }>>([])
+const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: KiroParsedToken[] }>>([])
 const tempUnschedEnabled = ref(false)
 // OpenAI batch import
 const openaiInputMode = ref<'single' | 'batch'>('single')
@@ -2600,6 +2621,7 @@ const resetForm = () => {
   kiroInputMode.value = 'single'
   kiroClientId.value = ''
   kiroClientSecret.value = ''
+  kiroProfileArn.value = ''
   kiroApiKeyValue.value = ''
   kiroBaseUrl.value = ''
   kiroBatchJson.value = ''
@@ -2652,6 +2674,13 @@ const handleKiroFileSelect = (e: Event) => {
   input.value = ''
 }
 
+const normalizeKiroProfileArn = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('arn:aws:codewhisperer:')) return undefined
+  return trimmed
+}
+
 const readKiroJsonFile = (file: File) => {
   if (!file.name.endsWith('.json')) {
     kiroParseError.value = t('admin.accounts.kiro.pleaseSelectJson')
@@ -2678,7 +2707,7 @@ const parseKiroJsonFileContent = (fileName: string, jsonText: string) => {
   try {
     const data = JSON.parse(jsonText)
     const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
-    const tokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> = []
+    const tokens: KiroParsedToken[] = []
 
     // Get existing refresh tokens for deduplication
     const existingTokens = new Set(kiroParsedTokens.value.map(t => t.refreshToken))
@@ -2696,6 +2725,7 @@ const parseKiroJsonFileContent = (fileName: string, jsonText: string) => {
           refreshToken: rt,
           clientId: item?.clientId || item?.client_id,
           clientSecret: item?.clientSecret || item?.client_secret,
+          profileArn: normalizeKiroProfileArn(item?.profileArn || item?.profile_arn || item?.arn),
           name: item?.name,
           region: item?.region
         })
@@ -2748,7 +2778,7 @@ const parseKiroBatchJson = () => {
   try {
     const data = JSON.parse(jsonText)
     const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
-    const newTokens: Array<{ refreshToken: string; clientId?: string; clientSecret?: string; name?: string; region?: string }> = []
+    const newTokens: KiroParsedToken[] = []
 
     // Get existing refresh tokens from uploaded files for deduplication
     const fileTokens = kiroUploadedFiles.value.flatMap(file => file.tokens)
@@ -2767,6 +2797,7 @@ const parseKiroBatchJson = () => {
           refreshToken: rt,
           clientId: item?.clientId || item?.client_id,
           clientSecret: item?.clientSecret || item?.client_secret,
+          profileArn: normalizeKiroProfileArn(item?.profileArn || item?.profile_arn || item?.arn),
           name: item?.name,
           region: item?.region
         })
@@ -3127,6 +3158,14 @@ const handleSubmit = async () => {
         appStore.showError(t('admin.accounts.kiro.pleaseParseFirst'))
         return
       }
+      if (kiroAuthType.value === 'idc') {
+        const defaultProfileArn = normalizeKiroProfileArn(kiroProfileArn.value)
+        const missingProfileArn = kiroParsedTokens.value.some(token => !(token.profileArn || defaultProfileArn))
+        if (missingProfileArn) {
+          appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcProfileArn'))
+          return
+        }
+      }
 
       // Batch name prefix (default to 'kiro_{date}' if not provided)
       const getDefaultBatchPrefix = () => {
@@ -3157,6 +3196,7 @@ const handleSubmit = async () => {
           if (kiroAuthType.value === 'idc') {
             credentials.client_id = token.clientId || kiroClientId.value.trim()
             credentials.client_secret = token.clientSecret || kiroClientSecret.value.trim()
+            credentials.profile_arn = token.profileArn || normalizeKiroProfileArn(kiroProfileArn.value)
           }
 
           // Add region if specified in token data
@@ -3215,6 +3255,11 @@ const handleSubmit = async () => {
         appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcCredentials'))
         return
       }
+      const profileArn = normalizeKiroProfileArn(kiroProfileArn.value)
+      if (!profileArn) {
+        appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcProfileArn'))
+        return
+      }
     }
 
     const credentials: Record<string, unknown> = {
@@ -3226,6 +3271,7 @@ const handleSubmit = async () => {
     if (kiroAuthType.value === 'idc') {
       credentials.client_id = kiroClientId.value.trim()
       credentials.client_secret = kiroClientSecret.value.trim()
+      credentials.profile_arn = normalizeKiroProfileArn(kiroProfileArn.value)
     }
 
     submitting.value = true

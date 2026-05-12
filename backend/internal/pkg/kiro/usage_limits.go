@@ -220,18 +220,31 @@ func NewUsageLimitsFetcher(client *http.Client) *UsageLimitsFetcher {
 	return &UsageLimitsFetcher{httpClient: client}
 }
 
-// FetchUsageLimits fetches usage limits from CodeWhisperer API
-func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, region, proxyURL string) (*UsageLimits, error) {
+// FetchUsageLimits fetches usage limits from the Kiro management API.
+//
+// Endpoint family selection:
+//   - ServiceEndpointFamilyKiro   -> management.<region>.kiro.dev/getUsageLimits
+//   - ServiceEndpointFamilyLegacy -> q.<region>.amazonaws.com/getUsageLimits
+//
+// profileArn: optional; when non-empty it is appended as a query parameter.
+// The new kiro.dev management endpoint rejects requests without profileArn
+// (HTTP 400 "Invalid profileArn.") for IdC/credential-scoped accounts.
+// Pass "" for builder-id / API-key accounts that do not have a profileArn.
+func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, region, proxyURL string, family ServiceEndpointFamily, profileArn string) (*UsageLimits, error) {
 	if region == "" {
-		region = "us-east-1"
+		region = DefaultRegion
 	}
+	family = resolveFamily(family)
 
 	// Build request URL
-	baseURL := fmt.Sprintf("https://q.%s.amazonaws.com/getUsageLimits", region)
+	baseURL := GetUsageLimitsURL(region, family)
 	params := url.Values{}
 	params.Add("isEmailRequired", "true")
 	params.Add("origin", "AI_EDITOR")
 	params.Add("resourceType", "AGENTIC_REQUEST")
+	if profileArn != "" {
+		params.Add("profileArn", profileArn)
+	}
 
 	requestURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
 
@@ -247,7 +260,7 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	machineID := GenerateRandomMachineID()
 	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/%s lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", osName, kiroVersion, machineID))
 	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroVersion, machineID))
-	req.Header.Set("Host", fmt.Sprintf("q.%s.amazonaws.com", region))
+	req.Header.Set("Host", ManagementHost(region, family))
 	req.Header.Set("Connection", "close")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
@@ -294,12 +307,17 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	return &limits, nil
 }
 
-// SetOverageStatus calls the AWS SetUserPreference API to enable or disable overage.
+// SetOverageStatus calls the SetUserPreference API to enable or disable overage.
 // This is equivalent to: POST / with X-Amz-Target: AmazonCodeWhispererService.SetUserPreference
-func (f *UsageLimitsFetcher) SetOverageStatus(ctx context.Context, accessToken, region, proxyURL string, enabled bool, profileArn string) error {
+//
+// Endpoint family selection:
+//   - ServiceEndpointFamilyKiro   -> POST management.<region>.kiro.dev/
+//   - ServiceEndpointFamilyLegacy -> POST q.<region>.amazonaws.com/
+func (f *UsageLimitsFetcher) SetOverageStatus(ctx context.Context, accessToken, region, proxyURL string, enabled bool, profileArn string, family ServiceEndpointFamily) error {
 	if region == "" {
-		region = "us-east-1"
+		region = DefaultRegion
 	}
+	family = resolveFamily(family)
 
 	status := "DISABLED"
 	if enabled {
@@ -322,7 +340,7 @@ func (f *UsageLimitsFetcher) SetOverageStatus(ctx context.Context, accessToken, 
 	}
 
 	// Build request URL — SetUserPreference uses POST to root path
-	requestURL := fmt.Sprintf("https://q.%s.amazonaws.com/", region)
+	requestURL := SetUserPreferenceURL(region, family)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -337,7 +355,7 @@ func (f *UsageLimitsFetcher) SetOverageStatus(ctx context.Context, accessToken, 
 	req.Header.Set("X-Amz-Target", "AmazonCodeWhispererService.SetUserPreference")
 	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/%s lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", osName, kiroVersion, machineID))
 	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroVersion, machineID))
-	req.Header.Set("Host", fmt.Sprintf("q.%s.amazonaws.com", region))
+	req.Header.Set("Host", ManagementHost(region, family))
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 	req.Header.Set("Authorization", "Bearer "+accessToken)

@@ -778,6 +778,22 @@ func (a *Account) IsKiroApiKey() bool {
 	return a.IsKiro() && a.GetKiroAuthType() == KiroAuthMethodAPIKey
 }
 
+// IsKiroSSOOIDC returns true for accounts that authenticate via AWS SSO OIDC
+// (builder-id or IdC). OIDC token refresh does not return profileArn; callers
+// must use a profile_arn captured from the matching Kiro profile/token data
+// when an upstream endpoint requires profileArn.
+func (a *Account) IsKiroSSOOIDC() bool {
+	if !a.IsKiro() {
+		return false
+	}
+	authType := a.GetKiroAuthType()
+	if authType == KiroAuthMethodIdC {
+		return true
+	}
+	// Also detect by presence of client_id + client_secret (SSO OIDC signature)
+	return a.GetCredential("client_id") != "" && a.GetCredential("client_secret") != ""
+}
+
 // GetKiroBaseURL 获取 Kiro apikey 账号的 base_url
 func (a *Account) GetKiroBaseURL() string {
 	if !a.IsKiroApiKey() {
@@ -843,7 +859,10 @@ func (a *Account) GetKiroProfileArn() string {
 	if !a.IsKiro() {
 		return ""
 	}
-	return a.GetCredential("profile_arn")
+	if profileArn := a.GetCredential("profile_arn"); profileArn != "" {
+		return profileArn
+	}
+	return a.GetCredential("profileArn")
 }
 
 // GetKiroPreferredEndpoint 获取 Kiro 账号的首选端点

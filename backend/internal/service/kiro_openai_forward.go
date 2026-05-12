@@ -92,18 +92,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	// 6. Transform to CodeWhisperer format
 	// Priority: in-memory cache (synchronous with token refresh) > account snapshot > database
-	profileArn := ""
-	if s.tokenProvider != nil {
-		profileArn = s.tokenProvider.GetProfileArn(account.ID)
-	}
-	if profileArn == "" {
-		profileArn = account.GetKiroProfileArn()
-	}
-	if profileArn == "" && s.accountRepo != nil {
-		freshAccount, err := s.accountRepo.GetByID(ctx, account.ID)
-		if err == nil && freshAccount != nil {
-			profileArn = freshAccount.GetKiroProfileArn()
-		}
+	profileArn, err := resolveKiroProfileArn(ctx, account, s.tokenProvider, s.accountRepo, prefix)
+	if err != nil {
+		return nil, err
 	}
 	_, reqBody, err := s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
 	if err != nil {
@@ -116,7 +107,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	// 7. Endpoint loop (reuse existing pattern)
-	endpoints := getKiroEndpoints(account)
+	endpoints := getKiroEndpoints(account, s.cfg)
 	machineID := s.resolveMachineID(account, freeTier)
 	kiroVersion := "0.11.107"
 

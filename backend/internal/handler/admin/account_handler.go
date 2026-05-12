@@ -1677,11 +1677,15 @@ func (h *AccountHandler) SetKiroOverage(c *gin.Context) {
 
 	// Get profile ARN and region
 	profileArn := account.GetKiroProfileArn()
+	if profileArn == "" && account.IsKiroSSOOIDC() {
+		response.BadRequest(c, "Kiro IdC account is missing profile_arn; import the matching profile ARN from Kiro profile.json or token JSON")
+		return
+	}
 	region := account.GetKiroRegion()
 
 	// Call SetUserPreference API
 	fetcher := kiro.NewUsageLimitsFetcher(nil)
-	if err := fetcher.SetOverageStatus(c.Request.Context(), accessToken, region, proxyURL, req.Enabled, profileArn); err != nil {
+	if err := fetcher.SetOverageStatus(c.Request.Context(), accessToken, region, proxyURL, req.Enabled, profileArn, ""); err != nil {
 		response.InternalError(c, "Failed to set overage status: "+err.Error())
 		return
 	}
