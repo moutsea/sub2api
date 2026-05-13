@@ -117,6 +117,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	// 拦截：openai 分组不支持 claude 系列模型
+	if isOpenAIGroupClaudeModelMismatch(apiKey.Group, reqModel) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("Model %q is not supported by the OpenAI group. Claude models require an Anthropic group. Please use an OpenAI-compatible model (e.g. gpt-5.5, gpt-5.4) or switch the API key group.", reqModel))
+		return
+	}
+
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
 

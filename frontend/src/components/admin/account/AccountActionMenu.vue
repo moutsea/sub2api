@@ -21,6 +21,10 @@
               {{ t('admin.accounts.refreshToken') }}
             </button>
           </template>
+          <button v-if="account.platform === 'openai' && account.type === 'oauth'" @click="$emit('dump-credentials', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-teal-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+            <Icon name="copy" size="sm" />
+            {{ t('admin.accounts.dumpCredentials') }}
+          </button>
           <div v-if="account.status === 'error' || isRateLimited || isOverloaded" class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
           <button v-if="account.status === 'error'" @click="$emit('reset-status', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-yellow-600 hover:bg-gray-100 dark:hover:bg-dark-700">
             <Icon name="sync" size="sm" />
@@ -43,7 +47,7 @@ import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
 
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
-defineEmits(['close', 'test', 'stats', 'reauth', 'refresh-token', 'reset-status', 'clear-rate-limit'])
+defineEmits(['close', 'test', 'stats', 'reauth', 'refresh-token', 'dump-credentials', 'reset-status', 'clear-rate-limit'])
 const { t } = useI18n()
 const isRateLimited = computed(() => props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date())
 const isOverloaded = computed(() => props.account?.overload_until && new Date(props.account.overload_until) > new Date())

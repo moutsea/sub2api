@@ -99,6 +99,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	// 拦截：openai 分组不支持 claude 系列模型
+	if isOpenAIGroupClaudeModelMismatch(apiKey.Group, reqModel) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("Model %q is not supported by the OpenAI group. Claude models require an Anthropic group. Please use an OpenAI-compatible model (e.g. gpt-5.5, gpt-5.4) or switch the API key group.", reqModel))
+		return
+	}
+
 	userAgent := c.GetHeader("User-Agent")
 	if !openai.IsCodexCLIRequest(userAgent) {
 		existingInstructions, _ := reqBody["instructions"].(string)
@@ -398,6 +405,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
+	// 拦截：openai 分组不支持 claude 系列模型
+	if isOpenAIGroupClaudeModelMismatch(apiKey.Group, reqModel) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("Model %q is not supported by the OpenAI group. Claude models require an Anthropic group. Please use an OpenAI-compatible model (e.g. gpt-5.5, gpt-5.4) or switch the API key group.", reqModel))
+		return
+	}
+
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
 	streamStarted := false
@@ -677,4 +691,14 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 			"message": message,
 		},
 	})
+}
+
+// isOpenAIGroupClaudeModelMismatch 检测是否将 claude 系列模型误发到 openai 分组。
+// openai 分组的账号仅支持 OpenAI 原生模型（gpt-* / o-*），
+// 将 claude-* 请求派发至 openai 分组必然无可用账号，提前拦截给出明确提示。
+func isOpenAIGroupClaudeModelMismatch(group *service.Group, model string) bool {
+	if group == nil || group.Platform != service.PlatformOpenAI {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-")
 }

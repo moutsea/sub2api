@@ -664,6 +664,99 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 	response.Success(c, dto.AccountFromService(updatedAccount))
 }
 
+// DumpCredentials handles dumping OpenAI OAuth account credentials as JSON
+// POST /api/v1/admin/accounts/:id/dump-credentials
+//
+// Returns the credential payload in the canonical Codex CLI format:
+//
+//	{
+//	  "user": {"id": "user-...", "email": "..."},
+//	  "account": {"id": "acc_..."},
+//	  "accessToken": "eyJ..."
+//	}
+//
+// Only OpenAI OAuth accounts are supported.
+func (h *AccountHandler) DumpCredentials(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	if !account.IsOpenAIOAuth() {
+		response.BadRequest(c, "Only OpenAI OAuth accounts support credential dump")
+		return
+	}
+
+	accessToken := account.GetOpenAIAccessToken()
+	if strings.TrimSpace(accessToken) == "" || account.IsOpenAITokenExpired() {
+		if h.openaiOAuthService == nil {
+			response.InternalError(c, "OpenAI OAuth service not configured")
+			return
+		}
+		if strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
+			response.BadRequest(c, "Account has no refresh token; re-authorize the account first")
+			return
+		}
+
+		tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(c.Request.Context(), account)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+
+		newCredentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+		for k, v := range account.Credentials {
+			if _, exists := newCredentials[k]; !exists {
+				newCredentials[k] = v
+			}
+		}
+
+		updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+			Credentials: newCredentials,
+		})
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		account = updatedAccount
+		accessToken = account.GetOpenAIAccessToken()
+
+		if h.tokenCacheInvalidator != nil {
+			if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(c.Request.Context(), updatedAccount); invalidateErr != nil {
+				c.Error(invalidateErr)
+			}
+		}
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		response.BadRequest(c, "Account has no access token; refresh the account first")
+		return
+	}
+
+	payload := gin.H{
+		"user": gin.H{
+			"id":    account.GetChatGPTUserID(),
+			"email": account.GetCredential("email"),
+		},
+		"account": gin.H{
+			"id": account.GetChatGPTAccountID(),
+		},
+		"accessToken": accessToken,
+	}
+
+	response.Success(c, payload)
+}
+
 // GetStats handles getting account statistics
 // GET /api/v1/admin/accounts/:id/stats
 func (h *AccountHandler) GetStats(c *gin.Context) {

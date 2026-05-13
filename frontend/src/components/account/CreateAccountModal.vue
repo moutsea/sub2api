@@ -950,9 +950,11 @@
             </div>
           </div>
 
-          <!-- Or paste JSON -->
+          <!-- Or paste JSON / Refresh Tokens -->
           <div>
-            <label class="input-label">{{ t('admin.accounts.kiro.orPasteJson') }}</label>
+            <label class="input-label">
+              {{ kiroAuthType === 'social' ? t('admin.accounts.kiro.orPasteJsonOrTokens') : t('admin.accounts.kiro.orPasteJson') }}
+            </label>
             <textarea
               v-model="kiroBatchJson"
               rows="4"
@@ -1015,7 +1017,7 @@
             :disabled="!kiroBatchJson.trim()"
             @click="parseKiroBatchJson"
           >
-            {{ t('admin.accounts.kiro.parseJson') }}
+            {{ kiroAuthType === 'social' ? t('admin.accounts.kiro.parseJsonOrTokens') : t('admin.accounts.kiro.parseJson') }}
           </button>
         </div>
 
@@ -2681,6 +2683,82 @@ const normalizeKiroProfileArn = (value: unknown): string | undefined => {
   return trimmed
 }
 
+const normalizeKiroRefreshTokenLine = (value: string): string => {
+  const trimmed = value.trim()
+  const withoutComma = trimmed.endsWith(',') ? trimmed.slice(0, -1).trim() : trimmed
+  if (
+    (withoutComma.startsWith('"') && withoutComma.endsWith('"')) ||
+    (withoutComma.startsWith("'") && withoutComma.endsWith("'"))
+  ) {
+    return withoutComma.slice(1, -1).trim()
+  }
+  return withoutComma
+}
+
+const appendUniqueKiroToken = (
+  tokens: KiroParsedToken[],
+  existingTokens: Set<string>,
+  refreshToken: unknown,
+  item?: Record<string, any>
+): boolean => {
+  if (typeof refreshToken !== 'string') return false
+  const rt = refreshToken.trim()
+  if (!rt || existingTokens.has(rt)) return false
+
+  existingTokens.add(rt)
+  tokens.push({
+    refreshToken: rt,
+    clientId: item?.clientId || item?.client_id,
+    clientSecret: item?.clientSecret || item?.client_secret,
+    profileArn: normalizeKiroProfileArn(item?.profileArn || item?.profile_arn || item?.arn),
+    name: item?.name,
+    region: item?.region
+  })
+  return true
+}
+
+const parseKiroJsonTokens = (jsonText: string, existingTokens: Set<string>): { tokens: KiroParsedToken[]; skippedCount: number } => {
+  const data = JSON.parse(jsonText)
+  const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
+  const tokens: KiroParsedToken[] = []
+  let skippedCount = 0
+
+  for (const item of items) {
+    const rt = typeof item === 'string'
+      ? item
+      : item?.refreshToken || item?.refresh_token || item?.RefreshToken
+    const added = appendUniqueKiroToken(
+      tokens,
+      existingTokens,
+      rt,
+      typeof item === 'object' && item !== null && !Array.isArray(item) ? item : undefined
+    )
+    if (!added && typeof rt === 'string' && rt.trim()) {
+      skippedCount++
+    }
+  }
+
+  return { tokens, skippedCount }
+}
+
+const parseKiroRefreshTokenLines = (text: string, existingTokens: Set<string>): { tokens: KiroParsedToken[]; skippedCount: number } => {
+  const tokens: KiroParsedToken[] = []
+  let skippedCount = 0
+
+  const lines = text
+    .split(/\r?\n/)
+    .map(normalizeKiroRefreshTokenLine)
+    .filter(Boolean)
+
+  for (const line of lines) {
+    if (!appendUniqueKiroToken(tokens, existingTokens, line)) {
+      skippedCount++
+    }
+  }
+
+  return { tokens, skippedCount }
+}
+
 const readKiroJsonFile = (file: File) => {
   if (!file.name.endsWith('.json')) {
     kiroParseError.value = t('admin.accounts.kiro.pleaseSelectJson')
@@ -2705,32 +2783,9 @@ const parseKiroJsonFileContent = (fileName: string, jsonText: string) => {
   }
 
   try {
-    const data = JSON.parse(jsonText)
-    const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
-    const tokens: KiroParsedToken[] = []
-
     // Get existing refresh tokens for deduplication
     const existingTokens = new Set(kiroParsedTokens.value.map(t => t.refreshToken))
-    let skippedCount = 0
-
-    for (const item of items) {
-      const rt = item?.refreshToken || item?.refresh_token || item?.RefreshToken
-      if (rt && typeof rt === 'string') {
-        if (existingTokens.has(rt)) {
-          skippedCount++
-          continue
-        }
-        existingTokens.add(rt)
-        tokens.push({
-          refreshToken: rt,
-          clientId: item?.clientId || item?.client_id,
-          clientSecret: item?.clientSecret || item?.client_secret,
-          profileArn: normalizeKiroProfileArn(item?.profileArn || item?.profile_arn || item?.arn),
-          name: item?.name,
-          region: item?.region
-        })
-      }
-    }
+    const { tokens, skippedCount } = parseKiroJsonTokens(jsonText, existingTokens)
 
     if (tokens.length === 0 && skippedCount === 0) {
       kiroParseError.value = t('admin.accounts.kiro.noValidTokens')
@@ -2776,33 +2831,15 @@ const parseKiroBatchJson = () => {
   }
 
   try {
-    const data = JSON.parse(jsonText)
-    const items = Array.isArray(data) ? data : Array.isArray(data?.tokens) ? data.tokens : [data]
-    const newTokens: KiroParsedToken[] = []
-
     // Get existing refresh tokens from uploaded files for deduplication
     const fileTokens = kiroUploadedFiles.value.flatMap(file => file.tokens)
     const existingTokens = new Set(fileTokens.map(t => t.refreshToken))
-    let skippedCount = 0
-
-    for (const item of items) {
-      const rt = item?.refreshToken || item?.refresh_token || item?.RefreshToken
-      if (rt && typeof rt === 'string') {
-        if (existingTokens.has(rt)) {
-          skippedCount++
-          continue
-        }
-        existingTokens.add(rt)
-        newTokens.push({
-          refreshToken: rt,
-          clientId: item?.clientId || item?.client_id,
-          clientSecret: item?.clientSecret || item?.client_secret,
-          profileArn: normalizeKiroProfileArn(item?.profileArn || item?.profile_arn || item?.arn),
-          name: item?.name,
-          region: item?.region
-        })
-      }
-    }
+    const looksLikeJson = jsonText.startsWith('{') || jsonText.startsWith('[')
+    const { tokens: newTokens, skippedCount } = looksLikeJson
+      ? parseKiroJsonTokens(jsonText, existingTokens)
+      : kiroAuthType.value === 'social'
+        ? parseKiroRefreshTokenLines(jsonText, existingTokens)
+        : parseKiroJsonTokens(jsonText, existingTokens)
 
     if (newTokens.length === 0 && skippedCount === 0) {
       kiroParseError.value = t('admin.accounts.kiro.noValidTokens')

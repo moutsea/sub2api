@@ -153,7 +153,7 @@
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="load" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @reauth="handleReAuth" @refresh-token="handleRefresh" @reset-status="handleResetStatus" @clear-rate-limit="handleClearRateLimit" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @reauth="handleReAuth" @refresh-token="handleRefresh" @dump-credentials="handleDumpCredentials" @reset-status="handleResetStatus" @clear-rate-limit="handleClearRateLimit" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <BulkEditAccountModal :show="showBulkEdit" :account-ids="selIds" :proxies="proxies" :groups="groups" @close="showBulkEdit = false" @updated="handleBulkUpdated" />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
@@ -168,6 +168,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
+import { useClipboard } from '@/composables/useClipboard'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
@@ -194,6 +195,7 @@ import type { Account, Proxy, AdminGroup } from '@/types'
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const { copyToClipboard } = useClipboard()
 
 const proxies = ref<Proxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -488,6 +490,17 @@ const handleTest = (a: Account) => { testingAcc.value = a; showTest.value = true
 const handleViewStats = (a: Account) => { statsAcc.value = a; showStats.value = true }
 const handleReAuth = (a: Account) => { reAuthAcc.value = a; showReAuth.value = true }
 const handleRefresh = async (a: Account) => { try { await adminAPI.accounts.refreshCredentials(a.id); load() } catch (error) { console.error('Failed to refresh credentials:', error) } }
+const handleDumpCredentials = async (a: Account) => {
+  try {
+    const payload = await adminAPI.accounts.dumpCredentials(a.id)
+    const json = JSON.stringify(payload, null, 2)
+    await copyToClipboard(json, t('admin.accounts.dumpCredentialsCopied'))
+    load()
+  } catch (error) {
+    console.error('Failed to dump credentials:', error)
+    appStore.showError(t('admin.accounts.dumpCredentialsFailed'))
+  }
+}
 const handleResetStatus = async (a: Account) => { try { await adminAPI.accounts.clearError(a.id); appStore.showSuccess(t('common.success')); load() } catch (error) { console.error('Failed to reset status:', error) } }
 const handleClearRateLimit = async (a: Account) => { try { await adminAPI.accounts.clearRateLimit(a.id); appStore.showSuccess(t('common.success')); load() } catch (error) { console.error('Failed to clear rate limit:', error) } }
 const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.value = true }

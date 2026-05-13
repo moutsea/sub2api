@@ -127,6 +127,25 @@ export async function refreshCredentials(id: number): Promise<Account> {
 }
 
 /**
+ * Dump OpenAI OAuth account credentials in the Codex CLI format.
+ * Shape: { user: { id, email }, account: { id }, accessToken }
+ * @param id - Account ID (must be an OpenAI OAuth account)
+ * @returns Credential payload
+ */
+export async function dumpCredentials(id: number): Promise<{
+  user: { id: string; email: string }
+  account: { id: string }
+  accessToken: string
+}> {
+  const { data } = await apiClient.post<{
+    user: { id: string; email: string }
+    account: { id: string }
+    accessToken: string
+  }>(`/admin/accounts/${id}/dump-credentials`)
+  return data
+}
+
+/**
  * Get account usage statistics
  * @param id - Account ID
  * @param days - Number of days (default: 30)
@@ -386,6 +405,7 @@ export const accountsAPI = {
   toggleStatus,
   testAccount,
   refreshCredentials,
+  dumpCredentials,
   getStats,
   clearError,
   getUsage,
