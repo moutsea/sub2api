@@ -520,7 +520,7 @@ watch(authCodeInput, (newVal) => {
       const url = new URL(trimmed)
       const code = url.searchParams.get('code')
       const stateParam = url.searchParams.get('state')
-      if ((props.platform === 'gemini' || props.platform === 'antigravity') && stateParam) {
+      if (stateParam) {
         oauthState.value = stateParam
       }
       if (code && code !== trimmed) {
@@ -531,8 +531,8 @@ watch(authCodeInput, (newVal) => {
       // If URL parsing fails, try regex extraction
       const match = trimmed.match(/[?&]code=([^&]+)/)
       const stateMatch = trimmed.match(/[?&]state=([^&]+)/)
-      if ((props.platform === 'gemini' || props.platform === 'antigravity') && stateMatch && stateMatch[1]) {
-        oauthState.value = stateMatch[1]
+      if (stateMatch && stateMatch[1]) {
+        oauthState.value = decodeURIComponent(stateMatch[1])
       }
       if (match && match[1] && match[1] !== trimmed) {
         authCodeInput.value = match[1]

@@ -353,7 +353,8 @@ const handleExchangeCode = async () => {
     const tokenInfo = await openaiOAuth.exchangeAuthCode(
       authCode.trim(),
       sessionId,
-      props.account.proxy_id
+      props.account.proxy_id,
+      oauthFlowRef.value?.oauthState || openaiOAuth.oauthState.value
     )
     if (!tokenInfo) return
 

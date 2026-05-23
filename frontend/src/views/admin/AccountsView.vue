@@ -67,7 +67,16 @@
             <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
           </template>
           <template #cell-platform_type="{ row }">
-            <PlatformTypeBadge :platform="row.platform" :type="row.type" />
+            <div class="flex flex-col items-start gap-1">
+              <PlatformTypeBadge :platform="row.platform" :type="row.type" />
+              <span
+                v-if="getOpenAIPlanType(row)"
+                class="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                :title="`OpenAI plan: ${getOpenAIPlanType(row)}`"
+              >
+                {{ getOpenAIPlanType(row) }}
+              </span>
+            </div>
           </template>
           <template #cell-capacity="{ row }">
             <AccountCapacityCell :account="row" />
@@ -263,6 +272,12 @@ const { items: accounts, loading, params, pagination, load, reload, debouncedRel
   fetchFn: adminAPI.accounts.list,
   initialParams: { platform: '', type: '', status: '', search: '' }
 })
+
+const getOpenAIPlanType = (account: Account) => {
+  if (account.platform !== 'openai' || account.type !== 'oauth') return ''
+  const planType = account.credentials?.plan_type
+  return typeof planType === 'string' ? planType.trim() : ''
+}
 
 // Kiro states refresh
 const refreshingKiro = ref(false)

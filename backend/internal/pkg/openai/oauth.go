@@ -17,6 +17,8 @@ import (
 const (
 	// OAuth Client ID for OpenAI (Codex CLI official)
 	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+	// ChatGPTMobileClientID is used by some externally obtained refresh tokens.
+	ChatGPTMobileClientID = "app_LlGpXReQgckcGGUo2JrYvtJK"
 
 	// OAuth endpoints
 	AuthorizeURL = "https://auth.openai.com/oauth/authorize"
@@ -34,10 +36,25 @@ const (
 	SessionTTL = 30 * time.Minute
 )
 
+// NormalizeClientID returns a supported OpenAI OAuth client_id.
+func NormalizeClientID(clientID string) (string, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return ClientID, nil
+	}
+	switch clientID {
+	case ClientID, ChatGPTMobileClientID:
+		return clientID, nil
+	default:
+		return "", fmt.Errorf("unsupported OpenAI OAuth client_id")
+	}
+}
+
 // OAuthSession stores OAuth flow state for OpenAI
 type OAuthSession struct {
 	State        string    `json:"state"`
 	CodeVerifier string    `json:"code_verifier"`
+	ClientID     string    `json:"client_id,omitempty"`
 	ProxyURL     string    `json:"proxy_url,omitempty"`
 	RedirectURI  string    `json:"redirect_uri"`
 	CreatedAt    time.Time `json:"created_at"`

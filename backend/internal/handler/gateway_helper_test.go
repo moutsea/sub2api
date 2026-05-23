@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 // TestWrapReleaseOnDone_NoGoroutineLeak 验证 wrapReleaseOnDone 修复后不会泄露 goroutine
@@ -43,6 +46,61 @@ func TestWrapReleaseOnDone_NoGoroutineLeak(t *testing.T) {
 	if finalGoroutines > initialGoroutines+2 {
 		t.Errorf("goroutine leak detected: initial=%d, final=%d, leaked=%d",
 			initialGoroutines, finalGoroutines, finalGoroutines-initialGoroutines)
+	}
+}
+
+func TestApplyKiroOpus47GroupDowngrade_RewritesModelOnlyForEnabledKiroGroup(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	group := &service.Group{Platform: service.PlatformKiro, KiroOpus47Downgrade: true}
+
+	model, rewrittenBody, downgraded, err := applyKiroOpus47GroupDowngrade(group, "claude-opus-4-7", body)
+	if err != nil {
+		t.Fatalf("applyKiroOpus47GroupDowngrade error: %v", err)
+	}
+	if !downgraded {
+		t.Fatal("expected downgrade")
+	}
+	if model != "claude-opus-4-6" {
+		t.Fatalf("model = %q, want claude-opus-4-6", model)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rewrittenBody, &payload); err != nil {
+		t.Fatalf("rewritten body is invalid JSON: %v", err)
+	}
+	if payload["model"] != "claude-opus-4-6" {
+		t.Fatalf("rewritten model = %v, want claude-opus-4-6", payload["model"])
+	}
+	if payload["stream"] != true {
+		t.Fatalf("stream field was not preserved: %v", payload["stream"])
+	}
+
+	model, rewrittenBody, downgraded, err = applyKiroOpus47GroupDowngrade(
+		&service.Group{Platform: service.PlatformAnthropic, KiroOpus47Downgrade: true},
+		"claude-opus-4-7",
+		body,
+	)
+	if err != nil {
+		t.Fatalf("applyKiroOpus47GroupDowngrade error: %v", err)
+	}
+	if downgraded {
+		t.Fatal("did not expect downgrade for non-Kiro group")
+	}
+	if model != "claude-opus-4-7" || string(rewrittenBody) != string(body) {
+		t.Fatal("non-Kiro request should remain unchanged")
+	}
+}
+
+func TestApplyKiroOpus47GroupDowngrade_ReturnsErrorForInvalidJSON(t *testing.T) {
+	group := &service.Group{Platform: service.PlatformKiro, KiroOpus47Downgrade: true}
+
+	_, _, downgraded, err := applyKiroOpus47GroupDowngrade(group, "claude-opus-4-7", []byte(`{"model":`))
+
+	if err == nil {
+		t.Fatal("expected rewrite error")
+	}
+	if downgraded {
+		t.Fatal("invalid JSON must not be reported as downgraded")
 	}
 }
 

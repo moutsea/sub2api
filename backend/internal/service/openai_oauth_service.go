@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -10,17 +11,19 @@ import (
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore *openai.SessionStore
-	proxyRepo    ProxyRepository
-	oauthClient  OpenAIOAuthClient
+	sessionStore             *openai.SessionStore
+	proxyRepo                ProxyRepository
+	oauthClient              OpenAIOAuthClient
+	accountInfoClientFactory openAIAccountInfoClientFactory
 }
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
-		proxyRepo:    proxyRepo,
-		oauthClient:  oauthClient,
+		sessionStore:             openai.NewSessionStore(),
+		proxyRepo:                proxyRepo,
+		oauthClient:              oauthClient,
+		accountInfoClientFactory: defaultOpenAIAccountInfoClient,
 	}
 }
 
@@ -69,6 +72,7 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 	session := &openai.OAuthSession{
 		State:        state,
 		CodeVerifier: codeVerifier,
+		ClientID:     openai.ClientID,
 		RedirectURI:  redirectURI,
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
@@ -88,6 +92,7 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 type OpenAIExchangeCodeInput struct {
 	SessionID   string
 	Code        string
+	State       string
 	RedirectURI string
 	ProxyID     *int64
 }
@@ -99,10 +104,12 @@ type OpenAITokenInfo struct {
 	IDToken          string `json:"id_token,omitempty"`
 	ExpiresIn        int64  `json:"expires_in"`
 	ExpiresAt        int64  `json:"expires_at"`
+	ClientID         string `json:"client_id,omitempty"`
 	Email            string `json:"email,omitempty"`
 	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
 	ChatGPTUserID    string `json:"chatgpt_user_id,omitempty"`
 	OrganizationID   string `json:"organization_id,omitempty"`
+	PlanType         string `json:"plan_type,omitempty"`
 }
 
 // ExchangeCode exchanges authorization code for tokens
@@ -111,6 +118,12 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
 		return nil, fmt.Errorf("session not found or expired")
+	}
+	if strings.TrimSpace(input.State) == "" {
+		return nil, fmt.Errorf("state is required")
+	}
+	if strings.TrimSpace(input.State) != session.State {
+		return nil, fmt.Errorf("state mismatch")
 	}
 
 	// Get proxy URL
@@ -127,9 +140,15 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	if input.RedirectURI != "" {
 		redirectURI = input.RedirectURI
 	}
+	clientID := strings.TrimSpace(session.ClientID)
+	normalizedClientID, err := openai.NormalizeClientID(clientID)
+	if err != nil {
+		return nil, err
+	}
+	clientID = normalizedClientID
 
 	// Exchange code for token
-	tokenResp, err := s.oauthClient.ExchangeCode(ctx, input.Code, session.CodeVerifier, redirectURI, proxyURL)
+	tokenResp, err := s.oauthClient.ExchangeCode(ctx, input.Code, session.CodeVerifier, redirectURI, proxyURL, clientID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
@@ -152,6 +171,7 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ClientID:     clientID,
 	}
 
 	if userInfo != nil {
@@ -160,13 +180,24 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		tokenInfo.ChatGPTUserID = userInfo.ChatGPTUserID
 		tokenInfo.OrganizationID = userInfo.OrganizationID
 	}
+	s.enrichPlanType(ctx, tokenInfo, proxyURL)
 
 	return tokenInfo, nil
 }
 
 // RefreshToken refreshes an OpenAI OAuth token
 func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken string, proxyURL string) (*OpenAITokenInfo, error) {
-	tokenResp, err := s.oauthClient.RefreshToken(ctx, refreshToken, proxyURL)
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, "")
+}
+
+// RefreshTokenWithClientID refreshes an OpenAI OAuth token with the client_id that issued it.
+func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refreshToken string, proxyURL string, clientID string) (*OpenAITokenInfo, error) {
+	clientID = strings.TrimSpace(clientID)
+	normalizedClientID, err := openai.NormalizeClientID(clientID)
+	if err != nil {
+		return nil, err
+	}
+	tokenResp, err := s.oauthClient.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, normalizedClientID)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +218,7 @@ func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken stri
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
 	}
+	tokenInfo.ClientID = normalizedClientID
 
 	if userInfo != nil {
 		tokenInfo.Email = userInfo.Email
@@ -194,6 +226,7 @@ func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken stri
 		tokenInfo.ChatGPTUserID = userInfo.ChatGPTUserID
 		tokenInfo.OrganizationID = userInfo.OrganizationID
 	}
+	s.enrichPlanType(ctx, tokenInfo, proxyURL)
 
 	return tokenInfo, nil
 }
@@ -217,7 +250,7 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		}
 	}
 
-	return s.RefreshToken(ctx, refreshToken, proxyURL)
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, account.GetCredential("client_id"))
 }
 
 // BuildAccountCredentials builds credentials map from token info
@@ -225,9 +258,11 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	expiresAt := time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
 
 	creds := map[string]any{
-		"access_token":  tokenInfo.AccessToken,
-		"refresh_token": tokenInfo.RefreshToken,
-		"expires_at":    expiresAt,
+		"access_token": tokenInfo.AccessToken,
+		"expires_at":   expiresAt,
+	}
+	if strings.TrimSpace(tokenInfo.RefreshToken) != "" {
+		creds["refresh_token"] = tokenInfo.RefreshToken
 	}
 
 	if tokenInfo.IDToken != "" {
@@ -245,8 +280,28 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	if tokenInfo.OrganizationID != "" {
 		creds["organization_id"] = tokenInfo.OrganizationID
 	}
+	if strings.TrimSpace(tokenInfo.ClientID) != "" {
+		creds["client_id"] = strings.TrimSpace(tokenInfo.ClientID)
+	}
+	if strings.TrimSpace(tokenInfo.PlanType) != "" {
+		creds["plan_type"] = strings.TrimSpace(tokenInfo.PlanType)
+	}
 
 	return creds
+}
+
+func (s *OpenAIOAuthService) enrichPlanType(ctx context.Context, tokenInfo *OpenAITokenInfo, proxyURL string) {
+	if tokenInfo == nil || strings.TrimSpace(tokenInfo.AccessToken) == "" || strings.TrimSpace(tokenInfo.PlanType) != "" {
+		return
+	}
+
+	clientFactory := s.accountInfoClientFactory
+	if clientFactory == nil {
+		clientFactory = defaultOpenAIAccountInfoClient
+	}
+	if planType := fetchChatGPTAccountPlanType(ctx, clientFactory, tokenInfo.AccessToken, proxyURL, tokenInfo.OrganizationID); planType != "" {
+		tokenInfo.PlanType = planType
+	}
 }
 
 // Stop stops the session store cleanup goroutine

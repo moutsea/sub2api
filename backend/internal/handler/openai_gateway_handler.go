@@ -412,6 +412,17 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
+	if effectiveModel, effectiveBody, downgraded, rewriteErr := applyKiroOpus47GroupDowngrade(apiKey.Group, reqModel, body); rewriteErr != nil {
+		log.Printf("[OpenAI CC Handler] kiro_opus_47_downgrade rewrite failed group_id=%d model=%s error=%v", apiKey.Group.ID, reqModel, rewriteErr)
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "failed to rewrite downgraded model request")
+		return
+	} else if downgraded {
+		log.Printf("[OpenAI CC Handler] kiro_opus_47_downgrade group_id=%d model=%s -> %s", apiKey.Group.ID, reqModel, effectiveModel)
+		reqModel = effectiveModel
+		reqBody["model"] = effectiveModel
+		body = effectiveBody
+	}
+
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
 	streamStarted := false

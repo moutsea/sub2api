@@ -20,16 +20,20 @@ type openaiOAuthService struct {
 	tokenURL string
 }
 
-func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL string) (*openai.TokenResponse, error) {
+func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
 	client := createOpenAIReqClient(proxyURL)
 
 	if redirectURI == "" {
 		redirectURI = openai.DefaultRedirectURI
 	}
+	clientID, err := openai.NormalizeClientID(clientID)
+	if err != nil {
+		return nil, err
+	}
 
 	formData := url.Values{}
 	formData.Set("grant_type", "authorization_code")
-	formData.Set("client_id", openai.ClientID)
+	formData.Set("client_id", clientID)
 	formData.Set("code", code)
 	formData.Set("redirect_uri", redirectURI)
 	formData.Set("code_verifier", codeVerifier)
@@ -54,12 +58,20 @@ func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifie
 }
 
 func (s *openaiOAuthService) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*openai.TokenResponse, error) {
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, "")
+}
+
+func (s *openaiOAuthService) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL, clientID string) (*openai.TokenResponse, error) {
 	client := createOpenAIReqClient(proxyURL)
+	clientID, err := openai.NormalizeClientID(clientID)
+	if err != nil {
+		return nil, err
+	}
 
 	formData := url.Values{}
 	formData.Set("grant_type", "refresh_token")
 	formData.Set("refresh_token", refreshToken)
-	formData.Set("client_id", openai.ClientID)
+	formData.Set("client_id", clientID)
 	formData.Set("scope", openai.RefreshScopes)
 
 	var tokenResp openai.TokenResponse

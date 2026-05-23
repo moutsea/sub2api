@@ -886,7 +886,7 @@
             </div>
           </div>
           <div v-if="kiroAuthType === 'idc'">
-            <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }} *</label>
+            <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
             <input
               v-model="kiroProfileArn"
               type="text"
@@ -2182,7 +2182,7 @@ const kiroApiKeyValue = ref('') // For apikey auth
 const kiroBaseUrl = ref('') // For apikey auth
 const kiroBatchJson = ref('') // For batch import
 const kiroIsDragging = ref(false) // For drag-drop
-type KiroParsedToken = { refreshToken: string; clientId?: string; clientSecret?: string; profileArn?: string; name?: string; region?: string }
+type KiroParsedToken = { refreshToken: string; clientId?: string; clientSecret?: string; profileArn?: string; provider?: string; name?: string; region?: string }
 const kiroParsedTokens = ref<KiroParsedToken[]>([])
 const kiroParseError = ref('')
 const kiroUploadedFiles = ref<Array<{ name: string; tokenCount: number; tokens: KiroParsedToken[] }>>([])
@@ -2676,6 +2676,29 @@ const handleKiroFileSelect = (e: Event) => {
   input.value = ''
 }
 
+const KIRO_BUILDER_ID_PROFILE_ARN = 'arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX'
+
+const isBuilderIdProvider = (provider?: string): boolean => {
+  if (typeof provider !== 'string') return false
+  return provider.trim().toLowerCase() === 'builderid'
+}
+
+// resolveKiroIdcProfileArn picks the profile_arn used when an account is added
+// through the IdC entrypoint. Builder ID accounts always map to the fixed Kiro
+// hardcoded ARN; otherwise we honor the per-token value, then the user-supplied
+// default, finally falling back to the Builder ID ARN so the request never goes
+// out empty (downstream APIs reject empty profile_arn for IdC accounts).
+const resolveKiroIdcProfileArn = (
+  tokenProfileArn: string | undefined,
+  tokenProvider: string | undefined,
+  defaultProfileArn: string | undefined
+): string => {
+  if (isBuilderIdProvider(tokenProvider)) return KIRO_BUILDER_ID_PROFILE_ARN
+  if (tokenProfileArn) return tokenProfileArn
+  if (defaultProfileArn) return defaultProfileArn
+  return KIRO_BUILDER_ID_PROFILE_ARN
+}
+
 const normalizeKiroProfileArn = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
@@ -2711,6 +2734,11 @@ const appendUniqueKiroToken = (
     clientId: item?.clientId || item?.client_id,
     clientSecret: item?.clientSecret || item?.client_secret,
     profileArn: normalizeKiroProfileArn(item?.profileArn || item?.profile_arn || item?.arn),
+    provider: typeof item?.provider === 'string'
+      ? item.provider
+      : typeof item?.Provider === 'string'
+        ? item.Provider
+        : undefined,
     name: item?.name,
     region: item?.region
   })
@@ -3195,14 +3223,11 @@ const handleSubmit = async () => {
         appStore.showError(t('admin.accounts.kiro.pleaseParseFirst'))
         return
       }
-      if (kiroAuthType.value === 'idc') {
-        const defaultProfileArn = normalizeKiroProfileArn(kiroProfileArn.value)
-        const missingProfileArn = kiroParsedTokens.value.some(token => !(token.profileArn || defaultProfileArn))
-        if (missingProfileArn) {
-          appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcProfileArn'))
-          return
-        }
-      }
+      // IdC profile_arn is no longer required up-front: resolveKiroIdcProfileArn
+      // falls back to the Builder ID default ARN when the token JSON has no
+      // valid profileArn and the user did not supply a default. Builder ID /
+      // Github / Google providers always map to the hardcoded official ARN.
+      const defaultProfileArn = normalizeKiroProfileArn(kiroProfileArn.value)
 
       // Batch name prefix (default to 'kiro_{date}' if not provided)
       const getDefaultBatchPrefix = () => {
@@ -3233,7 +3258,7 @@ const handleSubmit = async () => {
           if (kiroAuthType.value === 'idc') {
             credentials.client_id = token.clientId || kiroClientId.value.trim()
             credentials.client_secret = token.clientSecret || kiroClientSecret.value.trim()
-            credentials.profile_arn = token.profileArn || normalizeKiroProfileArn(kiroProfileArn.value)
+            credentials.profile_arn = resolveKiroIdcProfileArn(token.profileArn, token.provider, defaultProfileArn)
           }
 
           // Add region if specified in token data
@@ -3292,11 +3317,9 @@ const handleSubmit = async () => {
         appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcCredentials'))
         return
       }
-      const profileArn = normalizeKiroProfileArn(kiroProfileArn.value)
-      if (!profileArn) {
-        appStore.showError(t('admin.accounts.kiro.pleaseEnterIdcProfileArn'))
-        return
-      }
+      // profile_arn is optional now: an empty value falls back to the Builder ID
+      // default ARN inside resolveKiroIdcProfileArn (and the backend re-applies
+      // the same fallback). Only client_id/client_secret remain mandatory.
     }
 
     const credentials: Record<string, unknown> = {
@@ -3308,7 +3331,7 @@ const handleSubmit = async () => {
     if (kiroAuthType.value === 'idc') {
       credentials.client_id = kiroClientId.value.trim()
       credentials.client_secret = kiroClientSecret.value.trim()
-      credentials.profile_arn = normalizeKiroProfileArn(kiroProfileArn.value)
+      credentials.profile_arn = resolveKiroIdcProfileArn(undefined, undefined, normalizeKiroProfileArn(kiroProfileArn.value))
     }
 
     submitting.value = true
@@ -3470,7 +3493,8 @@ const handleOpenAIExchange = async (authCode: string) => {
     const tokenInfo = await openaiOAuth.exchangeAuthCode(
       authCode.trim(),
       openaiOAuth.sessionId.value,
-      form.proxy_id
+      form.proxy_id,
+      oauthFlowRef.value?.oauthState || openaiOAuth.oauthState.value
     )
     if (!tokenInfo) return
 

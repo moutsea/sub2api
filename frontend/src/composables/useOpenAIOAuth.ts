@@ -5,6 +5,7 @@ import { adminAPI } from '@/api/admin'
 export interface OpenAITokenInfo {
   access_token?: string
   refresh_token?: string
+  client_id?: string
   id_token?: string
   token_type?: string
   expires_in?: number
@@ -16,6 +17,7 @@ export interface OpenAITokenInfo {
   chatgpt_account_id?: string
   chatgpt_user_id?: string
   organization_id?: string
+  plan_type?: string
   [key: string]: unknown
 }
 
@@ -25,6 +27,7 @@ export function useOpenAIOAuth() {
   // State
   const authUrl = ref('')
   const sessionId = ref('')
+  const oauthState = ref('')
   const loading = ref(false)
   const error = ref('')
 
@@ -32,6 +35,7 @@ export function useOpenAIOAuth() {
   const resetState = () => {
     authUrl.value = ''
     sessionId.value = ''
+    oauthState.value = ''
     loading.value = false
     error.value = ''
   }
@@ -44,6 +48,7 @@ export function useOpenAIOAuth() {
     loading.value = true
     authUrl.value = ''
     sessionId.value = ''
+    oauthState.value = ''
     error.value = ''
 
     try {
@@ -61,6 +66,7 @@ export function useOpenAIOAuth() {
       )
       authUrl.value = response.auth_url
       sessionId.value = response.session_id
+      oauthState.value = extractStateFromUrl(response.auth_url)
       return true
     } catch (err: any) {
       error.value = err.response?.data?.detail || 'Failed to generate OpenAI auth URL'
@@ -75,10 +81,12 @@ export function useOpenAIOAuth() {
   const exchangeAuthCode = async (
     code: string,
     currentSessionId: string,
-    proxyId?: number | null
+    proxyId?: number | null,
+    state?: string
   ): Promise<OpenAITokenInfo | null> => {
-    if (!code.trim() || !currentSessionId) {
-      error.value = 'Missing auth code or session ID'
+    const stateToUse = (state || oauthState.value).trim()
+    if (!code.trim() || !currentSessionId || !stateToUse) {
+      error.value = 'Missing auth code, session ID, or state'
       return null
     }
 
@@ -86,9 +94,10 @@ export function useOpenAIOAuth() {
     error.value = ''
 
     try {
-      const payload: { session_id: string; code: string; proxy_id?: number } = {
+      const payload: { session_id: string; code: string; state: string; proxy_id?: number } = {
         session_id: currentSessionId,
-        code: code.trim()
+        code: code.trim(),
+        state: stateToUse
       }
       if (proxyId) {
         payload.proxy_id = proxyId
@@ -109,11 +118,17 @@ export function useOpenAIOAuth() {
   const buildCredentials = (tokenInfo: OpenAITokenInfo): Record<string, unknown> => {
     const creds: Record<string, unknown> = {
       access_token: tokenInfo.access_token,
-      refresh_token: tokenInfo.refresh_token,
       token_type: tokenInfo.token_type,
       expires_in: tokenInfo.expires_in,
       expires_at: tokenInfo.expires_at,
       scope: tokenInfo.scope
+    }
+
+    if (tokenInfo.refresh_token) {
+      creds.refresh_token = tokenInfo.refresh_token
+    }
+    if (tokenInfo.client_id) {
+      creds.client_id = tokenInfo.client_id
     }
 
     // Include OpenAI specific IDs (required for forwarding)
@@ -125,6 +140,9 @@ export function useOpenAIOAuth() {
     }
     if (tokenInfo.organization_id) {
       creds.organization_id = tokenInfo.organization_id
+    }
+    if (tokenInfo.plan_type) {
+      creds.plan_type = tokenInfo.plan_type
     }
 
     return creds
@@ -146,6 +164,7 @@ export function useOpenAIOAuth() {
     // State
     authUrl,
     sessionId,
+    oauthState,
     loading,
     error,
     // Methods
@@ -154,5 +173,14 @@ export function useOpenAIOAuth() {
     exchangeAuthCode,
     buildCredentials,
     buildExtraInfo
+  }
+}
+
+const extractStateFromUrl = (url: string): string => {
+  try {
+    return new URL(url).searchParams.get('state') || ''
+  } catch {
+    const match = url.match(/[?&]state=([^&]+)/)
+    return match?.[1] ? decodeURIComponent(match[1]) : ''
   }
 }

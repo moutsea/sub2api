@@ -34,6 +34,35 @@ func SetClaudeCodeClientContext(c *gin.Context, body []byte) {
 	c.Request = c.Request.WithContext(ctx)
 }
 
+func applyKiroOpus47GroupDowngrade(group *service.Group, requestedModel string, body []byte) (string, []byte, bool, error) {
+	effectiveModel, downgraded := service.DowngradeKiroOpus47Model(group, requestedModel)
+	if !downgraded {
+		return requestedModel, body, false, nil
+	}
+	rewritten, err := replaceTopLevelJSONModel(body, effectiveModel)
+	if err != nil {
+		return requestedModel, body, false, err
+	}
+	return effectiveModel, rewritten, true, nil
+}
+
+func replaceTopLevelJSONModel(body []byte, model string) ([]byte, error) {
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("parse request body: %w", err)
+	}
+	modelBytes, err := json.Marshal(model)
+	if err != nil {
+		return nil, fmt.Errorf("serialize model: %w", err)
+	}
+	req["model"] = modelBytes
+	newBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("serialize request body: %w", err)
+	}
+	return newBody, nil
+}
+
 // 并发槽位等待相关常量
 //
 // 性能优化说明：
