@@ -9,6 +9,59 @@ func TestGetModelIDMapsOpus47ToOpus47(t *testing.T) {
 	}
 }
 
+func TestGetModelIDMapsKiroOAuthModels(t *testing.T) {
+	tests := map[string]string{
+		"auto":                  "auto",
+		"deepseek-3.2":          "deepseek-3.2",
+		"deepseek-v3.2":         "deepseek-3.2",
+		"glm-5":                 "glm-5",
+		"minimax-m2.5":          "minimax-m2.5",
+		"minimax-m2.1":          "minimax-m2.1",
+		"qwen3-coder-next":      "qwen3-coder-next",
+		"qwen3-coder-480b-a35b": "qwen3-coder-next",
+		"claude-sonnet-4":       "claude-sonnet-4",
+		"claude-sonnet-4.5":     "claude-sonnet-4.5",
+		"claude-opus-4.7":       "claude-opus-4.7",
+	}
+	for model, want := range tests {
+		if got := GetModelID(model); got != want {
+			t.Fatalf("GetModelID(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+func TestIsOAuthModelSupported(t *testing.T) {
+	tests := map[string]bool{
+		"auto":                     true,
+		"deepseek-3.2":             true,
+		"glm-5":                    true,
+		"qwen3-coder-next":         true,
+		"claude-opus-4-6-thinking": true,
+		"deepseek-3.2-thinking":    false,
+		"unsupported-future-model": false,
+	}
+	for model, want := range tests {
+		if got := IsOAuthModelSupported(model); got != want {
+			t.Fatalf("IsOAuthModelSupported(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
+func TestGetContextWindowLimitForKiroOAuthModels(t *testing.T) {
+	tests := map[string]int{
+		"deepseek-3.2":     KiroContextWindowLimit128K,
+		"glm-5":            KiroContextWindowLimit,
+		"minimax-m2.5":     KiroContextWindowLimit,
+		"qwen3-coder-next": KiroContextWindowLimit256K,
+		"claude-opus-4.7":  KiroContextWindowLimit1M,
+	}
+	for model, want := range tests {
+		if got := GetContextWindowLimit(model); got != want {
+			t.Fatalf("GetContextWindowLimit(%q) = %d, want %d", model, got, want)
+		}
+	}
+}
+
 func TestGetModelIDThinkingSuffix(t *testing.T) {
 	tests := map[string]string{
 		"claude-opus-4-6-thinking":            "claude-opus-4.6",

@@ -23,14 +23,15 @@ import (
 const (
 	PaymentProviderStripe = "stripe"
 
-	PaymentMethodAlipay   = "alipay"
-	PaymentMethodWechat   = "wechat_pay"
-	PaymentCurrencyCNY    = "cny"
-	PaymentStatusCreated  = "created"
-	PaymentStatusPending  = "pending"
-	PaymentStatusPaid     = "paid"
-	PaymentStatusFailed   = "failed"
-	PaymentStatusMismatch = "amount_mismatch"
+	PaymentMethodStripeCheckout = "stripe_checkout"
+	PaymentMethodAlipay         = "alipay"
+	PaymentMethodWechat         = "wechat_pay"
+	PaymentCurrencyCNY          = "cny"
+	PaymentStatusCreated        = "created"
+	PaymentStatusPending        = "pending"
+	PaymentStatusPaid           = "paid"
+	PaymentStatusFailed         = "failed"
+	PaymentStatusMismatch       = "amount_mismatch"
 
 	stripeSignatureTolerance = 5 * time.Minute
 )
@@ -56,6 +57,8 @@ type PaymentOrder struct {
 	StripeEventID         string
 	Status                string
 	CheckoutURL           string
+	BalanceBefore         float64
+	BalanceAfter          float64
 	ExpiresAt             *time.Time
 	PaidAt                *time.Time
 	CreditedAt            *time.Time
@@ -80,14 +83,15 @@ type CreateCheckoutSessionResult struct {
 }
 
 type StripeCheckoutSessionParams struct {
-	OrderID       string
-	UserID        int64
-	Amount        float64
-	AmountCents   int64
-	Currency      string
-	PaymentMethod string
-	SuccessURL    string
-	CancelURL     string
+	OrderID        string
+	UserID         int64
+	Amount         float64
+	AmountCents    int64
+	Currency       string
+	PaymentMethod  string
+	PaymentMethods []string
+	SuccessURL     string
+	CancelURL      string
 }
 
 type StripeCheckoutSession struct {
@@ -135,9 +139,14 @@ type stripeCheckoutClient interface {
 	CreateCheckoutSession(ctx context.Context, params StripeCheckoutSessionParams) (*StripeCheckoutSession, error)
 }
 
+type paymentNotifier interface {
+	NotifyPaymentPaid(ctx context.Context, order *PaymentOrder) error
+}
+
 type PaymentService struct {
 	repo                 PaymentRepository
 	stripe               stripeCheckoutClient
+	notifier             paymentNotifier
 	billingCacheService  *BillingCacheService
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 	cfg                  *config.Config
@@ -156,11 +165,16 @@ func NewPaymentService(
 		cfg:                  cfg,
 	}
 	svc.stripe = newStripePaymentClient(cfg)
+	svc.notifier = newFeishuPaymentNotifier(cfg)
 	return svc
 }
 
 func (s *PaymentService) SetStripeClient(client stripeCheckoutClient) {
 	s.stripe = client
+}
+
+func (s *PaymentService) setPaymentNotifier(notifier paymentNotifier) {
+	s.notifier = notifier
 }
 
 func (s *PaymentService) ListOrders(ctx context.Context, userID int64, params pagination.PaginationParams) ([]PaymentOrder, *pagination.PaginationResult, error) {
@@ -178,7 +192,7 @@ func (s *PaymentService) CreateCheckoutSession(ctx context.Context, req CreateCh
 		return nil, infraerrors.InternalServer("STRIPE_CLIENT_MISSING", "Stripe client is not configured")
 	}
 
-	paymentMethod, err := normalizeStripePaymentMethod(req.PaymentMethod)
+	paymentMethod, paymentMethods, err := normalizeStripePaymentMethods(req.PaymentMethod)
 	if err != nil {
 		return nil, err
 	}
@@ -207,14 +221,15 @@ func (s *PaymentService) CreateCheckoutSession(ctx context.Context, req CreateCh
 	}
 
 	session, err := s.stripe.CreateCheckoutSession(ctx, StripeCheckoutSessionParams{
-		OrderID:       order.ID,
-		UserID:        req.UserID,
-		Amount:        amount,
-		AmountCents:   amountCents,
-		Currency:      currency,
-		PaymentMethod: paymentMethod,
-		SuccessURL:    req.SuccessURL,
-		CancelURL:     req.CancelURL,
+		OrderID:        order.ID,
+		UserID:         req.UserID,
+		Amount:         amount,
+		AmountCents:    amountCents,
+		Currency:       currency,
+		PaymentMethod:  paymentMethod,
+		PaymentMethods: paymentMethods,
+		SuccessURL:     req.SuccessURL,
+		CancelURL:      req.CancelURL,
 	})
 	if err != nil {
 		_ = s.repo.MarkPaymentOrderFailed(ctx, order.ID, "stripe_create_failed")
@@ -317,6 +332,7 @@ func (s *PaymentService) HandleStripeWebhook(ctx context.Context, payload []byte
 		if credited && order != nil {
 			log.Printf("[Payment] webhook: payment credited, user_id=%d amount=%.2f order_id=%s", order.UserID, order.Amount, order.ID)
 			s.invalidateBillingCaches(ctx, order.UserID)
+			s.notifyPaymentPaid(ctx, order)
 		} else {
 			log.Printf("[Payment] webhook: payment already credited or order nil, session_id=%s credited=%v", session.ID, credited)
 		}
@@ -388,15 +404,31 @@ func (s *PaymentService) invalidateBillingCaches(ctx context.Context, userID int
 	}
 }
 
+func (s *PaymentService) notifyPaymentPaid(ctx context.Context, order *PaymentOrder) {
+	if s == nil || s.notifier == nil || order == nil {
+		return
+	}
+	if err := s.notifier.NotifyPaymentPaid(ctx, order); err != nil {
+		log.Printf("[Payment] Feishu notification failed: order_id=%s user_id=%d err=%v", order.ID, order.UserID, err)
+	}
+}
+
 func normalizeStripePaymentMethod(method string) (string, error) {
+	normalized, _, err := normalizeStripePaymentMethods(method)
+	return normalized, err
+}
+
+func normalizeStripePaymentMethods(method string) (string, []string, error) {
 	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "", "auto", "checkout", PaymentMethodStripeCheckout:
+		return PaymentMethodStripeCheckout, []string{PaymentMethodAlipay, PaymentMethodWechat}, nil
 	case PaymentMethodAlipay:
-		return PaymentMethodAlipay, nil
+		return PaymentMethodAlipay, []string{PaymentMethodAlipay}, nil
 	case PaymentMethodWechat, "wechat", "weixin", "wxpay":
-		return PaymentMethodWechat, nil
+		return PaymentMethodWechat, []string{PaymentMethodWechat}, nil
 	default:
-		return "", ErrInvalidPaymentMethod.WithMetadata(map[string]string{
-			"allowed": PaymentMethodAlipay + "," + PaymentMethodWechat,
+		return "", nil, ErrInvalidPaymentMethod.WithMetadata(map[string]string{
+			"allowed": PaymentMethodStripeCheckout + "," + PaymentMethodAlipay + "," + PaymentMethodWechat,
 		})
 	}
 }

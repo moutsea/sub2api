@@ -205,6 +205,7 @@ type BillingConfig struct {
 
 type PaymentConfig struct {
 	Stripe StripePaymentConfig `mapstructure:"stripe"`
+	Feishu FeishuPaymentConfig `mapstructure:"feishu"`
 }
 
 type StripePaymentConfig struct {
@@ -213,6 +214,12 @@ type StripePaymentConfig struct {
 	WebhookSecret     string  `mapstructure:"webhook_secret"`
 	Currency          string  `mapstructure:"currency"`
 	MinRechargeAmount float64 `mapstructure:"min_recharge_amount"`
+}
+
+type FeishuPaymentConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`
+	WebhookURL    string `mapstructure:"webhook_url"`
+	WebhookSecret string `mapstructure:"webhook_secret"`
 }
 
 type CircuitBreakerConfig struct {
@@ -617,6 +624,8 @@ func Load() (*Config, error) {
 	if cfg.Payment.Stripe.Currency == "" {
 		cfg.Payment.Stripe.Currency = "cny"
 	}
+	cfg.Payment.Feishu.WebhookURL = strings.TrimSpace(cfg.Payment.Feishu.WebhookURL)
+	cfg.Payment.Feishu.WebhookSecret = strings.TrimSpace(cfg.Payment.Feishu.WebhookSecret)
 
 	if cfg.JWT.Secret == "" {
 		secret, err := generateJWTSecret(64)
@@ -714,6 +723,9 @@ func setDefaults() {
 	viper.SetDefault("payment.stripe.webhook_secret", "")
 	viper.SetDefault("payment.stripe.currency", "cny")
 	viper.SetDefault("payment.stripe.min_recharge_amount", 0)
+	viper.SetDefault("payment.feishu.enabled", false)
+	viper.SetDefault("payment.feishu.webhook_url", "")
+	viper.SetDefault("payment.feishu.webhook_secret", "")
 
 	// Turnstile
 	viper.SetDefault("turnstile.required", false)
@@ -975,6 +987,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Payment.Stripe.Currency != "" && len(c.Payment.Stripe.Currency) != 3 {
 		return fmt.Errorf("payment.stripe.currency must be a 3-letter ISO currency code")
+	}
+	if c.Payment.Feishu.Enabled {
+		if c.Payment.Feishu.WebhookURL == "" {
+			return fmt.Errorf("payment.feishu.webhook_url is required when payment.feishu.enabled is true")
+		}
+		if err := ValidateAbsoluteHTTPURL(c.Payment.Feishu.WebhookURL); err != nil {
+			return fmt.Errorf("payment.feishu.webhook_url invalid: %w", err)
+		}
+		warnIfInsecureURL("payment.feishu.webhook_url", c.Payment.Feishu.WebhookURL)
+		if c.Payment.Feishu.WebhookSecret == "" {
+			return fmt.Errorf("payment.feishu.webhook_secret is required when payment.feishu.enabled is true")
+		}
 	}
 	if c.Database.MaxOpenConns <= 0 {
 		return fmt.Errorf("database.max_open_conns must be positive")

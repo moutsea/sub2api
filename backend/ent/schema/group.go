@@ -96,6 +96,11 @@ func (Group) Fields() []ent.Field {
 			Nillable().
 			Comment("非 Claude Code 请求降级使用的分组 ID"),
 
+		// Kiro 平台配置 (added by migration 054)
+		field.Bool("kiro_opus_47_downgrade").
+			Default(false).
+			Comment("Kiro 分组请求 claude-opus-4-7 时降级到 claude-opus-4-6"),
+
 		// 模型路由配置 (added by migration 040)
 		field.JSON("model_routing", map[string][]int64{}).
 			Optional().

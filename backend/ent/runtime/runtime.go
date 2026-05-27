@@ -285,8 +285,12 @@ func init() {
 	groupDescClaudeCodeOnly := groupFields[14].Descriptor()
 	// group.DefaultClaudeCodeOnly holds the default value on creation for the claude_code_only field.
 	group.DefaultClaudeCodeOnly = groupDescClaudeCodeOnly.Default.(bool)
+	// groupDescKiroOpus47Downgrade is the schema descriptor for kiro_opus_47_downgrade field.
+	groupDescKiroOpus47Downgrade := groupFields[16].Descriptor()
+	// group.DefaultKiroOpus47Downgrade holds the default value on creation for the kiro_opus_47_downgrade field.
+	group.DefaultKiroOpus47Downgrade = groupDescKiroOpus47Downgrade.Default.(bool)
 	// groupDescModelRoutingEnabled is the schema descriptor for model_routing_enabled field.
-	groupDescModelRoutingEnabled := groupFields[17].Descriptor()
+	groupDescModelRoutingEnabled := groupFields[18].Descriptor()
 	// group.DefaultModelRoutingEnabled holds the default value on creation for the model_routing_enabled field.
 	group.DefaultModelRoutingEnabled = groupDescModelRoutingEnabled.Default.(bool)
 	promocodeFields := schema.PromoCode{}.Fields()

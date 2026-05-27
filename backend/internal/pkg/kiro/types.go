@@ -16,14 +16,32 @@ const (
 // Model ID mapping from Claude to AWSQ
 // Format aligned with kiro.rs: use simplified model IDs
 var ModelMap = map[string]string{
+	// Kiro router / open-weight models
+	"auto":                  "auto",
+	"deepseek-3.2":          "deepseek-3.2",
+	"deepseek-v3.2":         "deepseek-3.2",
+	"deepseek-32":           "deepseek-3.2",
+	"glm-5":                 "glm-5",
+	"minimax-m2.5":          "minimax-m2.5",
+	"minimax-m25":           "minimax-m2.5",
+	"minimax-m2.1":          "minimax-m2.1",
+	"minimax-m21":           "minimax-m2.1",
+	"qwen3-coder-next":      "qwen3-coder-next",
+	"qwen3-coder":           "qwen3-coder-next",
+	"qwen3-coder-480b":      "qwen3-coder-next",
+	"qwen3-coder-480b-a35b": "qwen3-coder-next",
+
 	// Opus 4.7 series
 	"claude-opus-4-7": "claude-opus-4.7",
+	"claude-opus-4.7": "claude-opus-4.7",
 	// Opus 4.6 series
 	"claude-opus-4-6":    "claude-opus-4.6",
 	"claude-opus-4-6-1m": "claude-opus-4.6",
+	"claude-opus-4.6":    "claude-opus-4.6",
 	// Sonnet 4.6 series
 	"claude-sonnet-4-6":    "claude-sonnet-4.6",
 	"claude-sonnet-4-6-1m": "claude-sonnet-4.6",
+	"claude-sonnet-4.6":    "claude-sonnet-4.6",
 	// Opus 4.5 series
 	"claude-opus-4-5":          "claude-opus-4.5",
 	"claude-opus-4-5-20251101": "claude-opus-4.5",
@@ -31,13 +49,20 @@ var ModelMap = map[string]string{
 	// Haiku 4.5 series
 	"claude-haiku-4-5":          "claude-haiku-4.5",
 	"claude-haiku-4-5-20251001": "claude-haiku-4.5",
+	"claude-haiku-4.5":          "claude-haiku-4.5",
 	// Sonnet 4.5 series
 	"claude-sonnet-4-5":          "claude-sonnet-4.5",
 	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-	// Sonnet 4 series (map to sonnet-4.6)
+	"claude-sonnet-4.5":          "claude-sonnet-4.5",
+	// Sonnet 4 series
+	"claude-sonnet-4":   "claude-sonnet-4",
+	"claude-sonnet-4-0": "claude-sonnet-4",
+	"claude-sonnet-4.0": "claude-sonnet-4",
+	// Legacy date alias keeps the existing project behavior: route to Sonnet 4.6.
 	"claude-sonnet-4-20250514": "claude-sonnet-4.6",
 	// Sonnet 3.7 series (map to sonnet-4.6)
 	"claude-3-7-sonnet-20250219": "claude-sonnet-4.6",
+	"claude-sonnet-3.7":          "claude-sonnet-4.6",
 	// Sonnet 3.5 series (legacy, map to sonnet-4.6)
 	"claude-3-5-sonnet-20241022": "claude-sonnet-4.6",
 	"claude-3-5-sonnet-latest":   "claude-sonnet-4.6",
@@ -50,12 +75,78 @@ var ModelMap = map[string]string{
 // Default model ID for AWSQ
 const DefaultModelID = "claude-opus-4.6"
 
+// Model 表示一个 Kiro 模型
+type Model struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// DefaultModels is the curated Kiro OAuth/runtime model list.
+var DefaultModels = []Model{
+	{ID: "auto", Type: "model", DisplayName: "Auto", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "claude-opus-4-7", Type: "model", DisplayName: "Claude Opus 4.7", CreatedAt: "2026-04-17T00:00:00Z"},
+	{ID: "claude-opus-4-6", Type: "model", DisplayName: "Claude Opus 4.6", CreatedAt: "2026-02-06T00:00:00Z"},
+	{ID: "claude-opus-4-6-1m", Type: "model", DisplayName: "Claude Opus 4.6 (1M Context)", CreatedAt: "2026-02-06T00:00:00Z"},
+	{ID: "claude-opus-4-5", Type: "model", DisplayName: "Claude Opus 4.5", CreatedAt: "2025-11-01T00:00:00Z"},
+	{ID: "claude-sonnet-4-6", Type: "model", DisplayName: "Claude Sonnet 4.6", CreatedAt: "2026-02-17T00:00:00Z"},
+	{ID: "claude-sonnet-4-6-1m", Type: "model", DisplayName: "Claude Sonnet 4.6 (1M Context)", CreatedAt: "2026-02-17T00:00:00Z"},
+	{ID: "claude-sonnet-4-5", Type: "model", DisplayName: "Claude Sonnet 4.5", CreatedAt: "2025-09-29T00:00:00Z"},
+	{ID: "claude-sonnet-4", Type: "model", DisplayName: "Claude Sonnet 4.0", CreatedAt: "2025-05-14T00:00:00Z"},
+	{ID: "claude-haiku-4-5", Type: "model", DisplayName: "Claude Haiku 4.5", CreatedAt: "2025-10-01T00:00:00Z"},
+	{ID: "deepseek-3.2", Type: "model", DisplayName: "DeepSeek 3.2", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "minimax-m2.5", Type: "model", DisplayName: "MiniMax M2.5", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "glm-5", Type: "model", DisplayName: "GLM-5", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "minimax-m2.1", Type: "model", DisplayName: "MiniMax M2.1", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "qwen3-coder-next", Type: "model", DisplayName: "Qwen3 Coder Next", CreatedAt: "2026-03-31T00:00:00Z"},
+}
+
+// DefaultModelIDs 返回默认 Kiro OAuth 模型的 ID 列表
+func DefaultModelIDs() []string {
+	ids := make([]string, len(DefaultModels))
+	for i, m := range DefaultModels {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+func normalizeModelLookupKey(model string) string {
+	return strings.TrimSuffix(strings.TrimSpace(strings.ToLower(model)), "-thinking")
+}
+
+// IsOAuthModelSupported reports whether a model can be sent to the Kiro runtime.
+func IsOAuthModelSupported(model string) bool {
+	key := strings.TrimSpace(strings.ToLower(model))
+	if strings.HasSuffix(key, "-thinking") && !strings.HasPrefix(key, "claude-") {
+		return false
+	}
+	_, ok := ModelMap[normalizeModelLookupKey(model)]
+	return ok
+}
+
+// IsFreeTierModelAllowed reports whether the current free-tier allowlist permits the model.
+func IsFreeTierModelAllowed(model string) bool {
+	modelID := GetModelID(model)
+	switch modelID {
+	case "auto",
+		"claude-sonnet-4.5",
+		"claude-haiku-4.5",
+		"claude-sonnet-4",
+		"deepseek-3.2",
+		"minimax-m2.5",
+		"glm-5",
+		"minimax-m2.1",
+		"qwen3-coder-next":
+		return true
+	default:
+		return false
+	}
+}
+
 // GetModelID returns the CodeWhisperer model ID for a given Claude model
 func GetModelID(claudeModel string) string {
-	if modelID, ok := ModelMap[claudeModel]; ok {
-		return modelID
-	}
-	normalizedModel := strings.TrimSuffix(strings.ToLower(claudeModel), "-thinking")
+	normalizedModel := normalizeModelLookupKey(claudeModel)
 	if modelID, ok := ModelMap[normalizedModel]; ok {
 		return modelID
 	}

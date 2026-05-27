@@ -35,6 +35,15 @@ type stubConcurrencyCache struct {
 	ConcurrencyCache
 }
 
+type recordingOpenAIHTTPUpstream struct {
+	calls int
+}
+
+func (s *recordingOpenAIHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	s.calls++
+	return nil, errors.New("unexpected upstream call")
+}
+
 type openAICapacityAccountRepoStub struct {
 	AccountRepository
 	tempCalls  int
@@ -105,6 +114,115 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	h4 := svc.GenerateSessionHash(c, map[string]any{})
 	if h4 != "" {
 		t.Fatalf("expected empty hash when no signals")
+	}
+}
+
+func TestOpenAIGatewayService_ForwardRejectsStatelessReasoningReferenceBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupCodexCache(t)
+
+	reqBody := []byte(`{
+		"model": "gpt-5.4",
+		"stream": true,
+		"tool_choice": "auto",
+		"input": [
+			{"type": "reasoning", "id": "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726"},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+		]
+	}`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", bytes.NewReader(reqBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &recordingOpenAIHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:       1,
+		Name:     "openai-oauth",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, reqBody)
+
+	if err == nil {
+		t.Fatalf("expected local validation error")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result")
+	}
+	if upstream.calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", upstream.calls)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var body map[string]map[string]any
+	if unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &body); unmarshalErr != nil {
+		t.Fatalf("response json: %v", unmarshalErr)
+	}
+	errorBody := body["error"]
+	if errorBody["type"] != "invalid_request_error" {
+		t.Fatalf("error.type = %v, want invalid_request_error", errorBody["type"])
+	}
+	if errorBody["param"] != "input" {
+		t.Fatalf("error.param = %v, want input", errorBody["param"])
+	}
+	message, _ := errorBody["message"].(string)
+	if !strings.Contains(message, "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726") {
+		t.Fatalf("message = %q, want item id", message)
+	}
+}
+
+func TestShouldGuardOpenAIStatelessReasoning(t *testing.T) {
+	cases := []struct {
+		name    string
+		account *Account
+		want    bool
+	}{
+		{
+			name:    "oauth",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			want:    true,
+		},
+		{
+			name:    "api_key_default_official",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+			want:    true,
+		},
+		{
+			name: "api_key_official_base_url",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+			},
+			want: true,
+		},
+		{
+			name: "api_key_custom_compatible_base_url",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://oneapi.example.com/v1"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldGuardOpenAIStatelessReasoning(tt.account); got != tt.want {
+				t.Fatalf("shouldGuardOpenAIStatelessReasoning() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

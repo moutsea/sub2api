@@ -8,7 +8,7 @@
           </div>
           <p class="text-sm font-medium text-primary-100">{{ t('recharge.currentBalance') }}</p>
           <p class="mt-2 text-4xl font-bold text-white">
-            ¥{{ user?.balance?.toFixed(2) || '0.00' }}
+            ${{ user?.balance?.toFixed(2) || '0.00' }}
           </p>
         </div>
       </div>
@@ -68,7 +68,7 @@
                 ]"
                 @click="selectAmount(amount)"
               >
-                ¥{{ amount.toFixed(2) }}
+                ${{ amount.toFixed(2) }}
               </button>
             </div>
           </div>
@@ -77,7 +77,7 @@
             <label for="custom-amount" class="input-label">{{ t('recharge.customAmount') }}</label>
             <div class="relative mt-2">
               <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4">
-                <span class="text-sm font-semibold text-gray-400 dark:text-dark-400">¥</span>
+                <span class="text-sm font-semibold text-gray-400 dark:text-dark-400">$</span>
               </div>
               <input
                 id="custom-amount"
@@ -92,42 +92,6 @@
               />
             </div>
             <p class="input-hint">{{ t('recharge.minimumHint') }}</p>
-          </div>
-
-          <div>
-            <label class="input-label">{{ t('recharge.paymentMethod') }}</label>
-            <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button
-                v-for="method in paymentMethods"
-                :key="method.value"
-                type="button"
-                :disabled="method.disabled"
-                :class="[
-                  'flex items-center justify-between rounded-xl border p-4 text-left transition-all',
-                  method.disabled
-                    ? 'cursor-not-allowed border-gray-200 bg-gray-50 opacity-50 dark:border-dark-700 dark:bg-dark-900'
-                    : paymentMethod === method.value
-                      ? 'border-primary-500 bg-primary-50 shadow-sm dark:border-primary-400 dark:bg-primary-900/30'
-                      : 'border-gray-200 bg-white hover:border-primary-300 hover:bg-primary-50/60 dark:border-dark-700 dark:bg-dark-800 dark:hover:border-primary-500/60 dark:hover:bg-primary-900/20'
-                ]"
-                @click="!method.disabled && (paymentMethod = method.value)"
-              >
-                <span>
-                  <span class="block text-sm font-semibold text-gray-900 dark:text-white">{{ method.label }}</span>
-                  <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">{{ method.description }}</span>
-                </span>
-                <span
-                  :class="[
-                    'flex h-5 w-5 items-center justify-center rounded-full border',
-                    paymentMethod === method.value
-                      ? 'border-primary-500 bg-primary-500'
-                      : 'border-gray-300 dark:border-dark-600'
-                  ]"
-                >
-                  <span v-if="paymentMethod === method.value" class="h-2 w-2 rounded-full bg-white"></span>
-                </span>
-              </button>
-            </div>
           </div>
 
           <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-800">
@@ -170,10 +134,7 @@
         <div class="p-6">
           <DataTable :columns="orderColumns" :data="orders" :loading="ordersLoading" row-key="id">
             <template #cell-amount="{ row }">
-              <span class="font-semibold">¥{{ row.amount.toFixed(2) }}</span>
-            </template>
-            <template #cell-payment_method="{ row }">
-              {{ row.payment_method === 'wechat_pay' ? t('recharge.wechat') : t('recharge.alipay') }}
+              <span class="font-semibold">${{ row.amount.toFixed(2) }}</span>
             </template>
             <template #cell-status="{ row }">
               <span
@@ -227,7 +188,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { paymentsAPI, type PaymentMethod } from '@/api'
+import { paymentsAPI } from '@/api'
 import type { PaymentOrder } from '@/api/payments'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
@@ -246,7 +207,6 @@ const checkoutExpiryGraceMs = 5 * 60 * 1000
 const presetAmounts = [50, 100, 200, 500, 1000, 2000]
 const selectedAmount = ref(50)
 const customAmount = ref('')
-const paymentMethod = ref<PaymentMethod>('wechat_pay')
 const submitting = ref(false)
 const statusMessage = ref('')
 const statusType = ref<'success' | 'warning'>('success')
@@ -254,21 +214,6 @@ const nowMs = ref(Date.now())
 let nowTimer: number | undefined
 
 const user = computed(() => authStore.user)
-
-const paymentMethods = computed(() => [
-  {
-    value: 'wechat_pay' as PaymentMethod,
-    label: t('recharge.wechat'),
-    description: t('recharge.wechatDesc'),
-    disabled: false
-  },
-  {
-    value: 'alipay' as PaymentMethod,
-    label: t('recharge.alipay'),
-    description: t('recharge.alipayComingSoon'),
-    disabled: true
-  }
-])
 
 const effectiveAmount = computed(() => {
   const custom = String(customAmount.value).trim()
@@ -299,8 +244,7 @@ async function handleSubmit() {
   submitting.value = true
   try {
     const result = await paymentsAPI.createCheckoutSession({
-      amount: effectiveAmount.value,
-      payment_method: paymentMethod.value
+      amount: effectiveAmount.value
     })
     window.open(result.checkout_url, '_blank')
   } catch (error: any) {
@@ -317,7 +261,6 @@ const orderPagination = reactive({ page: 1, page_size: 10, total: 0, pages: 0 })
 
 const orderColumns = computed(() => [
   { key: 'amount', label: t('recharge.orderAmount'), sortable: false },
-  { key: 'payment_method', label: t('recharge.orderMethod'), sortable: false },
   { key: 'status', label: t('recharge.orderStatus'), sortable: false },
   { key: 'created_at', label: t('recharge.orderTime'), sortable: false },
   { key: 'paid_at', label: t('recharge.orderPaidAt'), sortable: false },

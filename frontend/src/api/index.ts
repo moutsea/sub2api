@@ -14,7 +14,7 @@ export { keysAPI } from './keys'
 export { openAIImagesAPI } from './openai-images'
 export { usageAPI } from './usage'
 export { userAPI } from './user'
-export { paymentsAPI, type PaymentMethod } from './payments'
+export { paymentsAPI } from './payments'
 export { redeemAPI, type RedeemHistoryItem } from './redeem'
 export { userGroupsAPI } from './groups'
 

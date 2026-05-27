@@ -167,9 +167,8 @@
         <button
           @click="handleClose"
           class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-300 dark:hover:bg-dark-500"
-          :disabled="status === 'connecting'"
         >
-          {{ t('common.close') }}
+          {{ status === 'connecting' ? t('common.cancel') : t('common.close') }}
         </button>
         <button
           @click="startTest"
@@ -249,7 +248,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -289,7 +288,7 @@ const errorMessage = ref('')
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const loadingModels = ref(false)
-let eventSource: EventSource | null = null
+let activeTestController: AbortController | null = null
 
 const selectPreferredOpenAIModel = () => {
   const preferredIds =
@@ -310,7 +309,7 @@ watch(
       resetState()
       await loadAvailableModels()
     } else {
-      closeEventSource()
+      abortActiveTest()
     }
   }
 )
@@ -359,20 +358,20 @@ const resetState = () => {
 }
 
 const handleClose = () => {
-  // 防止在连接测试进行中关闭对话框
-  if (status.value === 'connecting') {
-    return
-  }
-  closeEventSource()
+  abortActiveTest()
   emit('close')
 }
 
-const closeEventSource = () => {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
+const abortActiveTest = () => {
+  if (activeTestController) {
+    activeTestController.abort()
+    activeTestController = null
   }
 }
+
+onUnmounted(() => {
+  abortActiveTest()
+})
 
 const addLine = (text: string, className: string = 'text-gray-300') => {
   outputLines.value.push({ text, class: className })
@@ -395,7 +394,9 @@ const startTest = async () => {
   addLine(t('admin.accounts.testAccountTypeLabel', { type: props.account.type }), 'text-gray-400')
   addLine('', 'text-gray-300')
 
-  closeEventSource()
+  abortActiveTest()
+  const controller = new AbortController()
+  activeTestController = controller
 
   try {
     // Create EventSource for SSE
@@ -408,8 +409,13 @@ const startTest = async () => {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
         'Content-Type': 'application/json'
       },
+      signal: controller.signal,
       body: JSON.stringify({ model_id: selectedModelId.value })
     })
+
+    if (controller.signal.aborted || activeTestController !== controller) {
+      return
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
@@ -425,6 +431,7 @@ const startTest = async () => {
 
     while (true) {
       const { done, value } = await reader.read()
+      if (controller.signal.aborted || activeTestController !== controller) break
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
@@ -446,9 +453,16 @@ const startTest = async () => {
       }
     }
   } catch (error: any) {
+    if (controller.signal.aborted || error?.name === 'AbortError' || error?.code === 'ERR_ABORTED') {
+      return
+    }
     status.value = 'error'
     errorMessage.value = error.message || 'Unknown error'
     addLine(`Error: ${errorMessage.value}`, 'text-red-400')
+  } finally {
+    if (activeTestController === controller) {
+      activeTestController = null
+    }
   }
 }
 

@@ -1485,6 +1485,44 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	// Handle Kiro accounts
+	if account.IsKiro() {
+		// Kiro OAuth/runtime accounts support Kiro's native model list.
+		if !account.IsKiroApiKey() {
+			response.Success(c, kiro.DefaultModels)
+			return
+		}
+
+		// Kiro apikey accounts are Claude-compatible passthrough accounts.
+		mapping := account.GetModelMapping()
+		if len(mapping) == 0 {
+			response.Success(c, claude.DefaultModels)
+			return
+		}
+
+		var models []claude.Model
+		for requestedModel := range mapping {
+			var found bool
+			for _, dm := range claude.DefaultModels {
+				if dm.ID == requestedModel {
+					models = append(models, dm)
+					found = true
+					break
+				}
+			}
+			if !found {
+				models = append(models, claude.Model{
+					ID:          requestedModel,
+					Type:        "model",
+					DisplayName: requestedModel,
+					CreatedAt:   "",
+				})
+			}
+		}
+		response.Success(c, models)
+		return
+	}
+
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {

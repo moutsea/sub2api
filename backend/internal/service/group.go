@@ -30,6 +30,9 @@ type Group struct {
 	ClaudeCodeOnly  bool
 	FallbackGroupID *int64
 
+	// Kiro 平台配置
+	KiroOpus47Downgrade bool
+
 	// 模型路由配置
 	// key: 模型匹配模式（支持 * 通配符，如 "claude-opus-*"）
 	// value: 优先账号 ID 列表
@@ -80,6 +83,22 @@ func (g *Group) GetImagePrice(imageSize string) *float64 {
 	default:
 		// 未知尺寸默认按 2K 计费
 		return g.ImagePrice2K
+	}
+}
+
+func (g *Group) ShouldDowngradeKiroOpus47() bool {
+	return g != nil && g.Platform == PlatformKiro && g.KiroOpus47Downgrade
+}
+
+func DowngradeKiroOpus47Model(group *Group, requestedModel string) (string, bool) {
+	if group == nil || !group.ShouldDowngradeKiroOpus47() {
+		return requestedModel, false
+	}
+	switch strings.TrimSpace(requestedModel) {
+	case kiroDynamicProbeModelOpus47, "claude-opus-4.7":
+		return kiroDynamicFallbackModelOpus46, true
+	default:
+		return requestedModel, false
 	}
 }
 

@@ -25,7 +25,7 @@ func NewPaymentHandler(paymentService *service.PaymentService) *PaymentHandler {
 
 type createCheckoutSessionRequest struct {
 	Amount        float64 `json:"amount" binding:"required"`
-	PaymentMethod string  `json:"payment_method" binding:"required"`
+	PaymentMethod string  `json:"payment_method"`
 }
 
 type paymentOrderDTO struct {

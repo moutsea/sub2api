@@ -140,22 +140,24 @@ func (r *paymentRepository) CreditStripePaymentOrder(ctx context.Context, comple
 		return order, false, nil
 	}
 
-	res, err := tx.ExecContext(ctx, `
+	var balanceAfter float64
+	if err := tx.QueryRowContext(ctx, `
 		UPDATE users
 		SET balance = balance + $2,
 		    updated_at = NOW()
 		WHERE id = $1
 		  AND deleted_at IS NULL
-	`, order.UserID, order.Amount)
-	if err != nil {
+		RETURNING balance
+	`, order.UserID, order.Amount).Scan(&balanceAfter); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, service.ErrUserNotFound
+		}
 		return nil, false, err
 	}
-	if err := requireAffected(res, service.ErrUserNotFound); err != nil {
-		return nil, false, err
-	}
+	balanceBefore := balanceAfter - order.Amount
 
 	now := time.Now()
-	res, err = tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		UPDATE payment_orders
 		SET credited_at = $2,
 		    updated_at = NOW()
@@ -177,6 +179,8 @@ func (r *paymentRepository) CreditStripePaymentOrder(ctx context.Context, comple
 	order.CreditedAt = &now
 	order.StripePaymentIntentID = completion.PaymentIntentID
 	order.StripeEventID = completion.EventID
+	order.BalanceBefore = balanceBefore
+	order.BalanceAfter = balanceAfter
 	return order, true, nil
 }
 

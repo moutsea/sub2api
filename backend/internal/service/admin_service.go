@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
 
@@ -108,6 +109,8 @@ type CreateGroupInput struct {
 	ImagePrice4K    *float64
 	ClaudeCodeOnly  bool   // 仅允许 Claude Code 客户端
 	FallbackGroupID *int64 // 降级分组 ID
+	// Kiro 平台配置
+	KiroOpus47Downgrade bool // claude-opus-4-7 降级到 claude-opus-4-6
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool // 是否启用模型路由
@@ -130,6 +133,8 @@ type UpdateGroupInput struct {
 	ImagePrice4K    *float64
 	ClaudeCodeOnly  *bool  // 仅允许 Claude Code 客户端
 	FallbackGroupID *int64 // 降级分组 ID
+	// Kiro 平台配置
+	KiroOpus47Downgrade *bool // claude-opus-4-7 降级到 claude-opus-4-6
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled *bool // 是否启用模型路由
@@ -574,22 +579,23 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 
 	group := &Group{
-		Name:             input.Name,
-		Description:      input.Description,
-		Platform:         platform,
-		RateMultiplier:   input.RateMultiplier,
-		IsExclusive:      input.IsExclusive,
-		Status:           StatusActive,
-		SubscriptionType: subscriptionType,
-		DailyLimitUSD:    dailyLimit,
-		WeeklyLimitUSD:   weeklyLimit,
-		MonthlyLimitUSD:  monthlyLimit,
-		ImagePrice1K:     imagePrice1K,
-		ImagePrice2K:     imagePrice2K,
-		ImagePrice4K:     imagePrice4K,
-		ClaudeCodeOnly:   input.ClaudeCodeOnly,
-		FallbackGroupID:  input.FallbackGroupID,
-		ModelRouting:     input.ModelRouting,
+		Name:                input.Name,
+		Description:         input.Description,
+		Platform:            platform,
+		RateMultiplier:      input.RateMultiplier,
+		IsExclusive:         input.IsExclusive,
+		Status:              StatusActive,
+		SubscriptionType:    subscriptionType,
+		DailyLimitUSD:       dailyLimit,
+		WeeklyLimitUSD:      weeklyLimit,
+		MonthlyLimitUSD:     monthlyLimit,
+		ImagePrice1K:        imagePrice1K,
+		ImagePrice2K:        imagePrice2K,
+		ImagePrice4K:        imagePrice4K,
+		ClaudeCodeOnly:      input.ClaudeCodeOnly,
+		FallbackGroupID:     input.FallbackGroupID,
+		KiroOpus47Downgrade: input.KiroOpus47Downgrade,
+		ModelRouting:        input.ModelRouting,
 	}
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
@@ -717,6 +723,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			group.FallbackGroupID = nil
 		}
 	}
+	if input.KiroOpus47Downgrade != nil {
+		group.KiroOpus47Downgrade = *input.KiroOpus47Downgrade
+	}
 
 	// 模型路由配置
 	if input.ModelRouting != nil {
@@ -820,6 +829,21 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 				if existing != nil {
 					return nil, fmt.Errorf("Kiro account with this refresh_token already exists (Account ID: %d, Name: %s)", existing.ID, existing.Name)
 				}
+			}
+		}
+
+		// IdC profile_arn fallback: Builder ID / Github / Google token JSON does not
+		// include a profileArn (the official Kiro client hardcodes it). When such a
+		// JSON is imported through the IdC entrypoint without a valid profile_arn,
+		// fall back to the Builder ID default ARN so downstream calls succeed.
+		if authType == KiroAuthMethodIdC {
+			if !isValidKiroProfileArn(input.Credentials["profile_arn"]) &&
+				!isValidKiroProfileArn(input.Credentials["profileArn"]) {
+				if input.Credentials == nil {
+					input.Credentials = map[string]any{}
+				}
+				input.Credentials["profile_arn"] = kiro.BuilderIdProfileArn
+				log.Printf("[Kiro] account %q: auto-filled BuilderId profile_arn fallback (no valid profile_arn supplied)", input.Name)
 			}
 		}
 	}
@@ -1546,10 +1570,10 @@ func (e *MixedChannelError) Error() string {
 
 // UserGroupRateItem represents a group with its default and user-custom rate multiplier.
 type UserGroupRateItem struct {
-	GroupID        int64
-	GroupName      string
-	DefaultRate    float64
-	CustomRate     *float64 // nil = use group default
+	GroupID     int64
+	GroupName   string
+	DefaultRate float64
+	CustomRate  *float64 // nil = use group default
 }
 
 // GetUserGroupRates returns all allowed groups for a user with their custom rate overrides.
@@ -1635,4 +1659,14 @@ func (s *adminServiceImpl) UpdateUserGroupRates(ctx context.Context, userID int6
 	}
 
 	return nil
+}
+
+// isValidKiroProfileArn reports whether v is a non-empty string that looks like
+// a CodeWhisperer profile ARN (mirrors the front-end normalizeKiroProfileArn).
+func isValidKiroProfileArn(v any) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(s), "arn:aws:codewhisperer:")
 }

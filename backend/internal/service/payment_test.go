@@ -57,6 +57,7 @@ func TestPaymentServiceCreateCheckoutSession(t *testing.T) {
 	require.Equal(t, PaymentMethodWechat, repo.created.PaymentMethod)
 	require.Equal(t, int64(7), stripe.params.UserID)
 	require.Equal(t, PaymentMethodWechat, stripe.params.PaymentMethod)
+	require.Equal(t, []string{PaymentMethodWechat}, stripe.params.PaymentMethods)
 	require.Equal(t, int64(10000), stripe.params.AmountCents)
 	require.Equal(t, "cny", stripe.params.Currency)
 }
@@ -78,10 +79,76 @@ func TestPaymentServiceCreateCheckoutSessionRejectsInvalidAmount(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidPaymentAmount)
 }
 
+func TestPaymentServiceCreateCheckoutSessionAllowsAlipay(t *testing.T) {
+	repo := &fakePaymentRepo{}
+	stripe := &fakeStripeCheckoutClient{
+		session: &StripeCheckoutSession{ID: "cs_alipay", URL: "https://checkout.stripe.com/c/pay/cs_alipay"},
+	}
+	svc := NewPaymentService(repo, nil, nil, &config.Config{
+		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
+			Enabled:   true,
+			SecretKey: "sk_test",
+			Currency:  "cny",
+		}},
+	})
+	svc.SetStripeClient(stripe)
+
+	result, err := svc.CreateCheckoutSession(context.Background(), CreateCheckoutSessionRequest{
+		UserID:        7,
+		Amount:        100,
+		PaymentMethod: PaymentMethodAlipay,
+		SuccessURL:    "https://example.com/success",
+		CancelURL:     "https://example.com/cancel",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "cs_alipay", result.SessionID)
+	require.Equal(t, PaymentMethodAlipay, repo.created.PaymentMethod)
+	require.Equal(t, PaymentMethodAlipay, stripe.params.PaymentMethod)
+	require.Equal(t, []string{PaymentMethodAlipay}, stripe.params.PaymentMethods)
+}
+
+func TestPaymentServiceCreateCheckoutSessionDefaultsToStripeCheckoutMethods(t *testing.T) {
+	repo := &fakePaymentRepo{}
+	stripe := &fakeStripeCheckoutClient{
+		session: &StripeCheckoutSession{ID: "cs_checkout", URL: "https://checkout.stripe.com/c/pay/cs_checkout"},
+	}
+	svc := NewPaymentService(repo, nil, nil, &config.Config{
+		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
+			Enabled:   true,
+			SecretKey: "sk_test",
+			Currency:  "cny",
+		}},
+	})
+	svc.SetStripeClient(stripe)
+
+	result, err := svc.CreateCheckoutSession(context.Background(), CreateCheckoutSessionRequest{
+		UserID:     7,
+		Amount:     100,
+		SuccessURL: "https://example.com/success",
+		CancelURL:  "https://example.com/cancel",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "cs_checkout", result.SessionID)
+	require.Equal(t, PaymentMethodStripeCheckout, repo.created.PaymentMethod)
+	require.Equal(t, PaymentMethodStripeCheckout, stripe.params.PaymentMethod)
+	require.Equal(t, []string{PaymentMethodAlipay, PaymentMethodWechat}, stripe.params.PaymentMethods)
+}
+
 func TestPaymentServiceHandleStripeWebhookCreditsPaidSession(t *testing.T) {
 	now := time.Now()
 	payload := []byte(`{"id":"evt_paid","type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_paid"}}}`)
-	repo := &fakePaymentRepo{creditResult: &PaymentOrder{ID: "order_1", UserID: 9}}
+	repo := &fakePaymentRepo{creditResult: &PaymentOrder{
+		ID:                    "order_1",
+		UserID:                9,
+		Amount:                50,
+		Currency:              "cny",
+		BalanceBefore:         20,
+		BalanceAfter:          70,
+		StripePaymentIntentID: "pi_paid",
+	}}
+	notifier := &fakePaymentNotifier{}
 	svc := NewPaymentService(repo, nil, nil, &config.Config{
 		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
 			Enabled:       true,
@@ -90,6 +157,7 @@ func TestPaymentServiceHandleStripeWebhookCreditsPaidSession(t *testing.T) {
 			Currency:      "cny",
 		}},
 	})
+	svc.setPaymentNotifier(notifier)
 
 	result, err := svc.HandleStripeWebhook(context.Background(), payload, signedStripeHeader(payload, "whsec_test", now))
 	require.NoError(t, err)
@@ -98,6 +166,35 @@ func TestPaymentServiceHandleStripeWebhookCreditsPaidSession(t *testing.T) {
 	require.True(t, result.Credited)
 	require.Equal(t, "cs_paid", repo.creditCompletion.SessionID)
 	require.Equal(t, int64(5000), repo.creditCompletion.AmountCents)
+	require.Len(t, notifier.orders, 1)
+	require.Equal(t, "order_1", notifier.orders[0].ID)
+	require.Equal(t, 20.0, notifier.orders[0].BalanceBefore)
+	require.Equal(t, 70.0, notifier.orders[0].BalanceAfter)
+}
+
+func TestPaymentServiceHandleStripeWebhookSkipsNotifierForDuplicateCredit(t *testing.T) {
+	now := time.Now()
+	payload := []byte(`{"id":"evt_paid_dup","type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_paid"}}}`)
+	credited := false
+	repo := &fakePaymentRepo{
+		creditResult:   &PaymentOrder{ID: "order_1", UserID: 9, Amount: 50, Currency: "cny"},
+		creditCredited: &credited,
+	}
+	notifier := &fakePaymentNotifier{}
+	svc := NewPaymentService(repo, nil, nil, &config.Config{
+		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
+			Enabled:       true,
+			SecretKey:     "sk_test",
+			WebhookSecret: "whsec_test",
+			Currency:      "cny",
+		}},
+	})
+	svc.setPaymentNotifier(notifier)
+
+	result, err := svc.HandleStripeWebhook(context.Background(), payload, signedStripeHeader(payload, "whsec_test", now))
+	require.NoError(t, err)
+	require.False(t, result.Credited)
+	require.Empty(t, notifier.orders)
 }
 
 func TestPaymentServiceHandleStripeWebhookDefersUnpaidCompletedSession(t *testing.T) {
@@ -153,6 +250,7 @@ type fakePaymentRepo struct {
 	pendingSessionID string
 	creditCompletion StripeCheckoutCompletion
 	creditResult     *PaymentOrder
+	creditCredited   *bool
 	creditErr        error
 }
 
@@ -191,6 +289,9 @@ func (f *fakePaymentRepo) CreditStripePaymentOrder(_ context.Context, completion
 	if f.creditErr != nil {
 		return nil, false, f.creditErr
 	}
+	if f.creditCredited != nil {
+		return f.creditResult, *f.creditCredited, nil
+	}
 	return f.creditResult, f.creditResult != nil, nil
 }
 
@@ -201,4 +302,16 @@ func (f *fakePaymentRepo) ListByUserID(_ context.Context, _ int64, params pagina
 		PageSize: params.Limit(),
 		Pages:    0,
 	}, nil
+}
+
+type fakePaymentNotifier struct {
+	orders []PaymentOrder
+	err    error
+}
+
+func (f *fakePaymentNotifier) NotifyPaymentPaid(_ context.Context, order *PaymentOrder) error {
+	if order != nil {
+		f.orders = append(f.orders, *order)
+	}
+	return f.err
 }

@@ -210,12 +210,12 @@ type GatewayService struct {
 	deferredService     *DeferredService
 	concurrencyService  *ConcurrencyService
 	claudeTokenProvider *ClaudeTokenProvider
-	kiroTokenProvider   *KiroTokenProvider   // Kiro token provider for checking runtime status
-	sessionLimitCache   SessionLimitCache    // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	usageCache          *UsageCache          // 用量缓存，用于账号选择时检查配额
-	accountUsageService *AccountUsageService // 账号用量服务，用于主动刷新配额
-	tempAPIKeyRepo      TempAPIKeyRepository      // 临时 API Key 仓库，用于更新 quota_only 消费金额
-	apiKeyRepo          APIKeyRepository          // API Key 仓库，用于更新 quota_used_usd
+	kiroTokenProvider   *KiroTokenProvider         // Kiro token provider for checking runtime status
+	sessionLimitCache   SessionLimitCache          // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	usageCache          *UsageCache                // 用量缓存，用于账号选择时检查配额
+	accountUsageService *AccountUsageService       // 账号用量服务，用于主动刷新配额
+	tempAPIKeyRepo      TempAPIKeyRepository       // 临时 API Key 仓库，用于更新 quota_only 消费金额
+	apiKeyRepo          APIKeyRepository           // API Key 仓库，用于更新 quota_used_usd
 	apiKeyCacheInval    APIKeyAuthCacheInvalidator // API Key 认证缓存失效器
 }
 
@@ -2010,8 +2010,7 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 		return IsAntigravityModelSupported(requestedModel)
 	}
 	if account.Platform == PlatformKiro {
-		// Kiro 平台支持 Claude 模型
-		return IsKiroModelSupported(requestedModel)
+		return IsKiroModelSupportedByAccount(account, requestedModel)
 	}
 	if account.Platform == PlatformOpenAI {
 		// OpenAI 平台在混合调度中接收 claude-* 请求，通过协议转换支持
@@ -2029,10 +2028,26 @@ func IsAntigravityModelSupported(requestedModel string) bool {
 		strings.HasPrefix(requestedModel, "gemini-")
 }
 
-// IsKiroModelSupported 检查 Kiro 平台是否支持指定模型
-// Kiro 通过 CodeWhisperer 支持 Claude 模型
+// IsKiroModelSupported 检查 Kiro OAuth runtime 是否支持指定模型
+// Kiro apikey 账号不走 runtime，不适用这些非 Claude 模型。
 func IsKiroModelSupported(requestedModel string) bool {
-	return strings.HasPrefix(requestedModel, "claude-")
+	return kiro.IsOAuthModelSupported(requestedModel)
+}
+
+// IsKiroModelSupportedByAccount checks Kiro model support with the account auth type.
+func IsKiroModelSupportedByAccount(account *Account, requestedModel string) bool {
+	if account == nil || !account.IsKiro() {
+		return false
+	}
+	mapping := account.GetModelMapping()
+	if len(mapping) > 0 {
+		_, ok := mapping[requestedModel]
+		return ok
+	}
+	if account.IsKiroApiKey() {
+		return strings.HasPrefix(requestedModel, "claude-")
+	}
+	return IsKiroModelSupported(requestedModel)
 }
 
 // GetAccessToken 获取账号凭证
@@ -4602,6 +4617,13 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		if len(mapping) > 0 {
 			hasAnyMapping = true
 			for model := range mapping {
+				modelSet[model] = struct{}{}
+			}
+			continue
+		}
+		if acc.Platform == PlatformKiro && !acc.IsKiroApiKey() {
+			hasAnyMapping = true
+			for _, model := range kiro.DefaultModelIDs() {
 				modelSet[model] = struct{}{}
 			}
 		}

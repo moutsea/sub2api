@@ -1,10 +1,7 @@
 import { apiClient } from './client'
 
-export type PaymentMethod = 'alipay' | 'wechat_pay'
-
 export interface CreateCheckoutSessionRequest {
   amount: number
-  payment_method: PaymentMethod
 }
 
 export interface CreateCheckoutSessionResponse {
@@ -19,7 +16,7 @@ export interface PaymentOrder {
   id: string
   amount: number
   currency: string
-  payment_method: PaymentMethod
+  payment_method: string
   status: string
   created_at: string
   paid_at: string | null

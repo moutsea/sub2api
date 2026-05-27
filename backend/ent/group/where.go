@@ -150,6 +150,11 @@ func FallbackGroupID(v int64) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldFallbackGroupID, v))
 }
 
+// KiroOpus47Downgrade applies equality check predicate on the "kiro_opus_47_downgrade" field. It's identical to KiroOpus47DowngradeEQ.
+func KiroOpus47Downgrade(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldKiroOpus47Downgrade, v))
+}
+
 // ModelRoutingEnabled applies equality check predicate on the "model_routing_enabled" field. It's identical to ModelRoutingEnabledEQ.
 func ModelRoutingEnabled(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldModelRoutingEnabled, v))
@@ -1068,6 +1073,16 @@ func FallbackGroupIDIsNil() predicate.Group {
 // FallbackGroupIDNotNil applies the NotNil predicate on the "fallback_group_id" field.
 func FallbackGroupIDNotNil() predicate.Group {
 	return predicate.Group(sql.FieldNotNull(FieldFallbackGroupID))
+}
+
+// KiroOpus47DowngradeEQ applies the EQ predicate on the "kiro_opus_47_downgrade" field.
+func KiroOpus47DowngradeEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldKiroOpus47Downgrade, v))
+}
+
+// KiroOpus47DowngradeNEQ applies the NEQ predicate on the "kiro_opus_47_downgrade" field.
+func KiroOpus47DowngradeNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldKiroOpus47Downgrade, v))
 }
 
 // ModelRoutingIsNil applies the IsNil predicate on the "model_routing" field.

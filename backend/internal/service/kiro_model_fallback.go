@@ -13,6 +13,8 @@ import (
 const (
 	kiroDynamicProbeModelOpus47    = "claude-opus-4-7"
 	kiroDynamicFallbackModelOpus46 = "claude-opus-4-6"
+	kiroOpus47InitialTimeout       = 40 * time.Second
+	kiroOpus47CancelGrace          = 2 * time.Second
 
 	kiroModelCapabilitySupported   = "supported"
 	kiroModelCapabilityUnsupported = "unsupported"
@@ -30,7 +32,67 @@ type kiroModelCapabilityState struct {
 }
 
 func shouldAutoDetectKiroModel(account *Account, requestedModel string) bool {
-	return account != nil && account.IsKiro() && !account.IsKiroApiKey() && requestedModel == kiroDynamicProbeModelOpus47
+	return account != nil && account.IsKiro() && !account.IsKiroApiKey() && isKiroOpus47Model(requestedModel)
+}
+
+func isKiroOpus47Model(model string) bool {
+	switch strings.TrimSpace(strings.ToLower(model)) {
+	case kiroDynamicProbeModelOpus47, "claude-opus-4.7":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldFallbackSlowKiroOpus47(account *Account, requestedModel, upstreamModel string) bool {
+	return shouldAutoDetectKiroModel(account, requestedModel) && isKiroOpus47Model(upstreamModel)
+}
+
+func kiroOpus47InitialResponseTimeout(account *Account, requestedModel, upstreamModel string) time.Duration {
+	if !shouldFallbackSlowKiroOpus47(account, requestedModel, upstreamModel) {
+		return 0
+	}
+	return kiroOpus47InitialTimeout
+}
+
+func kiroOpus47RemainingInitialResponseTimeout(account *Account, requestedModel, upstreamModel string, startTime time.Time) time.Duration {
+	timeout := kiroOpus47InitialResponseTimeout(account, requestedModel, upstreamModel)
+	if timeout <= 0 || startTime.IsZero() {
+		return timeout
+	}
+	remaining := time.Until(startTime.Add(timeout))
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
+}
+
+type kiroOpus47InitialResponseTimeoutError struct {
+	Phase   string
+	Timeout time.Duration
+}
+
+func (e *kiroOpus47InitialResponseTimeoutError) Error() string {
+	if e == nil {
+		return "kiro opus 4.7 initial response timeout"
+	}
+	phase := strings.TrimSpace(e.Phase)
+	if phase == "" {
+		phase = "initial_response"
+	}
+	return fmt.Sprintf("kiro opus 4.7 %s timeout after %s", phase, e.Timeout)
+}
+
+func newKiroOpus47InitialResponseTimeoutError(phase string, timeout time.Duration) error {
+	return &kiroOpus47InitialResponseTimeoutError{
+		Phase:   phase,
+		Timeout: timeout,
+	}
+}
+
+func isKiroOAuthOnlyModel(requestedModel string) bool {
+	model := strings.TrimSpace(strings.ToLower(requestedModel))
+	return kiro.IsOAuthModelSupported(model) && !strings.HasPrefix(model, "claude-")
 }
 
 func (s *KiroGatewayService) resolveKiroUpstreamModel(account *Account, requestedModel string) string {
@@ -90,7 +152,7 @@ func (s *KiroGatewayService) setKiroModelCapability(accountID int64, requestedMo
 }
 
 func (s *KiroGatewayService) maybeFallbackUnsupportedKiroModel(account *Account, requestedModel, upstreamModel, errorMsg string) (string, bool) {
-	if !shouldAutoDetectKiroModel(account, requestedModel) || upstreamModel != kiroDynamicProbeModelOpus47 {
+	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroOpus47Model(upstreamModel) {
 		return "", false
 	}
 	if !isKiroUnsupportedModelError(errorMsg, requestedModel, kiro.GetModelID(requestedModel)) {
@@ -102,10 +164,27 @@ func (s *KiroGatewayService) maybeFallbackUnsupportedKiroModel(account *Account,
 }
 
 func (s *KiroGatewayService) markKiroModelSupported(account *Account, requestedModel, upstreamModel string) {
-	if !shouldAutoDetectKiroModel(account, requestedModel) || upstreamModel != kiroDynamicProbeModelOpus47 {
+	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroOpus47Model(upstreamModel) {
 		return
 	}
 	s.setKiroModelCapability(account.ID, requestedModel, kiroModelCapabilitySupported)
+}
+
+func rewriteTopLevelModelJSON(body []byte, model string) ([]byte, error) {
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("parse request body: %w", err)
+	}
+	modelBytes, err := json.Marshal(model)
+	if err != nil {
+		return nil, fmt.Errorf("serialize fallback model: %w", err)
+	}
+	req["model"] = modelBytes
+	rewritten, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("serialize fallback request body: %w", err)
+	}
+	return rewritten, nil
 }
 
 func isKiroUnsupportedModelError(errorMsg string, modelVariants ...string) bool {

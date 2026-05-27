@@ -146,6 +146,37 @@ func TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved(t *testing.T) {
 	require.False(t, store)
 }
 
+func TestApplyCodexOAuthTransform_StoreFalseAddsReasoningEncryptedContentInclude(t *testing.T) {
+	setupCodexCache(t)
+
+	reqBody := map[string]any{
+		"model":   "gpt-5.1",
+		"include": []any{"file_search_call.results"},
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "hi"},
+		},
+	}
+
+	applyCodexOAuthTransform(reqBody)
+
+	include, ok := reqBody["include"].([]any)
+	require.True(t, ok)
+	require.Contains(t, include, "file_search_call.results")
+	require.Contains(t, include, "reasoning.encrypted_content")
+}
+
+func TestEnsureReasoningEncryptedContentInclude_PreservesExistingValue(t *testing.T) {
+	reqBody := map[string]any{
+		"store":   false,
+		"include": []any{"reasoning.encrypted_content"},
+	}
+
+	modified := ensureReasoningEncryptedContentInclude(reqBody)
+
+	require.False(t, modified)
+	require.Equal(t, []any{"reasoning.encrypted_content"}, reqBody["include"])
+}
+
 func TestApplyCodexOAuthTransform_GPT55CodexAliasMapsToStableModelAndEffort(t *testing.T) {
 	setupCodexCache(t)
 

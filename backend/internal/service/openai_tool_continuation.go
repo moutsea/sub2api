@@ -2,6 +2,77 @@ package service
 
 import "strings"
 
+type openAIStatelessInputReferenceError struct {
+	itemID   string
+	itemType string
+}
+
+func (e *openAIStatelessInputReferenceError) Error() string {
+	if e.itemID != "" {
+		return "openai responses input contains non-reusable stateless item id: " + e.itemID
+	}
+	return "openai responses input contains non-reusable stateless " + e.itemType + " item"
+}
+
+func (e *openAIStatelessInputReferenceError) ClientMessage() string {
+	if e.itemID == "" {
+		return "Input contains a reasoning item without encrypted_content while store=false. Reasoning items are not persisted in stateless mode; remove the reasoning item from input or request include: [\"reasoning.encrypted_content\"] on the previous response."
+	}
+	return "Input contains reasoning item id " + e.itemID + " from a response created with store=false. Reasoning items are not persisted in stateless mode; remove this item from input or request include: [\"reasoning.encrypted_content\"] on the previous response."
+}
+
+func validateOpenAIStatelessInputReferences(reqBody map[string]any) *openAIStatelessInputReferenceError {
+	if reqBody == nil {
+		return nil
+	}
+	store, ok := reqBody["store"].(bool)
+	if !ok || store {
+		return nil
+	}
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return nil
+	}
+	for _, item := range input {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if itemID, itemType, invalid := nonReusableStatelessReasoningItem(itemMap); invalid {
+			return &openAIStatelessInputReferenceError{itemID: itemID, itemType: itemType}
+		}
+	}
+	return nil
+}
+
+func nonReusableStatelessReasoningItem(item map[string]any) (string, string, bool) {
+	if item == nil {
+		return "", "", false
+	}
+	itemType, _ := item["type"].(string)
+	itemType = strings.TrimSpace(itemType)
+	itemID, _ := item["id"].(string)
+	itemID = strings.TrimSpace(itemID)
+
+	if itemType == "reasoning" {
+		if hasNonEmptyString(item["encrypted_content"]) {
+			return "", "", false
+		}
+		return itemID, itemType, true
+	}
+
+	if !strings.HasPrefix(itemID, "rs_") {
+		return "", "", false
+	}
+	if hasNonEmptyString(item["encrypted_content"]) {
+		return "", "", false
+	}
+	if itemType == "" {
+		itemType = "reasoning"
+	}
+	return itemID, itemType, true
+}
+
 // NeedsToolContinuation 判定请求是否需要工具调用续链处理。
 // 满足以下任一信号即视为续链：previous_response_id、input 内包含 function_call_output/item_reference、
 // 或显式声明 tools/tool_choice。

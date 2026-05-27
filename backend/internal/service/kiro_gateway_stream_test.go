@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,87 @@ func newKiroStreamHTTPResponse(body string) *http.Response {
 		Body:       io.NopCloser(bytes.NewReader([]byte(body))),
 		Header:     http.Header{},
 	}
+}
+
+type blockingReadCloser struct {
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{closed: make(chan struct{})}
+}
+
+func (r *blockingReadCloser) Read(_ []byte) (int, error) {
+	<-r.closed
+	return 0, io.EOF
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.once.Do(func() {
+		close(r.closed)
+	})
+	return nil
+}
+
+func newBlockingKiroStreamHTTPResponse(body io.ReadCloser) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       body,
+		Header:     http.Header{},
+	}
+}
+
+type waitForCancelHTTPUpstream struct {
+	cancelSeen chan struct{}
+	release    chan struct{}
+}
+
+func newWaitForCancelHTTPUpstream() *waitForCancelHTTPUpstream {
+	return &waitForCancelHTTPUpstream{
+		cancelSeen: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (u *waitForCancelHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	<-req.Context().Done()
+	close(u.cancelSeen)
+	<-u.release
+	return nil, req.Context().Err()
+}
+
+func TestKiroInitialTimeoutDoesNotWaitForeverForCanceledUpstream(t *testing.T) {
+	upstream := newWaitForCancelHTTPUpstream()
+	svc := &KiroGatewayService{httpUpstream: upstream}
+	req := httptest.NewRequest(http.MethodPost, "https://runtime.us-east-1.kiro.dev/assistant", nil)
+
+	type result struct {
+		err      error
+		timedOut bool
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		_, err, timedOut := svc.doUpstreamWithInitialTimeoutAndGrace(context.Background(), req, "", 1, 1, 10*time.Millisecond, 10*time.Millisecond)
+		resultCh <- result{err: err, timedOut: timedOut}
+	}()
+
+	select {
+	case <-upstream.cancelSeen:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("upstream request was not cancelled after initial timeout")
+	}
+
+	select {
+	case got := <-resultCh:
+		if !got.timedOut {
+			t.Fatalf("timedOut = false, want true; err=%v", got.err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("doUpstreamWithInitialTimeout did not return after cancel grace")
+	}
+
+	close(upstream.release)
 }
 
 func TestKiroStreamingEmptyBodyTriggersFailoverBeforeCommit(t *testing.T) {
@@ -59,6 +141,72 @@ func TestKiroStreamingEmptyBodyTriggersFailoverBeforeCommit(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
+	}
+}
+
+func TestKiroStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	body := newBlockingReadCloser()
+	defer body.Close()
+
+	result, err := svc.handleStreamingResponseWithOptions(
+		c,
+		newBlockingKiroStreamHTTPResponse(body),
+		time.Now(),
+		"claude-opus-4-7",
+		10,
+		nil,
+		0,
+		0,
+		false,
+		false,
+		kiroStreamOptions{initialResponseTimeout: 10 * time.Millisecond},
+	)
+	_ = body.Close()
+
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	var timeoutErr *kiroOpus47InitialResponseTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("err = %v, want kiroOpus47InitialResponseTimeoutError", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty before fallback", rec.Body.String())
+	}
+}
+
+func TestKiroNonStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	body := newBlockingReadCloser()
+	defer body.Close()
+
+	result, err := svc.handleNonStreamingResponseWithOptions(
+		c,
+		newBlockingKiroStreamHTTPResponse(body),
+		time.Now(),
+		"claude-opus-4-7",
+		10,
+		nil,
+		0,
+		0,
+		false,
+		false,
+		kiroStreamOptions{initialResponseTimeout: 10 * time.Millisecond},
+	)
+	_ = body.Close()
+
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	var timeoutErr *kiroOpus47InitialResponseTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("err = %v, want kiroOpus47InitialResponseTimeoutError", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty before fallback", rec.Body.String())
 	}
 }
 

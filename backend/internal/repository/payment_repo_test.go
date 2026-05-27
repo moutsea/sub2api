@@ -26,9 +26,9 @@ func TestPaymentRepositoryCreditStripePaymentOrderAllowsDiscountedAmount(t *test
 	mock.ExpectExec("UPDATE payment_orders\\s+SET status = \\$2").
 		WithArgs("order_1", service.PaymentStatusPaid, "pi_discount", "evt_discount", sqlmock.AnyArg(), nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE users").
+	mock.ExpectQuery("UPDATE users").
 		WithArgs(int64(7), 100.0).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(125.0))
 	mock.ExpectExec("UPDATE payment_orders\\s+SET credited_at").
 		WithArgs("order_1", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -46,6 +46,8 @@ func TestPaymentRepositoryCreditStripePaymentOrderAllowsDiscountedAmount(t *test
 	require.True(t, credited)
 	require.NotNil(t, order)
 	require.Equal(t, service.PaymentStatusPaid, order.Status)
+	require.Equal(t, 25.0, order.BalanceBefore)
+	require.Equal(t, 125.0, order.BalanceAfter)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -16,30 +16,31 @@ type APIKeyAuthSnapshot struct {
 
 // APIKeyAuthUserSnapshot 用户快照
 type APIKeyAuthUserSnapshot struct {
-	ID                int64               `json:"id"`
-	Status            string              `json:"status"`
-	Role              string              `json:"role"`
-	Balance           float64             `json:"balance"`
-	Concurrency       int                 `json:"concurrency"`
-	AllowedGroupRates map[int64]*float64  `json:"allowed_group_rates,omitempty"` // Per-group custom rate overrides
+	ID                int64              `json:"id"`
+	Status            string             `json:"status"`
+	Role              string             `json:"role"`
+	Balance           float64            `json:"balance"`
+	Concurrency       int                `json:"concurrency"`
+	AllowedGroupRates map[int64]*float64 `json:"allowed_group_rates,omitempty"` // Per-group custom rate overrides
 }
 
 // APIKeyAuthGroupSnapshot 分组快照
 type APIKeyAuthGroupSnapshot struct {
-	ID               int64    `json:"id"`
-	Name             string   `json:"name"`
-	Platform         string   `json:"platform"`
-	Status           string   `json:"status"`
-	SubscriptionType string   `json:"subscription_type"`
-	RateMultiplier   float64  `json:"rate_multiplier"`
-	DailyLimitUSD    *float64 `json:"daily_limit_usd,omitempty"`
-	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd,omitempty"`
-	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd,omitempty"`
-	ImagePrice1K     *float64 `json:"image_price_1k,omitempty"`
-	ImagePrice2K     *float64 `json:"image_price_2k,omitempty"`
-	ImagePrice4K     *float64 `json:"image_price_4k,omitempty"`
-	ClaudeCodeOnly   bool     `json:"claude_code_only"`
-	FallbackGroupID  *int64   `json:"fallback_group_id,omitempty"`
+	ID                  int64    `json:"id"`
+	Name                string   `json:"name"`
+	Platform            string   `json:"platform"`
+	Status              string   `json:"status"`
+	SubscriptionType    string   `json:"subscription_type"`
+	RateMultiplier      float64  `json:"rate_multiplier"`
+	DailyLimitUSD       *float64 `json:"daily_limit_usd,omitempty"`
+	WeeklyLimitUSD      *float64 `json:"weekly_limit_usd,omitempty"`
+	MonthlyLimitUSD     *float64 `json:"monthly_limit_usd,omitempty"`
+	ImagePrice1K        *float64 `json:"image_price_1k,omitempty"`
+	ImagePrice2K        *float64 `json:"image_price_2k,omitempty"`
+	ImagePrice4K        *float64 `json:"image_price_4k,omitempty"`
+	ClaudeCodeOnly      bool     `json:"claude_code_only"`
+	FallbackGroupID     *int64   `json:"fallback_group_id,omitempty"`
+	KiroOpus47Downgrade bool     `json:"kiro_opus_47_downgrade"`
 
 	// Model routing is used by gateway account selection, so it must be part of auth cache snapshot.
 	// Only anthropic groups use these fields; others may leave them empty.

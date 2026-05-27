@@ -126,6 +126,16 @@ payment:
     # Minimum recharge amount in RMB. 0 means no extra minimum beyond amount > 0.
     # 最低充值金额（人民币）。0 表示除金额必须大于 0 外不设置额外最低额。
     min_recharge_amount: 0
+  feishu:
+    # Send a Feishu/Lark bot message after a Stripe order is credited.
+    # Stripe 订单实际入账后发送飞书/Lark 机器人通知。
+    enabled: false
+    # Feishu/Lark custom bot webhook URL. Prefer PAYMENT_FEISHU_WEBHOOK_URL in production.
+    # 飞书/Lark 自定义机器人 Webhook URL。生产环境建议使用 PAYMENT_FEISHU_WEBHOOK_URL 环境变量。
+    webhook_url: ""
+    # Feishu/Lark custom bot signing secret. Prefer PAYMENT_FEISHU_WEBHOOK_SECRET in production.
+    # 飞书/Lark 自定义机器人签名密钥。生产环境建议使用 PAYMENT_FEISHU_WEBHOOK_SECRET 环境变量。
+    webhook_secret: ""
 
 # =============================================================================
 # Gateway Configuration

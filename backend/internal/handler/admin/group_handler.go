@@ -40,6 +40,8 @@ type CreateGroupRequest struct {
 	ImagePrice4K    *float64 `json:"image_price_4k"`
 	ClaudeCodeOnly  bool     `json:"claude_code_only"`
 	FallbackGroupID *int64   `json:"fallback_group_id"`
+	// Kiro 平台配置
+	KiroOpus47Downgrade bool `json:"kiro_opus_47_downgrade"`
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`
 	ModelRoutingEnabled bool               `json:"model_routing_enabled"`
@@ -63,6 +65,8 @@ type UpdateGroupRequest struct {
 	ImagePrice4K    *float64 `json:"image_price_4k"`
 	ClaudeCodeOnly  *bool    `json:"claude_code_only"`
 	FallbackGroupID *int64   `json:"fallback_group_id"`
+	// Kiro 平台配置
+	KiroOpus47Downgrade *bool `json:"kiro_opus_47_downgrade"`
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`
 	ModelRoutingEnabled *bool              `json:"model_routing_enabled"`
@@ -169,6 +173,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		ImagePrice4K:        req.ImagePrice4K,
 		ClaudeCodeOnly:      req.ClaudeCodeOnly,
 		FallbackGroupID:     req.FallbackGroupID,
+		KiroOpus47Downgrade: req.KiroOpus47Downgrade,
 		ModelRouting:        req.ModelRouting,
 		ModelRoutingEnabled: req.ModelRoutingEnabled,
 	})
@@ -211,6 +216,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		ImagePrice4K:        req.ImagePrice4K,
 		ClaudeCodeOnly:      req.ClaudeCodeOnly,
 		FallbackGroupID:     req.FallbackGroupID,
+		KiroOpus47Downgrade: req.KiroOpus47Downgrade,
 		ModelRouting:        req.ModelRouting,
 		ModelRoutingEnabled: req.ModelRoutingEnabled,
 	})

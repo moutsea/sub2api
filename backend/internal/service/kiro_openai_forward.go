@@ -29,6 +29,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, fmt.Errorf("convert openai to claude: %w", err)
 	}
+	if account.IsKiroApiKey() && isKiroOAuthOnlyModel(claudeReq.Model) {
+		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
+	}
 
 	// Ensure stream is set (Kiro always uses streaming internally)
 	wantStream := claudeReq.Stream
@@ -113,199 +116,263 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	var resp *http.Response
 	var lastErr error
+	modelFallbackAttempted := activeUpstreamModel != originalModel
 	tokenRefreshed := false
 
-	for epIdx, ep := range endpoints {
-		attempt := 1
-		for attempt <= kiroMaxRetries {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
-			}
-
-			upstreamReq, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
-			if err != nil {
-				return nil, fmt.Errorf("create request: %w", err)
-			}
-
-			upstreamReq.Header.Set("Content-Type", "application/json")
-			upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
-			upstreamReq.Header.Set("Accept", "text/event-stream")
-			upstreamReq.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
-			upstreamReq.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
-			upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-			upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-			upstreamReq.Header.Set("Host", ep.Host)
-			upstreamReq.Header.Set("Connection", "close")
-			upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
-			upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
-			if ep.AmzTarget != "" {
-				upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
-			}
-
-			// Apply request jitter before upstream call to prevent thundering herd
-			s.applyRequestJitter(ctx)
-
-			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-			if err != nil {
-				if attempt < kiroMaxRetries {
-					log.Printf("%s endpoint=%s status=request_failed retry=%d/%d error=%v", prefix, ep.Name, attempt, kiroMaxRetries, err)
-					if !sleepKiroBackoffWithContext(ctx, attempt) {
-						return nil, ctx.Err()
-					}
-					attempt++
-					continue
-				}
-				lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
-				break
-			}
-
-			if resp.StatusCode == http.StatusTooManyRequests {
-				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				_ = resp.Body.Close()
-				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
-				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
-				break
-			}
-
-			if resp.StatusCode == http.StatusUnauthorized {
-				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				_ = resp.Body.Close()
-
-				if tokenRefreshed || s.tokenProvider == nil {
-					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
-					break
-				}
-
-				s.tokenProvider.InvalidateToken(account.ID)
-				newToken, refreshErr := s.tokenProvider.GetAccessToken(ctx, account)
-				if refreshErr != nil {
-					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
-					break
-				}
-				_ = respBody
-				accessToken = newToken
-				tokenRefreshed = true
-				continue
-			}
-
-			if resp.StatusCode == 529 {
-				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				_ = resp.Body.Close()
-				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
-				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
-				break
-			}
-
-			if resp.StatusCode == http.StatusBadRequest {
-				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				_ = resp.Body.Close()
-				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
-
-				// "profileArn is required" is endpoint-specific — failover to next endpoint
-				rawErrorMsg := extractKiroErrorMessage(respBody)
-				if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, originalModel, activeUpstreamModel, rawErrorMsg); ok {
-					log.Printf("%s endpoint=%s dynamic_model_fallback_retry: %s -> %s", prefix, ep.Name, activeUpstreamModel, fallbackModel)
-					activeUpstreamModel = fallbackModel
-					mappedModel = kiro.GetModelID(activeUpstreamModel)
-					_, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
-					if err != nil {
-						return nil, fmt.Errorf("prepare fallback request: %w", err)
-					}
-					log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
-					continue
-				}
-
-				errorMsg := strings.ToLower(rawErrorMsg)
-				if strings.Contains(errorMsg, "profilearn is required") || strings.Contains(errorMsg, "profilearn") {
-					log.Printf("%s endpoint=%s status=400 profileArn_required, trying next endpoint", prefix, ep.Name)
-					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
-					break
-				}
-
-				return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
-					"Bad request: "+extractKiroErrorMessage(respBody))
-			}
-
-			if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
-				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				_ = resp.Body.Close()
-				if attempt < kiroMaxRetries {
-					log.Printf("%s endpoint=%s status=%d retrying %d/%d", prefix, ep.Name, resp.StatusCode, attempt, kiroMaxRetries)
-					if !sleepKiroBackoffWithContext(ctx, attempt) {
-						return nil, ctx.Err()
-					}
-					attempt++
-					continue
-				}
-				_ = respBody
-				lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
-				break
-			}
-
-			goto endpointDone
+	prepareSlowModelFallback := func(timeout time.Duration) error {
+		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus47(account, originalModel, activeUpstreamModel) {
+			return nil
 		}
+		log.Printf("%s status=all_endpoints_initial_response_timeout requested_model=%s effective_model=%s timeout=%s fallback=%s",
+			prefix, originalModel, activeUpstreamModel, timeout, kiroDynamicFallbackModelOpus46)
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:    account.Platform,
+			AccountID:   account.ID,
+			AccountName: account.Name,
+			Kind:        "model_fallback",
+			Message:     fmt.Sprintf("%s initial response timeout on all endpoints; retrying with %s", activeUpstreamModel, kiroDynamicFallbackModelOpus46),
+		})
+		activeUpstreamModel = kiroDynamicFallbackModelOpus46
+		mappedModel = kiro.GetModelID(activeUpstreamModel)
+		var err error
+		_, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+		if err != nil {
+			return fmt.Errorf("prepare slow fallback request: %w", err)
+		}
+		modelFallbackAttempted = true
+		log.Printf("%s slow_model_fallback_retry requested_model=%s effective_model=%s request_size=%d mapped_model=%s",
+			prefix, originalModel, activeUpstreamModel, len(reqBody), mappedModel)
+		return nil
+	}
 
+modelAttemptLoop:
+	for {
 		resp = nil
-		if epIdx < len(endpoints)-1 {
-			log.Printf("%s switching from endpoint %s to %s", prefix, ep.Name, endpoints[epIdx+1].Name)
+		lastErr = nil
+		initialTimeoutEndpoints := 0
+		attemptedEndpoints := 0
+
+		for epIdx, ep := range endpoints {
+			attemptedEndpoints++
+			attempt := 1
+			for attempt <= kiroMaxRetries {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				default:
+				}
+
+				upstreamReq, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
+				if err != nil {
+					return nil, fmt.Errorf("create request: %w", err)
+				}
+
+				upstreamReq.Header.Set("Content-Type", "application/json")
+				upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
+				upstreamReq.Header.Set("Accept", "text/event-stream")
+				upstreamReq.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.12.0 api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", kiroVersion, machineID))
+				upstreamReq.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", kiroVersion, machineID))
+				upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+				upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
+				upstreamReq.Header.Set("Host", ep.Host)
+				upstreamReq.Header.Set("Connection", "close")
+				upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+				upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
+				if ep.AmzTarget != "" {
+					upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
+				}
+
+				// Apply request jitter before upstream call to prevent thundering herd
+				s.applyRequestJitter(ctx)
+
+				initialTimeout := kiroOpus47InitialResponseTimeout(account, originalModel, activeUpstreamModel)
+				var initialTimedOut bool
+				resp, err, initialTimedOut = s.doUpstreamWithInitialTimeout(ctx, upstreamReq, proxyURL, account.ID, account.Concurrency, initialTimeout)
+				if initialTimedOut {
+					initialTimeoutEndpoints++
+					lastErr = newKiroOpus47InitialResponseTimeoutError("response_headers", initialTimeout)
+					log.Printf("%s endpoint=%s status=initial_response_timeout model=%s timeout=%s",
+						prefix, ep.Name, activeUpstreamModel, initialTimeout)
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:    account.Platform,
+						AccountID:   account.ID,
+						AccountName: account.Name,
+						Kind:        "model_fallback_candidate",
+						Message:     fmt.Sprintf("%s initial response timeout on endpoint %s", activeUpstreamModel, ep.Name),
+					})
+					break
+				}
+				if err != nil {
+					if attempt < kiroMaxRetries {
+						log.Printf("%s endpoint=%s status=request_failed retry=%d/%d error=%v", prefix, ep.Name, attempt, kiroMaxRetries, err)
+						if !sleepKiroBackoffWithContext(ctx, attempt) {
+							return nil, ctx.Err()
+						}
+						attempt++
+						continue
+					}
+					lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
+					break
+				}
+
+				if resp.StatusCode == http.StatusTooManyRequests {
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+					_ = resp.Body.Close()
+					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+					break
+				}
+
+				if resp.StatusCode == http.StatusUnauthorized {
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+					_ = resp.Body.Close()
+
+					if tokenRefreshed || s.tokenProvider == nil {
+						lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+						break
+					}
+
+					s.tokenProvider.InvalidateToken(account.ID)
+					newToken, refreshErr := s.tokenProvider.GetAccessToken(ctx, account)
+					if refreshErr != nil {
+						lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+						break
+					}
+					_ = respBody
+					accessToken = newToken
+					tokenRefreshed = true
+					continue
+				}
+
+				if resp.StatusCode == 529 {
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+					_ = resp.Body.Close()
+					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+					break
+				}
+
+				if resp.StatusCode == http.StatusBadRequest {
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+					_ = resp.Body.Close()
+					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+
+					// "profileArn is required" is endpoint-specific — failover to next endpoint
+					rawErrorMsg := extractKiroErrorMessage(respBody)
+					if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, originalModel, activeUpstreamModel, rawErrorMsg); ok {
+						log.Printf("%s endpoint=%s dynamic_model_fallback_retry: %s -> %s", prefix, ep.Name, activeUpstreamModel, fallbackModel)
+						activeUpstreamModel = fallbackModel
+						mappedModel = kiro.GetModelID(activeUpstreamModel)
+						_, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+						if err != nil {
+							return nil, fmt.Errorf("prepare fallback request: %w", err)
+						}
+						modelFallbackAttempted = true
+						log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
+						continue
+					}
+
+					errorMsg := strings.ToLower(rawErrorMsg)
+					if strings.Contains(errorMsg, "profilearn is required") || strings.Contains(errorMsg, "profilearn") {
+						log.Printf("%s endpoint=%s status=400 profileArn_required, trying next endpoint", prefix, ep.Name)
+						lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+						break
+					}
+
+					return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
+						"Bad request: "+extractKiroErrorMessage(respBody))
+				}
+
+				if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+					_ = resp.Body.Close()
+					if attempt < kiroMaxRetries {
+						log.Printf("%s endpoint=%s status=%d retrying %d/%d", prefix, ep.Name, resp.StatusCode, attempt, kiroMaxRetries)
+						if !sleepKiroBackoffWithContext(ctx, attempt) {
+							return nil, ctx.Err()
+						}
+						attempt++
+						continue
+					}
+					_ = respBody
+					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
+					break
+				}
+
+				goto endpointDone
+			}
+
+			resp = nil
+			if epIdx < len(endpoints)-1 {
+				log.Printf("%s switching from endpoint %s to %s", prefix, ep.Name, endpoints[epIdx+1].Name)
+			}
 		}
+
+		if resp == nil {
+			if initialTimeoutEndpoints > 0 && initialTimeoutEndpoints == attemptedEndpoints {
+				if err := prepareSlowModelFallback(kiroOpus47InitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
+					return nil, err
+				}
+				if modelFallbackAttempted && activeUpstreamModel == kiroDynamicFallbackModelOpus46 {
+					continue modelAttemptLoop
+				}
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, s.writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "All endpoints failed")
+		}
+
+	endpointDone:
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode >= 400 {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
+			if s.shouldFailoverUpstreamError(resp.StatusCode) {
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
+			}
+			return nil, s.writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		}
+		s.markKiroModelSupported(account, originalModel, activeUpstreamModel)
+
+		// 8. Process response
+		inputTokens := kiro.EstimateInputTokens(claudeReq)
+		toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
+
+		// Calculate cache tokens (cache_read + cache_creation coexist)
+		// CW path: cap to model-specific context window
+		cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.GetContextWindowLimit(activeUpstreamModel))
+		thinkingEnabled := kiro.IsThinkingConfigEnabled(claudeReq)
+
+		var usage *OpenAIUsage
+		var firstTokenMs *int
+
+		if wantStream {
+			result, err := s.handleOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
+			if err != nil {
+				return nil, err
+			}
+			usage = result.usage
+			firstTokenMs = result.firstTokenMs
+		} else {
+			result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
+			if err != nil {
+				return nil, err
+			}
+			usage = result.usage
+		}
+
+		if activeUpstreamModel != originalModel {
+			log.Printf("%s model_effective requested_model=%s effective_model=%s", prefix, originalModel, activeUpstreamModel)
+		}
+		return &OpenAIForwardResult{
+			RequestID:    resp.Header.Get("x-amzn-requestid"),
+			Usage:        *usage,
+			Model:        activeUpstreamModel,
+			Stream:       wantStream,
+			Duration:     time.Since(startTime),
+			FirstTokenMs: firstTokenMs,
+		}, nil
 	}
-
-	if resp == nil {
-		if lastErr != nil {
-			return nil, lastErr
-		}
-		return nil, s.writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "All endpoints failed")
-	}
-
-endpointDone:
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
-		}
-		return nil, s.writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-	}
-	s.markKiroModelSupported(account, originalModel, activeUpstreamModel)
-
-	// 8. Process response
-	inputTokens := kiro.EstimateInputTokens(claudeReq)
-	toolNameReverseMap := kiro.BuildReverseMapFromClaudeTools(claudeReq.Tools)
-
-	// Calculate cache tokens (cache_read + cache_creation coexist)
-	// CW path: cap to model-specific context window
-	cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.GetContextWindowLimit(originalModel))
-	thinkingEnabled := kiro.IsThinkingConfigEnabled(claudeReq)
-
-	var usage *OpenAIUsage
-	var firstTokenMs *int
-
-	if wantStream {
-		result, err := s.handleOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
-		if err != nil {
-			return nil, err
-		}
-		usage = result.usage
-		firstTokenMs = result.firstTokenMs
-	} else {
-		result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
-		if err != nil {
-			return nil, err
-		}
-		usage = result.usage
-	}
-
-	return &OpenAIForwardResult{
-		RequestID:    resp.Header.Get("x-amzn-requestid"),
-		Usage:        *usage,
-		Model:        originalModel,
-		Stream:       wantStream,
-		Duration:     time.Since(startTime),
-		FirstTokenMs: firstTokenMs,
-	}, nil
 }

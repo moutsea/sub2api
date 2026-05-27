@@ -6,6 +6,71 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestValidateOpenAIStatelessInputReferences_RejectsReasoningIDWithoutEncryptedContent(t *testing.T) {
+	reqBody := map[string]any{
+		"store": false,
+		"input": []any{
+			map[string]any{"type": "reasoning", "id": "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726"},
+		},
+	}
+
+	err := validateOpenAIStatelessInputReferences(reqBody)
+
+	require.Error(t, err)
+	require.Contains(t, err.ClientMessage(), "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726")
+}
+
+func TestValidateOpenAIStatelessInputReferences_AllowsEncryptedReasoningContent(t *testing.T) {
+	reqBody := map[string]any{
+		"store": false,
+		"input": []any{
+			map[string]any{
+				"type":              "reasoning",
+				"id":                "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726",
+				"encrypted_content": "enc",
+			},
+		},
+	}
+
+	require.Nil(t, validateOpenAIStatelessInputReferences(reqBody))
+}
+
+func TestValidateOpenAIStatelessInputReferences_RejectsReasoningWithoutIDOrEncryptedContent(t *testing.T) {
+	reqBody := map[string]any{
+		"store": false,
+		"input": []any{
+			map[string]any{"type": "reasoning"},
+		},
+	}
+
+	err := validateOpenAIStatelessInputReferences(reqBody)
+
+	require.Error(t, err)
+	require.Contains(t, err.ClientMessage(), "reasoning item without encrypted_content")
+}
+
+func TestValidateOpenAIStatelessInputReferences_RejectsReasoningItemReference(t *testing.T) {
+	reqBody := map[string]any{
+		"store": false,
+		"input": []any{
+			map[string]any{"type": "item_reference", "id": "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726"},
+		},
+	}
+
+	require.Error(t, validateOpenAIStatelessInputReferences(reqBody))
+}
+
+func TestValidateOpenAIStatelessInputReferences_StoreTrueNotStateless(t *testing.T) {
+	reqBody := map[string]any{
+		"store": true,
+		"input": []any{
+			map[string]any{"type": "reasoning", "id": "rs_02b340e9f9ee714e016a04830017c08193a6ba36add422c726"},
+		},
+	}
+
+	require.Nil(t, validateOpenAIStatelessInputReferences(reqBody))
+}
+
 func TestNeedsToolContinuationSignals(t *testing.T) {
 	// 覆盖所有触发续链的信号来源，确保判定逻辑完整。
 	cases := []struct {

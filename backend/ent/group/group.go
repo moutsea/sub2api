@@ -53,6 +53,8 @@ const (
 	FieldClaudeCodeOnly = "claude_code_only"
 	// FieldFallbackGroupID holds the string denoting the fallback_group_id field in the database.
 	FieldFallbackGroupID = "fallback_group_id"
+	// FieldKiroOpus47Downgrade holds the string denoting the kiro_opus_47_downgrade field in the database.
+	FieldKiroOpus47Downgrade = "kiro_opus_47_downgrade"
 	// FieldModelRouting holds the string denoting the model_routing field in the database.
 	FieldModelRouting = "model_routing"
 	// FieldModelRoutingEnabled holds the string denoting the model_routing_enabled field in the database.
@@ -160,6 +162,7 @@ var Columns = []string{
 	FieldImagePrice4k,
 	FieldClaudeCodeOnly,
 	FieldFallbackGroupID,
+	FieldKiroOpus47Downgrade,
 	FieldModelRouting,
 	FieldModelRoutingEnabled,
 }
@@ -219,6 +222,8 @@ var (
 	DefaultDefaultValidityDays int
 	// DefaultClaudeCodeOnly holds the default value on creation for the "claude_code_only" field.
 	DefaultClaudeCodeOnly bool
+	// DefaultKiroOpus47Downgrade holds the default value on creation for the "kiro_opus_47_downgrade" field.
+	DefaultKiroOpus47Downgrade bool
 	// DefaultModelRoutingEnabled holds the default value on creation for the "model_routing_enabled" field.
 	DefaultModelRoutingEnabled bool
 )
@@ -324,6 +329,11 @@ func ByClaudeCodeOnly(opts ...sql.OrderTermOption) OrderOption {
 // ByFallbackGroupID orders the results by the fallback_group_id field.
 func ByFallbackGroupID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldFallbackGroupID, opts...).ToFunc()
+}
+
+// ByKiroOpus47Downgrade orders the results by the kiro_opus_47_downgrade field.
+func ByKiroOpus47Downgrade(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldKiroOpus47Downgrade, opts...).ToFunc()
 }
 
 // ByModelRoutingEnabled orders the results by the model_routing_enabled field.

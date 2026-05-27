@@ -140,6 +140,9 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 		reqBody["stream"] = true
 		result.Modified = true
 	}
+	if ensureReasoningEncryptedContentInclude(reqBody) {
+		result.Modified = true
+	}
 
 	if _, ok := reqBody["max_output_tokens"]; ok {
 		delete(reqBody, "max_output_tokens")
@@ -201,6 +204,47 @@ func applyCodexOAuthTransform(reqBody map[string]any) codexTransformResult {
 	}
 
 	return result
+}
+
+func ensureReasoningEncryptedContentInclude(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	store, ok := reqBody["store"].(bool)
+	if !ok || store {
+		return false
+	}
+
+	const includeValue = "reasoning.encrypted_content"
+	raw, exists := reqBody["include"]
+	if !exists || raw == nil {
+		reqBody["include"] = []any{includeValue}
+		return true
+	}
+
+	switch include := raw.(type) {
+	case []any:
+		for _, item := range include {
+			if value, ok := item.(string); ok && value == includeValue {
+				return false
+			}
+		}
+		reqBody["include"] = append(include, includeValue)
+		return true
+	case []string:
+		for _, value := range include {
+			if value == includeValue {
+				return false
+			}
+		}
+		next := make([]string, 0, len(include)+1)
+		next = append(next, include...)
+		next = append(next, includeValue)
+		reqBody["include"] = next
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeCodexModel(model string) string {

@@ -287,6 +287,20 @@ func (_c *GroupCreate) SetNillableFallbackGroupID(v *int64) *GroupCreate {
 	return _c
 }
 
+// SetKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field.
+func (_c *GroupCreate) SetKiroOpus47Downgrade(v bool) *GroupCreate {
+	_c.mutation.SetKiroOpus47Downgrade(v)
+	return _c
+}
+
+// SetNillableKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableKiroOpus47Downgrade(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetKiroOpus47Downgrade(*v)
+	}
+	return _c
+}
+
 // SetModelRouting sets the "model_routing" field.
 func (_c *GroupCreate) SetModelRouting(v map[string][]int64) *GroupCreate {
 	_c.mutation.SetModelRouting(v)
@@ -491,6 +505,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultClaudeCodeOnly
 		_c.mutation.SetClaudeCodeOnly(v)
 	}
+	if _, ok := _c.mutation.KiroOpus47Downgrade(); !ok {
+		v := group.DefaultKiroOpus47Downgrade
+		_c.mutation.SetKiroOpus47Downgrade(v)
+	}
 	if _, ok := _c.mutation.ModelRoutingEnabled(); !ok {
 		v := group.DefaultModelRoutingEnabled
 		_c.mutation.SetModelRoutingEnabled(v)
@@ -549,6 +567,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.ClaudeCodeOnly(); !ok {
 		return &ValidationError{Name: "claude_code_only", err: errors.New(`ent: missing required field "Group.claude_code_only"`)}
+	}
+	if _, ok := _c.mutation.KiroOpus47Downgrade(); !ok {
+		return &ValidationError{Name: "kiro_opus_47_downgrade", err: errors.New(`ent: missing required field "Group.kiro_opus_47_downgrade"`)}
 	}
 	if _, ok := _c.mutation.ModelRoutingEnabled(); !ok {
 		return &ValidationError{Name: "model_routing_enabled", err: errors.New(`ent: missing required field "Group.model_routing_enabled"`)}
@@ -655,6 +676,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.FallbackGroupID(); ok {
 		_spec.SetField(group.FieldFallbackGroupID, field.TypeInt64, value)
 		_node.FallbackGroupID = &value
+	}
+	if value, ok := _c.mutation.KiroOpus47Downgrade(); ok {
+		_spec.SetField(group.FieldKiroOpus47Downgrade, field.TypeBool, value)
+		_node.KiroOpus47Downgrade = value
 	}
 	if value, ok := _c.mutation.ModelRouting(); ok {
 		_spec.SetField(group.FieldModelRouting, field.TypeJSON, value)
@@ -1160,6 +1185,18 @@ func (u *GroupUpsert) ClearFallbackGroupID() *GroupUpsert {
 	return u
 }
 
+// SetKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field.
+func (u *GroupUpsert) SetKiroOpus47Downgrade(v bool) *GroupUpsert {
+	u.Set(group.FieldKiroOpus47Downgrade, v)
+	return u
+}
+
+// UpdateKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateKiroOpus47Downgrade() *GroupUpsert {
+	u.SetExcluded(group.FieldKiroOpus47Downgrade)
+	return u
+}
+
 // SetModelRouting sets the "model_routing" field.
 func (u *GroupUpsert) SetModelRouting(v map[string][]int64) *GroupUpsert {
 	u.Set(group.FieldModelRouting, v)
@@ -1610,6 +1647,20 @@ func (u *GroupUpsertOne) UpdateFallbackGroupID() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearFallbackGroupID() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearFallbackGroupID()
+	})
+}
+
+// SetKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field.
+func (u *GroupUpsertOne) SetKiroOpus47Downgrade(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetKiroOpus47Downgrade(v)
+	})
+}
+
+// UpdateKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateKiroOpus47Downgrade() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateKiroOpus47Downgrade()
 	})
 }
 
@@ -2234,6 +2285,20 @@ func (u *GroupUpsertBulk) UpdateFallbackGroupID() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearFallbackGroupID() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearFallbackGroupID()
+	})
+}
+
+// SetKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field.
+func (u *GroupUpsertBulk) SetKiroOpus47Downgrade(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetKiroOpus47Downgrade(v)
+	})
+}
+
+// UpdateKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateKiroOpus47Downgrade() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateKiroOpus47Downgrade()
 	})
 }
 

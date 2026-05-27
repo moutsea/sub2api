@@ -4060,6 +4060,7 @@ type GroupMutation struct {
 	claude_code_only         *bool
 	fallback_group_id        *int64
 	addfallback_group_id     *int64
+	kiro_opus_47_downgrade   *bool
 	model_routing            *map[string][]int64
 	model_routing_enabled    *bool
 	clearedFields            map[string]struct{}
@@ -5175,6 +5176,42 @@ func (m *GroupMutation) ResetFallbackGroupID() {
 	delete(m.clearedFields, group.FieldFallbackGroupID)
 }
 
+// SetKiroOpus47Downgrade sets the "kiro_opus_47_downgrade" field.
+func (m *GroupMutation) SetKiroOpus47Downgrade(b bool) {
+	m.kiro_opus_47_downgrade = &b
+}
+
+// KiroOpus47Downgrade returns the value of the "kiro_opus_47_downgrade" field in the mutation.
+func (m *GroupMutation) KiroOpus47Downgrade() (r bool, exists bool) {
+	v := m.kiro_opus_47_downgrade
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldKiroOpus47Downgrade returns the old "kiro_opus_47_downgrade" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldKiroOpus47Downgrade(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldKiroOpus47Downgrade is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldKiroOpus47Downgrade requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldKiroOpus47Downgrade: %w", err)
+	}
+	return oldValue.KiroOpus47Downgrade, nil
+}
+
+// ResetKiroOpus47Downgrade resets all changes to the "kiro_opus_47_downgrade" field.
+func (m *GroupMutation) ResetKiroOpus47Downgrade() {
+	m.kiro_opus_47_downgrade = nil
+}
+
 // SetModelRouting sets the "model_routing" field.
 func (m *GroupMutation) SetModelRouting(value map[string][]int64) {
 	m.model_routing = &value
@@ -5672,7 +5709,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 21)
+	fields := make([]string, 0, 22)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -5730,6 +5767,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.fallback_group_id != nil {
 		fields = append(fields, group.FieldFallbackGroupID)
 	}
+	if m.kiro_opus_47_downgrade != nil {
+		fields = append(fields, group.FieldKiroOpus47Downgrade)
+	}
 	if m.model_routing != nil {
 		fields = append(fields, group.FieldModelRouting)
 	}
@@ -5782,6 +5822,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.ClaudeCodeOnly()
 	case group.FieldFallbackGroupID:
 		return m.FallbackGroupID()
+	case group.FieldKiroOpus47Downgrade:
+		return m.KiroOpus47Downgrade()
 	case group.FieldModelRouting:
 		return m.ModelRouting()
 	case group.FieldModelRoutingEnabled:
@@ -5833,6 +5875,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldClaudeCodeOnly(ctx)
 	case group.FieldFallbackGroupID:
 		return m.OldFallbackGroupID(ctx)
+	case group.FieldKiroOpus47Downgrade:
+		return m.OldKiroOpus47Downgrade(ctx)
 	case group.FieldModelRouting:
 		return m.OldModelRouting(ctx)
 	case group.FieldModelRoutingEnabled:
@@ -5978,6 +6022,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetFallbackGroupID(v)
+		return nil
+	case group.FieldKiroOpus47Downgrade:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetKiroOpus47Downgrade(v)
 		return nil
 	case group.FieldModelRouting:
 		v, ok := value.(map[string][]int64)
@@ -6272,6 +6323,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldFallbackGroupID:
 		m.ResetFallbackGroupID()
+		return nil
+	case group.FieldKiroOpus47Downgrade:
+		m.ResetKiroOpus47Downgrade()
 		return nil
 	case group.FieldModelRouting:
 		m.ResetModelRouting()

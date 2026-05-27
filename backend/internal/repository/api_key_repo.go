@@ -138,6 +138,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldImagePrice4k,
 				group.FieldClaudeCodeOnly,
 				group.FieldFallbackGroupID,
+				group.FieldKiroOpus47Downgrade,
 				group.FieldModelRoutingEnabled,
 				group.FieldModelRouting,
 			)
@@ -443,6 +444,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		DefaultValidityDays: g.DefaultValidityDays,
 		ClaudeCodeOnly:      g.ClaudeCodeOnly,
 		FallbackGroupID:     g.FallbackGroupID,
+		KiroOpus47Downgrade: g.KiroOpus47Downgrade,
 		ModelRouting:        g.ModelRouting,
 		ModelRoutingEnabled: g.ModelRoutingEnabled,
 		CreatedAt:           g.CreatedAt,

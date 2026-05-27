@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -46,6 +47,16 @@ var openaiAllowedHeaders = map[string]bool{
 	"user-agent":      true,
 	"originator":      true,
 	"session_id":      true,
+}
+
+func isOpenAICompatModelSupportedByAccount(account *Account, requestedModel string) bool {
+	if requestedModel == "" {
+		return true
+	}
+	if account != nil && account.Platform == PlatformKiro {
+		return IsKiroModelSupportedByAccount(account, requestedModel)
+	}
+	return account != nil && account.IsModelSupported(requestedModel)
 }
 
 // OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
@@ -273,7 +284,7 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
-				if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) && (requestedModel == "" || account.IsModelSupported(requestedModel)) &&
+				if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) && isOpenAICompatModelSupportedByAccount(account, requestedModel) &&
 					(s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
 					// Refresh sticky session TTL
 					_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
@@ -303,7 +314,7 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 			continue
 		}
 		// Check model support
-		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
+		if !isOpenAICompatModelSupportedByAccount(acc, requestedModel) {
 			continue
 		}
 		// Check OpenAI quota availability — soft filter with fallback
@@ -427,7 +438,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		if err == nil && accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) &&
-				(requestedModel == "" || account.IsModelSupported(requestedModel)) &&
+				isOpenAICompatModelSupportedByAccount(account, requestedModel) &&
 				(s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
 				result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 				if err == nil && result.Acquired {
@@ -469,7 +480,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		if !acc.IsSchedulable() {
 			continue
 		}
-		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
+		if !isOpenAICompatModelSupportedByAccount(acc, requestedModel) {
 			continue
 		}
 		// 软过滤：额度已满的账号放入 fallback 列表
@@ -789,6 +800,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			bodyModified = true
 		}
 	}
+	// OAuth transform already handles its path; this also covers official OpenAI API key accounts.
+	if shouldGuardOpenAIStatelessReasoning(account) {
+		if ensureReasoningEncryptedContentInclude(reqBody) {
+			bodyModified = true
+		}
+		if statelessErr := validateOpenAIStatelessInputReferences(reqBody); statelessErr != nil {
+			writeOpenAIInvalidRequest(c, statelessErr.ClientMessage())
+			return nil, statelessErr
+		}
+	}
 
 	// Handle max_output_tokens based on platform and account type
 	if !isCodexCLI {
@@ -1083,6 +1104,44 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 
 	return req, nil
+}
+
+func writeOpenAIInvalidRequest(c *gin.Context, message string) {
+	if c == nil {
+		return
+	}
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error": gin.H{
+			"code":    nil,
+			"message": message,
+			"param":   "input",
+			"type":    "invalid_request_error",
+		},
+	})
+}
+
+func shouldGuardOpenAIStatelessReasoning(account *Account) bool {
+	if account == nil {
+		return true
+	}
+	if account.Platform != PlatformOpenAI {
+		return false
+	}
+	if account.Type == AccountTypeOAuth {
+		return true
+	}
+	if account.Type != AccountTypeAPIKey {
+		return false
+	}
+	baseURL := strings.TrimSpace(account.GetOpenAIBaseURL())
+	if baseURL == "" {
+		return true
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), "api.openai.com")
 }
 
 func (s *OpenAIGatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account) (*OpenAIForwardResult, error) {
@@ -2926,6 +2985,14 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 			responsesBody["model"] = stripped
 			mappedModel = stripped
 		}
+	}
+
+	if shouldGuardOpenAIStatelessReasoning(account) {
+		if statelessErr := validateOpenAIStatelessInputReferences(responsesBody); statelessErr != nil {
+			writeOpenAIInvalidRequest(c, statelessErr.ClientMessage())
+			return nil, statelessErr
+		}
+		ensureReasoningEncryptedContentInclude(responsesBody)
 	}
 
 	// Serialize the converted body

@@ -1160,8 +1160,14 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 
 // sendEvent sends a SSE event to the client
 func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
+	if err := c.Request.Context().Err(); err != nil {
+		return
+	}
 	eventJSON, _ := json.Marshal(event)
 	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON); err != nil {
+		if c.Request.Context().Err() != nil {
+			return
+		}
 		log.Printf("failed to write SSE event: %v", err)
 		return
 	}
@@ -1170,6 +1176,9 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 
 // sendErrorAndEnd sends an error event and ends the stream
 func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
+	if err := c.Request.Context().Err(); err != nil {
+		return nil
+	}
 	log.Printf("Account test error: %s", errorMsg)
 	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
 	return fmt.Errorf("%s", errorMsg)

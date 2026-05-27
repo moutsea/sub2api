@@ -56,6 +56,8 @@ type Group struct {
 	ClaudeCodeOnly bool `json:"claude_code_only,omitempty"`
 	// 非 Claude Code 请求降级使用的分组 ID
 	FallbackGroupID *int64 `json:"fallback_group_id,omitempty"`
+	// Kiro 分组请求 claude-opus-4-7 时降级到 claude-opus-4-6
+	KiroOpus47Downgrade bool `json:"kiro_opus_47_downgrade,omitempty"`
 	// 模型路由配置：模型模式 -> 优先账号ID列表
 	ModelRouting map[string][]int64 `json:"model_routing,omitempty"`
 	// 是否启用模型路由配置
@@ -179,7 +181,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case group.FieldModelRouting:
 			values[i] = new([]byte)
-		case group.FieldIsExclusive, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled:
+		case group.FieldIsExclusive, group.FieldClaudeCodeOnly, group.FieldKiroOpus47Downgrade, group.FieldModelRoutingEnabled:
 			values[i] = new(sql.NullBool)
 		case group.FieldRateMultiplier, group.FieldDailyLimitUsd, group.FieldWeeklyLimitUsd, group.FieldMonthlyLimitUsd, group.FieldImagePrice1k, group.FieldImagePrice2k, group.FieldImagePrice4k:
 			values[i] = new(sql.NullFloat64)
@@ -332,6 +334,12 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.FallbackGroupID = new(int64)
 				*_m.FallbackGroupID = value.Int64
+			}
+		case group.FieldKiroOpus47Downgrade:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field kiro_opus_47_downgrade", values[i])
+			} else if value.Valid {
+				_m.KiroOpus47Downgrade = value.Bool
 			}
 		case group.FieldModelRouting:
 			if value, ok := values[i].(*[]byte); !ok {
@@ -502,6 +510,9 @@ func (_m *Group) String() string {
 		builder.WriteString("fallback_group_id=")
 		builder.WriteString(fmt.Sprintf("%v", *v))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("kiro_opus_47_downgrade=")
+	builder.WriteString(fmt.Sprintf("%v", _m.KiroOpus47Downgrade))
 	builder.WriteString(", ")
 	builder.WriteString("model_routing=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ModelRouting))

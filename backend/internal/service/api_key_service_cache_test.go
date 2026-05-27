@@ -186,6 +186,7 @@ func TestAPIKeyService_GetByKey_UsesL2Cache(t *testing.T) {
 				Status:              StatusActive,
 				SubscriptionType:    SubscriptionTypeStandard,
 				RateMultiplier:      1,
+				KiroOpus47Downgrade: true,
 				ModelRoutingEnabled: true,
 				ModelRouting: map[string][]int64{
 					"claude-opus-*": {1, 2},
@@ -202,6 +203,7 @@ func TestAPIKeyService_GetByKey_UsesL2Cache(t *testing.T) {
 	require.Equal(t, int64(1), apiKey.ID)
 	require.Equal(t, int64(2), apiKey.User.ID)
 	require.Equal(t, groupID, apiKey.Group.ID)
+	require.True(t, apiKey.Group.KiroOpus47Downgrade)
 	require.True(t, apiKey.Group.ModelRoutingEnabled)
 	require.Equal(t, map[string][]int64{"claude-opus-*": {1, 2}}, apiKey.Group.ModelRouting)
 }

@@ -28,10 +28,10 @@ type AdminUser struct {
 
 // UserGroupRate represents a per-user custom rate multiplier for a group.
 type UserGroupRate struct {
-	GroupID        int64    `json:"group_id"`
-	GroupName      string   `json:"group_name"`
-	DefaultRate    float64  `json:"default_rate"`    // Group's default rate_multiplier
-	CustomRate     *float64 `json:"custom_rate"`     // User's custom override (null = use default)
+	GroupID     int64    `json:"group_id"`
+	GroupName   string   `json:"group_name"`
+	DefaultRate float64  `json:"default_rate"` // Group's default rate_multiplier
+	CustomRate  *float64 `json:"custom_rate"`  // User's custom override (null = use default)
 }
 
 type APIKey struct {
@@ -74,6 +74,9 @@ type Group struct {
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`
 	FallbackGroupID *int64 `json:"fallback_group_id"`
+
+	// Kiro 平台配置
+	KiroOpus47Downgrade bool `json:"kiro_opus_47_downgrade"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

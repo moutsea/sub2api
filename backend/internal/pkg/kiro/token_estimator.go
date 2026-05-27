@@ -33,6 +33,10 @@ const (
 	// Context window limits for Kiro
 	// Default limit for models without 1M support (e.g., opus-4.5, sonnet-4.5, haiku-4.5)
 	KiroContextWindowLimit = 200000
+	// DeepSeek 3.2 context window.
+	KiroContextWindowLimit128K = 128000
+	// Qwen3 Coder Next context window.
+	KiroContextWindowLimit256K = 256000
 	// 1M context window limit for 4.6 series models (opus-4.6, sonnet-4.6)
 	// These models natively support 1M context — no separate model ID or beta header needed.
 	KiroContextWindowLimit1M = 1000000
@@ -65,10 +69,16 @@ func Is1MContext(model string) bool {
 }
 
 // GetContextWindowLimit returns the context window limit for the given model.
-// 4.6 series (opus-4.6, sonnet-4.6) → 1M; all others → 200K.
+// 4.6+ series → 1M; DeepSeek → 128K; Qwen3 Coder Next → 256K; all others → 200K.
 func GetContextWindowLimit(model string) int {
 	if Is1MContext(model) {
 		return KiroContextWindowLimit1M
+	}
+	switch GetModelID(model) {
+	case "deepseek-3.2":
+		return KiroContextWindowLimit128K
+	case "qwen3-coder-next":
+		return KiroContextWindowLimit256K
 	}
 	return KiroContextWindowLimit
 }
@@ -76,10 +86,7 @@ func GetContextWindowLimit(model string) int {
 // GetContextPreCheckLimit returns the pre-check limit for the given model.
 // This is the context window limit * safety margin (82.5%).
 func GetContextPreCheckLimit(model string) int {
-	if Is1MContext(model) {
-		return KiroContextPreCheckLimit1M
-	}
-	return KiroContextPreCheckLimit
+	return int(float64(GetContextWindowLimit(model)) * KiroContextSafetyMargin)
 }
 
 // EstimateInputTokens estimates the number of input tokens for a Claude request.

@@ -35,6 +35,13 @@ const (
 	// by social auth refresh. Do not use it as an IdC fallback: IdC tokens require
 	// their matching profile_arn, otherwise management/runtime returns 403.
 	DefaultProfileArn = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+
+	// BuilderIdProfileArn is the fixed profile ARN used by AWS Builder ID social
+	// accounts (Kiro's official client hardcodes it). Used as a fallback when an
+	// account is imported through the IdC entrypoint without a valid profile_arn
+	// (e.g. Builder ID token JSON dumped into the IdC batch importer where the
+	// JSON has no profileArn field).
+	BuilderIdProfileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 )
 
 // defaultFamily holds the process-wide default family, settable once at startup
