@@ -1496,14 +1496,14 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		// Kiro apikey accounts are Claude-compatible passthrough accounts.
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, claude.DefaultModels)
+			response.Success(c, service.KiroAPIKeyDefaultModels())
 			return
 		}
 
 		var models []claude.Model
 		for requestedModel := range mapping {
 			var found bool
-			for _, dm := range claude.DefaultModels {
+			for _, dm := range service.KiroAPIKeyDefaultModels() {
 				if dm.ID == requestedModel {
 					models = append(models, dm)
 					found = true

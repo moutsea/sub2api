@@ -31,6 +31,9 @@ var ModelMap = map[string]string{
 	"qwen3-coder-480b":      "qwen3-coder-next",
 	"qwen3-coder-480b-a35b": "qwen3-coder-next",
 
+	// Opus 4.8 series
+	"claude-opus-4-8": "claude-opus-4.8",
+	"claude-opus-4.8": "claude-opus-4.8",
 	// Opus 4.7 series
 	"claude-opus-4-7": "claude-opus-4.7",
 	"claude-opus-4.7": "claude-opus-4.7",
@@ -86,6 +89,7 @@ type Model struct {
 // DefaultModels is the curated Kiro OAuth/runtime model list.
 var DefaultModels = []Model{
 	{ID: "auto", Type: "model", DisplayName: "Auto", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "claude-opus-4-8", Type: "model", DisplayName: "Claude Opus 4.8", CreatedAt: "2026-05-29T00:00:00Z"},
 	{ID: "claude-opus-4-7", Type: "model", DisplayName: "Claude Opus 4.7", CreatedAt: "2026-04-17T00:00:00Z"},
 	{ID: "claude-opus-4-6", Type: "model", DisplayName: "Claude Opus 4.6", CreatedAt: "2026-02-06T00:00:00Z"},
 	{ID: "claude-opus-4-6-1m", Type: "model", DisplayName: "Claude Opus 4.6 (1M Context)", CreatedAt: "2026-02-06T00:00:00Z"},

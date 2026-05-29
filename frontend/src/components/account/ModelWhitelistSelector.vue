@@ -125,7 +125,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { getModelsByPlatform } from '@/composables/useModelWhitelist'
 
 const { t } = useI18n()
 
@@ -145,10 +145,14 @@ const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
 
+const modelOptions = computed(() =>
+  getModelsByPlatform(props.platform).map(m => ({ value: m, label: m }))
+)
+
 const filteredModels = computed(() => {
   const query = searchQuery.value.toLowerCase().trim()
-  if (!query) return allModels
-  return allModels.filter(
+  if (!query) return modelOptions.value
+  return modelOptions.value.filter(
     m => m.value.toLowerCase().includes(query) || m.label.toLowerCase().includes(query)
   )
 })

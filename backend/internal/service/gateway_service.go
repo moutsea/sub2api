@@ -4621,6 +4621,13 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 			}
 			continue
 		}
+		if acc.Platform == PlatformKiro && acc.IsKiroApiKey() {
+			hasAnyMapping = true
+			for _, model := range KiroAPIKeyDefaultModels() {
+				modelSet[model.ID] = struct{}{}
+			}
+			continue
+		}
 		if acc.Platform == PlatformKiro && !acc.IsKiroApiKey() {
 			hasAnyMapping = true
 			for _, model := range kiro.DefaultModelIDs() {

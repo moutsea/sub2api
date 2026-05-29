@@ -29,9 +29,6 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, fmt.Errorf("convert openai to claude: %w", err)
 	}
-	if account.IsKiroApiKey() && isKiroOAuthOnlyModel(claudeReq.Model) {
-		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
-	}
 
 	// Ensure stream is set (Kiro always uses streaming internally)
 	wantStream := claudeReq.Stream
@@ -48,7 +45,17 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	}
 
 	originalModel := claudeReq.Model
-	activeUpstreamModel := s.resolveKiroUpstreamModel(account, originalModel)
+	if account.IsKiroApiKey() {
+		mappedModel := account.GetMappedModel(originalModel)
+		if mappedModel != originalModel {
+			claudeReq.Model = mappedModel
+			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
+		}
+		if isKiroOAuthOnlyModel(claudeReq.Model) {
+			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
+		}
+	}
+	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
 	mappedModel := kiro.GetModelID(activeUpstreamModel)
 
 	// Force max_tokens to 64000.
@@ -87,7 +94,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	// 5b. Compress oversized images before CW transformation
 	// Skip for 1M context models (4.6 series) which have 4MB body limit.
-	if !kiro.Is1MContext(originalModel) {
+	if !kiro.Is1MContext(claudeReq.Model) {
 		if kiro.CompressImagesInRequest(claudeReq) {
 			log.Printf("%s images compressed for body size reduction", prefix)
 		}
@@ -120,7 +127,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	tokenRefreshed := false
 
 	prepareSlowModelFallback := func(timeout time.Duration) error {
-		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus47(account, originalModel, activeUpstreamModel) {
+		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
 			return nil
 		}
 		log.Printf("%s status=all_endpoints_initial_response_timeout requested_model=%s effective_model=%s timeout=%s fallback=%s",
@@ -185,12 +192,12 @@ modelAttemptLoop:
 				// Apply request jitter before upstream call to prevent thundering herd
 				s.applyRequestJitter(ctx)
 
-				initialTimeout := kiroOpus47InitialResponseTimeout(account, originalModel, activeUpstreamModel)
+				initialTimeout := kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)
 				var initialTimedOut bool
 				resp, err, initialTimedOut = s.doUpstreamWithInitialTimeout(ctx, upstreamReq, proxyURL, account.ID, account.Concurrency, initialTimeout)
 				if initialTimedOut {
 					initialTimeoutEndpoints++
-					lastErr = newKiroOpus47InitialResponseTimeoutError("response_headers", initialTimeout)
+					lastErr = newKiroOpusSlowFallbackInitialResponseTimeoutError("response_headers", initialTimeout)
 					log.Printf("%s endpoint=%s status=initial_response_timeout model=%s timeout=%s",
 						prefix, ep.Name, activeUpstreamModel, initialTimeout)
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -310,7 +317,7 @@ modelAttemptLoop:
 
 		if resp == nil {
 			if initialTimeoutEndpoints > 0 && initialTimeoutEndpoints == attemptedEndpoints {
-				if err := prepareSlowModelFallback(kiroOpus47InitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
+				if err := prepareSlowModelFallback(kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
 					return nil, err
 				}
 				if modelFallbackAttempted && activeUpstreamModel == kiroDynamicFallbackModelOpus46 {

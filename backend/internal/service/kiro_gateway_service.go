@@ -123,7 +123,7 @@ func (r *cancelOnCloseReadCloser) Close() error {
 }
 
 func (s *KiroGatewayService) doUpstreamWithInitialTimeout(ctx context.Context, req *http.Request, proxyURL string, accountID int64, accountConcurrency int, timeout time.Duration) (*http.Response, error, bool) {
-	return s.doUpstreamWithInitialTimeoutAndGrace(ctx, req, proxyURL, accountID, accountConcurrency, timeout, kiroOpus47CancelGrace)
+	return s.doUpstreamWithInitialTimeoutAndGrace(ctx, req, proxyURL, accountID, accountConcurrency, timeout, kiroOpusSlowFallbackCancelGrace)
 }
 
 func (s *KiroGatewayService) doUpstreamWithInitialTimeoutAndGrace(ctx context.Context, req *http.Request, proxyURL string, accountID int64, accountConcurrency int, timeout, cancelGrace time.Duration) (*http.Response, error, bool) {
@@ -479,9 +479,6 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if strings.TrimSpace(claudeReq.Model) == "" {
 		return nil, fmt.Errorf("missing model")
 	}
-	if account.IsKiroApiKey() && isKiroOAuthOnlyModel(claudeReq.Model) {
-		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
-	}
 
 	// Clean orphan tool_uses that have no matching tool_result.
 	// Claude API requires every tool_use to have a corresponding tool_result in the next user message.
@@ -522,9 +519,24 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	originalModel := claudeReq.Model
-	activeUpstreamModel := s.resolveKiroUpstreamModel(account, originalModel)
+	if account.IsKiroApiKey() {
+		mappedModel := account.GetMappedModel(originalModel)
+		if mappedModel != originalModel {
+			rewrittenBody, rewriteErr := rewriteTopLevelModelJSON(body, mappedModel)
+			if rewriteErr != nil {
+				return nil, rewriteErr
+			}
+			body = rewrittenBody
+			claudeReq.Model = mappedModel
+			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
+		}
+		if isKiroOAuthOnlyModel(claudeReq.Model) {
+			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
+		}
+	}
+	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
 	mappedModel := kiro.GetModelID(activeUpstreamModel)
-	contextWindowLimit := kiro.GetContextWindowLimit(originalModel)
+	contextWindowLimit := kiro.GetContextWindowLimit(claudeReq.Model)
 
 	// Force max_tokens to 64000.
 	// AWSQ thinking mode shares the output token budget between thinking and text.
@@ -632,7 +644,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	tokenRefreshed := false // shared across endpoints to avoid redundant refresh
 
 	prepareSlowModelFallback := func(phase string, timeout time.Duration) error {
-		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus47(account, originalModel, activeUpstreamModel) {
+		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
 			return nil
 		}
 
@@ -702,12 +714,12 @@ modelAttemptLoop:
 				s.applyRequestJitter(ctx)
 
 				activeRequestStart = time.Now()
-				initialTimeout := kiroOpus47InitialResponseTimeout(account, originalModel, activeUpstreamModel)
+				initialTimeout := kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)
 				var initialTimedOut bool
 				resp, err, initialTimedOut = s.doUpstreamWithInitialTimeout(ctx, upstreamReq, proxyURL, account.ID, account.Concurrency, initialTimeout)
 				if initialTimedOut {
 					initialTimeoutEndpoints++
-					lastErr = newKiroOpus47InitialResponseTimeoutError("response_headers", initialTimeout)
+					lastErr = newKiroOpusSlowFallbackInitialResponseTimeoutError("response_headers", initialTimeout)
 					log.Printf("%s endpoint=%s status=initial_response_timeout model=%s timeout=%s",
 						prefix, ep.Name, activeUpstreamModel, initialTimeout)
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -931,7 +943,7 @@ modelAttemptLoop:
 		// All endpoints exhausted
 		if resp == nil {
 			if initialTimeoutEndpoints > 0 && initialTimeoutEndpoints == attemptedEndpoints {
-				if err := prepareSlowModelFallback("all_endpoints_initial_response", kiroOpus47InitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
+				if err := prepareSlowModelFallback("all_endpoints_initial_response", kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
 					return nil, err
 				}
 				if modelFallbackAttempted && activeUpstreamModel == kiroDynamicFallbackModelOpus46 {
@@ -1014,12 +1026,12 @@ modelAttemptLoop:
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
 					kiroStreamOptions{
-						initialResponseTimeout: kiroOpus47RemainingInitialResponseTimeout(account, originalModel, activeUpstreamModel, activeRequestStart),
+						initialResponseTimeout: kiroOpusSlowFallbackRemainingInitialResponseTimeout(account, originalModel, activeUpstreamModel, activeRequestStart),
 					},
 				)
 				if err != nil {
-					var timeoutErr *kiroOpus47InitialResponseTimeoutError
-					if errors.As(err, &timeoutErr) && shouldFallbackSlowKiroOpus47(account, originalModel, activeUpstreamModel) {
+					var timeoutErr *kiroOpusSlowFallbackInitialResponseTimeoutError
+					if errors.As(err, &timeoutErr) && shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
 						if fallbackErr := prepareSlowModelFallback("first_renderable_event", timeoutErr.Timeout); fallbackErr != nil {
 							return nil, fallbackErr
 						}
@@ -1046,12 +1058,12 @@ modelAttemptLoop:
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
 					kiroStreamOptions{
-						initialResponseTimeout: kiroOpus47RemainingInitialResponseTimeout(account, originalModel, activeUpstreamModel, activeRequestStart),
+						initialResponseTimeout: kiroOpusSlowFallbackRemainingInitialResponseTimeout(account, originalModel, activeUpstreamModel, activeRequestStart),
 					},
 				)
 				if err != nil {
-					var timeoutErr *kiroOpus47InitialResponseTimeoutError
-					if errors.As(err, &timeoutErr) && shouldFallbackSlowKiroOpus47(account, originalModel, activeUpstreamModel) {
+					var timeoutErr *kiroOpusSlowFallbackInitialResponseTimeoutError
+					if errors.As(err, &timeoutErr) && shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
 						if fallbackErr := prepareSlowModelFallback("non_stream_response", timeoutErr.Timeout); fallbackErr != nil {
 							return nil, fallbackErr
 						}
@@ -1461,7 +1473,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			}
 			log.Printf("Kiro stream initial response timeout before downstream commit: timeout=%v model=%s",
 				opts.initialResponseTimeout, originalModel)
-			return nil, newKiroOpus47InitialResponseTimeoutError("first_renderable_event", opts.initialResponseTimeout)
+			return nil, newKiroOpusSlowFallbackInitialResponseTimeoutError("first_renderable_event", opts.initialResponseTimeout)
 
 		case <-keepaliveTicker.C:
 			if !streamCommitted {
@@ -1706,7 +1718,7 @@ func readKiroNonStreamingBodyWithTimeout(c *gin.Context, resp *http.Response, ti
 		return result.body, result.err
 	case <-timer.C:
 		_ = resp.Body.Close()
-		return nil, newKiroOpus47InitialResponseTimeoutError("non_stream_response", timeout)
+		return nil, newKiroOpusSlowFallbackInitialResponseTimeoutError("non_stream_response", timeout)
 	case <-ctxDone:
 		_ = resp.Body.Close()
 		return nil, c.Request.Context().Err()
@@ -2026,10 +2038,6 @@ func sleepKiroBackoffWithContext(ctx context.Context, attempt int) bool {
 
 // TestConnection tests Kiro account connection
 func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
-	if account.IsKiroApiKey() && isKiroOAuthOnlyModel(modelID) {
-		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", modelID)
-	}
-
 	// Get token
 	if s.tokenProvider == nil {
 		return nil, errors.New("kiro token provider not configured")
@@ -2763,6 +2771,14 @@ func (s *KiroGatewayService) testClaudeAPIConnection(ctx context.Context, accoun
 	}
 	if testModel == "" {
 		testModel = "claude-sonnet-4-20250514"
+	}
+	requestedTestModel := testModel
+	testModel = account.GetMappedModel(testModel)
+	if isKiroOAuthOnlyModel(testModel) {
+		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", testModel)
+	}
+	if testModel != requestedTestModel {
+		log.Printf("[kiro-apikey-TestConnection] model_mapping: %s -> %s", requestedTestModel, testModel)
 	}
 
 	testReq := map[string]any{

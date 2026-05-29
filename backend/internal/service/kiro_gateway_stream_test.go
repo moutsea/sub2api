@@ -168,9 +168,9 @@ func TestKiroStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
 	if result != nil {
 		t.Fatalf("result = %+v, want nil", result)
 	}
-	var timeoutErr *kiroOpus47InitialResponseTimeoutError
+	var timeoutErr *kiroOpusSlowFallbackInitialResponseTimeoutError
 	if !errors.As(err, &timeoutErr) {
-		t.Fatalf("err = %v, want kiroOpus47InitialResponseTimeoutError", err)
+		t.Fatalf("err = %v, want kiroOpusSlowFallbackInitialResponseTimeoutError", err)
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("response body = %q, want empty before fallback", rec.Body.String())
@@ -201,9 +201,9 @@ func TestKiroNonStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
 	if result != nil {
 		t.Fatalf("result = %+v, want nil", result)
 	}
-	var timeoutErr *kiroOpus47InitialResponseTimeoutError
+	var timeoutErr *kiroOpusSlowFallbackInitialResponseTimeoutError
 	if !errors.As(err, &timeoutErr) {
-		t.Fatalf("err = %v, want kiroOpus47InitialResponseTimeoutError", err)
+		t.Fatalf("err = %v, want kiroOpusSlowFallbackInitialResponseTimeoutError", err)
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("response body = %q, want empty before fallback", rec.Body.String())

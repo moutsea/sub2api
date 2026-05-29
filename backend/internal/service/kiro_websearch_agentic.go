@@ -212,10 +212,6 @@ func isClaudeBuiltinWebSearch(tool kiro.ClaudeTool) bool {
 func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, claudeReq *kiro.ClaudeRequest) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-WebSearch] account=%s", account.Name)
 
-	if account.IsKiroApiKey() && claudeReq != nil && isKiroOAuthOnlyModel(claudeReq.Model) {
-		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
-	}
-
 	if !account.IsKiroApiKey() && kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
 		log.Printf("%s enabled thinking mode from model alias: %s", prefix, claudeReq.Model)
 		if newBody, err := json.Marshal(claudeReq); err == nil {
@@ -444,12 +440,27 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 // executeCodeWhispererRequest executes a CodeWhisperer request with endpoint failover,
 // 401 token refresh, and 429/529 retry — mirroring the resilience of Forward().
 //
-// Note: ResolveURLImagesInRequest and CompressImagesInRequest modify claudeReq in-place.
-// This is intentional — images only need to be resolved/compressed once, and subsequent
-// agentic loop iterations reuse the already-processed version.
+// Note: ResolveURLImagesInRequest and CompressImagesInRequest modify nested request content
+// in-place. This is intentional — images only need to be resolved/compressed once, and
+// subsequent agentic loop iterations reuse the already-processed content. The top-level
+// request is copied before apikey model mapping, so each probe applies mapping to its copy
+// and the final Forward() still applies account mapping exactly once.
 func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest) (*http.Response, error) {
 	prefix := "[kiro-WebSearch]"
 	execFreeTier := s.isKiroFreeTier(account)
+	execReq := *claudeReq
+	if account.IsKiroApiKey() {
+		originalModel := execReq.Model
+		mappedModel := account.GetMappedModel(originalModel)
+		if mappedModel != originalModel {
+			execReq.Model = mappedModel
+			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
+		}
+		if isKiroOAuthOnlyModel(execReq.Model) {
+			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", execReq.Model)
+		}
+	}
+	requestReq := &execReq
 
 	// Get access token
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
@@ -464,15 +475,15 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 	}
 
 	// Resolve URL images and compress before CW transformation.
-	// These modify claudeReq in-place (intentional — avoids redundant processing in subsequent iterations).
+	// These modify request content in-place (intentional — avoids redundant processing in subsequent iterations).
 	// Skip compression for 1M context models (4.6 series) which have 4MB body limit.
-	kiro.ResolveURLImagesInRequest(claudeReq)
-	if !kiro.Is1MContext(claudeReq.Model) {
-		kiro.CompressImagesInRequest(claudeReq)
+	kiro.ResolveURLImagesInRequest(requestReq)
+	if !kiro.Is1MContext(requestReq.Model) {
+		kiro.CompressImagesInRequest(requestReq)
 	}
 
-	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
-	_, cwReqBody, err := s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+	activeUpstreamModel := s.resolveKiroUpstreamModel(account, requestReq.Model)
+	_, cwReqBody, err := s.prepareCodeWhispererPayload(requestReq, profileArn, c, activeUpstreamModel)
 	if err != nil {
 		return nil, fmt.Errorf("prepare cw request: %w", err)
 	}
@@ -648,10 +659,10 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				// 400 is usually deterministic — both endpoints will reject, no point failing over.
 				// Exception: "profileArn is required" is endpoint-specific (AWSQ requires it, CW may not).
 				if resp.StatusCode == http.StatusBadRequest {
-					if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, claudeReq.Model, activeUpstreamModel, upstreamMsg); ok {
+					if fallbackModel, ok := s.maybeFallbackUnsupportedKiroModel(account, requestReq.Model, activeUpstreamModel, upstreamMsg); ok {
 						log.Printf("%s endpoint=%s dynamic_model_fallback_retry: %s -> %s", prefix, ep.Name, activeUpstreamModel, fallbackModel)
 						activeUpstreamModel = fallbackModel
-						_, cwReqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
+						_, cwReqBody, err = s.prepareCodeWhispererPayload(requestReq, profileArn, c, activeUpstreamModel)
 						if err != nil {
 							return nil, fmt.Errorf("prepare fallback cw request: %w", err)
 						}
@@ -677,7 +688,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 						strings.Contains(msgLower, "content_length") {
 						return nil, &ContextTooLongError{
 							EstimatedTokens: 0,
-							Limit:           kiro.GetContextWindowLimit(claudeReq.Model),
+							Limit:           kiro.GetContextWindowLimit(requestReq.Model),
 						}
 					}
 					return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, upstreamMsg)
@@ -697,7 +708,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			}
 
 			// Success
-			s.markKiroModelSupported(account, claudeReq.Model, activeUpstreamModel)
+			s.markKiroModelSupported(account, requestReq.Model, activeUpstreamModel)
 			return resp, nil
 		}
 

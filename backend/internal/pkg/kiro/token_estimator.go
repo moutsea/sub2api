@@ -59,11 +59,12 @@ const (
 )
 
 // Is1MContext returns true if the model supports 1M context window.
-// Currently claude-opus-4.7, claude-opus-4.6, and claude-sonnet-4.6 (4.6+ series) natively support 1M.
-// Accepts both input formats: dashes (claude-opus-4-7) and dots (claude-opus-4.7).
+// Currently claude-opus-4.8, claude-opus-4.7, claude-opus-4.6, and claude-sonnet-4.6 natively support 1M.
+// Accepts both input formats: dashes (claude-opus-4-8) and dots (claude-opus-4.8).
 func Is1MContext(model string) bool {
 	m := strings.ToLower(model)
-	return strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") ||
+	return strings.Contains(m, "opus-4-8") || strings.Contains(m, "opus-4.8") ||
+		strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") ||
 		strings.Contains(m, "opus-4-6") || strings.Contains(m, "opus-4.6") ||
 		strings.Contains(m, "sonnet-4-6") || strings.Contains(m, "sonnet-4.6")
 }

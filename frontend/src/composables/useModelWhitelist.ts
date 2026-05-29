@@ -50,6 +50,11 @@ export const claudeModels = [
   'claude-2.1', 'claude-2.0', 'claude-instant-1.2'
 ]
 
+export const kiroAPIKeyModels = [
+  'claude-opus-4-8',
+  ...claudeModels
+]
+
 // Google Gemini
 const geminiModels = [
   // Keep in sync with backend curated Gemini lists.
@@ -226,6 +231,11 @@ const anthropicPresetMappings = [
   { label: 'Opus->Sonnet', from: 'claude-opus-4-5-20251101', to: 'claude-sonnet-4-5-20250929', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' }
 ]
 
+const kiroAPIKeyPresetMappings = [
+  { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4-8', color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400' },
+  ...anthropicPresetMappings
+]
+
 const openaiPresetMappings = [
   { label: 'GPT-4o', from: 'gpt-4o', to: 'gpt-4o', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400' },
   { label: 'GPT-4o Mini', from: 'gpt-4o-mini', to: 'gpt-4o-mini', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
@@ -268,6 +278,7 @@ export const commonErrorCodes = [
 export function getModelsByPlatform(platform: string): string[] {
   switch (platform) {
     case 'openai': return openaiModels
+    case 'kiro-apikey': return kiroAPIKeyModels
     case 'anthropic':
     case 'claude': return claudeModels
     case 'gemini': return geminiModels
@@ -294,6 +305,7 @@ export function getModelsByPlatform(platform: string): string[] {
 export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'openai') return openaiPresetMappings
   if (platform === 'gemini') return geminiPresetMappings
+  if (platform === 'kiro-apikey') return kiroAPIKeyPresetMappings
   return anthropicPresetMappings
 }
 

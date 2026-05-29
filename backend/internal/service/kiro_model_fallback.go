@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	kiroDynamicProbeModelOpus47    = "claude-opus-4-7"
-	kiroDynamicFallbackModelOpus46 = "claude-opus-4-6"
-	kiroOpus47InitialTimeout       = 40 * time.Second
-	kiroOpus47CancelGrace          = 2 * time.Second
+	kiroDynamicProbeModelOpus48           = "claude-opus-4-8"
+	kiroDynamicProbeModelOpus47           = "claude-opus-4-7"
+	kiroDynamicFallbackModelOpus46        = "claude-opus-4-6"
+	kiroOpusSlowFallbackInitialTimeout    = 40 * time.Second
+	kiroOpusSlowFallbackCancelGrace       = 2 * time.Second
 
 	kiroModelCapabilitySupported   = "supported"
 	kiroModelCapabilityUnsupported = "unsupported"
@@ -32,11 +33,13 @@ type kiroModelCapabilityState struct {
 }
 
 func shouldAutoDetectKiroModel(account *Account, requestedModel string) bool {
-	return account != nil && account.IsKiro() && !account.IsKiroApiKey() && isKiroOpus47Model(requestedModel)
+	return account != nil && account.IsKiro() && !account.IsKiroApiKey() && isKiroSlowFallbackProbeModel(requestedModel)
 }
 
-func isKiroOpus47Model(model string) bool {
+func isKiroSlowFallbackProbeModel(model string) bool {
 	switch strings.TrimSpace(strings.ToLower(model)) {
+	case kiroDynamicProbeModelOpus48, "claude-opus-4.8":
+		return true
 	case kiroDynamicProbeModelOpus47, "claude-opus-4.7":
 		return true
 	default:
@@ -44,19 +47,19 @@ func isKiroOpus47Model(model string) bool {
 	}
 }
 
-func shouldFallbackSlowKiroOpus47(account *Account, requestedModel, upstreamModel string) bool {
-	return shouldAutoDetectKiroModel(account, requestedModel) && isKiroOpus47Model(upstreamModel)
+func shouldFallbackSlowKiroOpus(account *Account, requestedModel, upstreamModel string) bool {
+	return shouldAutoDetectKiroModel(account, requestedModel) && isKiroSlowFallbackProbeModel(upstreamModel)
 }
 
-func kiroOpus47InitialResponseTimeout(account *Account, requestedModel, upstreamModel string) time.Duration {
-	if !shouldFallbackSlowKiroOpus47(account, requestedModel, upstreamModel) {
+func kiroOpusSlowFallbackInitialResponseTimeout(account *Account, requestedModel, upstreamModel string) time.Duration {
+	if !shouldFallbackSlowKiroOpus(account, requestedModel, upstreamModel) {
 		return 0
 	}
-	return kiroOpus47InitialTimeout
+	return kiroOpusSlowFallbackInitialTimeout
 }
 
-func kiroOpus47RemainingInitialResponseTimeout(account *Account, requestedModel, upstreamModel string, startTime time.Time) time.Duration {
-	timeout := kiroOpus47InitialResponseTimeout(account, requestedModel, upstreamModel)
+func kiroOpusSlowFallbackRemainingInitialResponseTimeout(account *Account, requestedModel, upstreamModel string, startTime time.Time) time.Duration {
+	timeout := kiroOpusSlowFallbackInitialResponseTimeout(account, requestedModel, upstreamModel)
 	if timeout <= 0 || startTime.IsZero() {
 		return timeout
 	}
@@ -67,24 +70,24 @@ func kiroOpus47RemainingInitialResponseTimeout(account *Account, requestedModel,
 	return remaining
 }
 
-type kiroOpus47InitialResponseTimeoutError struct {
+type kiroOpusSlowFallbackInitialResponseTimeoutError struct {
 	Phase   string
 	Timeout time.Duration
 }
 
-func (e *kiroOpus47InitialResponseTimeoutError) Error() string {
+func (e *kiroOpusSlowFallbackInitialResponseTimeoutError) Error() string {
 	if e == nil {
-		return "kiro opus 4.7 initial response timeout"
+		return "kiro opus initial response timeout"
 	}
 	phase := strings.TrimSpace(e.Phase)
 	if phase == "" {
 		phase = "initial_response"
 	}
-	return fmt.Sprintf("kiro opus 4.7 %s timeout after %s", phase, e.Timeout)
+	return fmt.Sprintf("kiro opus %s timeout after %s", phase, e.Timeout)
 }
 
-func newKiroOpus47InitialResponseTimeoutError(phase string, timeout time.Duration) error {
-	return &kiroOpus47InitialResponseTimeoutError{
+func newKiroOpusSlowFallbackInitialResponseTimeoutError(phase string, timeout time.Duration) error {
+	return &kiroOpusSlowFallbackInitialResponseTimeoutError{
 		Phase:   phase,
 		Timeout: timeout,
 	}
@@ -152,7 +155,7 @@ func (s *KiroGatewayService) setKiroModelCapability(accountID int64, requestedMo
 }
 
 func (s *KiroGatewayService) maybeFallbackUnsupportedKiroModel(account *Account, requestedModel, upstreamModel, errorMsg string) (string, bool) {
-	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroOpus47Model(upstreamModel) {
+	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroSlowFallbackProbeModel(upstreamModel) {
 		return "", false
 	}
 	if !isKiroUnsupportedModelError(errorMsg, requestedModel, kiro.GetModelID(requestedModel)) {
@@ -164,7 +167,7 @@ func (s *KiroGatewayService) maybeFallbackUnsupportedKiroModel(account *Account,
 }
 
 func (s *KiroGatewayService) markKiroModelSupported(account *Account, requestedModel, upstreamModel string) {
-	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroOpus47Model(upstreamModel) {
+	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroSlowFallbackProbeModel(upstreamModel) {
 		return
 	}
 	s.setKiroModelCapability(account.ID, requestedModel, kiroModelCapabilitySupported)

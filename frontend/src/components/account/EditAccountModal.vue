@@ -26,8 +26,8 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
-      <!-- API Key fields (only for apikey type) -->
-      <div v-if="account.type === 'apikey'" class="space-y-4">
+      <!-- API Key fields (also applies to Kiro accounts with credentials.auth_type=apikey) -->
+      <div v-if="isAPIKeyConfigAccount" class="space-y-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -39,7 +39,9 @@
                 ? 'https://api.openai.com'
                 : account.platform === 'gemini'
                   ? 'https://generativelanguage.googleapis.com'
-                  : 'https://api.anthropic.com'
+                  : account.platform === 'kiro'
+                    ? 'https://my-proxy.example.com'
+                    : 'https://api.anthropic.com'
             "
           />
           <p class="input-hint">{{ baseUrlHint }}</p>
@@ -121,7 +123,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" />
+            <ModelWhitelistSelector v-model="allowedModels" :platform="modelSelectionPlatform" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0">{{
@@ -956,8 +958,22 @@ const sessionIdleTimeout = ref<number | null>(null)
 const kiroOverageEnabled = ref(false)
 const kiroOverageLoading = ref(false)
 
+const isKiroAPIKeyAccount = (account: Account | null): boolean => {
+  if (!account || account.platform !== 'kiro') return false
+  const credentials = account.credentials as Record<string, unknown> | undefined
+  return credentials?.auth_type === 'apikey'
+}
+
+const isAPIKeyConfigAccount = computed(() =>
+  props.account?.type === 'apikey' || isKiroAPIKeyAccount(props.account)
+)
+
+const modelSelectionPlatform = computed(() =>
+  isKiroAPIKeyAccount(props.account) ? 'kiro-apikey' : props.account?.platform || 'anthropic'
+)
+
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))
+const presetMappings = computed(() => getPresetMappingsByPlatform(modelSelectionPlatform.value))
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -992,6 +1008,10 @@ const tempUnschedPresets = computed(() => [
 const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
+  if (isKiroAPIKeyAccount(props.account)) {
+    const credentials = props.account?.credentials as Record<string, unknown> | undefined
+    return typeof credentials?.base_url === 'string' ? credentials.base_url : ''
+  }
   return 'https://api.anthropic.com'
 })
 
@@ -1070,15 +1090,17 @@ watch(
 
       loadTempUnschedRules(credentials)
 
-      // Initialize API Key fields for apikey type
-      if (newAccount.type === 'apikey' && newAccount.credentials) {
+      // Initialize API Key fields for apikey-compatible accounts.
+      if ((newAccount.type === 'apikey' || isKiroAPIKeyAccount(newAccount)) && newAccount.credentials) {
         const credentials = newAccount.credentials as Record<string, unknown>
         const platformDefaultUrl =
           newAccount.platform === 'openai'
             ? 'https://api.openai.com'
             : newAccount.platform === 'gemini'
               ? 'https://generativelanguage.googleapis.com'
-              : 'https://api.anthropic.com'
+              : newAccount.platform === 'kiro'
+                ? ''
+                : 'https://api.anthropic.com'
         editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
 
         // Load model mappings and detect mode
@@ -1418,15 +1440,26 @@ const handleSubmit = async () => {
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
 
-    // For apikey type, handle credentials update
-    if (props.account.type === 'apikey') {
+    // For apikey-compatible accounts, handle credentials update.
+    // Kiro apikey accounts are stored as type=oauth with credentials.auth_type=apikey.
+    if (isAPIKeyConfigAccount.value) {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
       const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
 
+      if (props.account.platform === 'kiro' && !newBaseUrl) {
+        appStore.showError(t('admin.accounts.kiro.pleaseEnterApikeyCredentials'))
+        submitting.value = false
+        return
+      }
+
       // Always update credentials for apikey type to handle model mapping changes
       const newCredentials: Record<string, unknown> = {
+        ...currentCredentials,
         base_url: newBaseUrl
+      }
+      if (isKiroAPIKeyAccount(props.account)) {
+        newCredentials.auth_type = 'apikey'
       }
 
       // Handle API key
@@ -1445,17 +1478,24 @@ const handleSubmit = async () => {
       // Add model mapping if configured
       if (modelMapping) {
         newCredentials.model_mapping = modelMapping
+      } else {
+        delete newCredentials.model_mapping
       }
 
       // Add custom error codes if enabled
       if (customErrorCodesEnabled.value) {
         newCredentials.custom_error_codes_enabled = true
         newCredentials.custom_error_codes = [...selectedErrorCodes.value]
+      } else {
+        delete newCredentials.custom_error_codes_enabled
+        delete newCredentials.custom_error_codes
       }
 
       // Add intercept warmup requests setting
       if (interceptWarmupRequests.value) {
         newCredentials.intercept_warmup_requests = true
+      } else {
+        delete newCredentials.intercept_warmup_requests
       }
       if (!applyTempUnschedConfig(newCredentials)) {
         submitting.value = false
