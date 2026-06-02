@@ -2571,6 +2571,7 @@ export default {
         unresolved: 'Unresolved',
         resolved: 'Resolved',
         viewErrors: 'Errors',
+        viewSla: 'SLA Errors',
         viewExcluded: 'Excluded',
         statusCodeOther: 'Other',
         owner: {

@@ -947,7 +947,7 @@ export async function getErrorDistribution(
   return data
 }
 
-export type OpsErrorListView = 'errors' | 'excluded' | 'all'
+export type OpsErrorListView = 'errors' | 'sla' | 'excluded' | 'all'
 
 export type OpsErrorListQueryParams = {
   page?: number

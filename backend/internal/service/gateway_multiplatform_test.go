@@ -21,10 +21,11 @@ func testConfig() *config.Config {
 
 // mockAccountRepoForPlatform 单平台测试用的 mock
 type mockAccountRepoForPlatform struct {
-	accounts         []Account
-	accountsByID     map[int64]*Account
-	listPlatformFunc func(ctx context.Context, platform string) ([]Account, error)
-	getByIDCalls     int
+	accounts          []Account
+	accountsByID      map[int64]*Account
+	listPlatformFunc  func(ctx context.Context, platform string) ([]Account, error)
+	listByGroupResult []Account // ListByGroup 返回值（用于模型支持判定测试）
+	getByIDCalls      int
 }
 
 func (m *mockAccountRepoForPlatform) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -88,7 +89,7 @@ func (m *mockAccountRepoForPlatform) ListWithFilters(ctx context.Context, params
 	return nil, nil, nil
 }
 func (m *mockAccountRepoForPlatform) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
-	return nil, nil
+	return m.listByGroupResult, nil
 }
 func (m *mockAccountRepoForPlatform) ListActive(ctx context.Context) ([]Account, error) {
 	return nil, nil
@@ -1660,4 +1661,144 @@ func TestGatewayService_ResolveGatewayGroup_DetectsFallbackCycle(t *testing.T) {
 	require.Nil(t, gotGroup)
 	require.Nil(t, gotID)
 	require.Contains(t, err.Error(), "fallback group cycle")
+}
+
+// TestGatewayService_groupHasAnyAccountSupportingModel 验证「集合中是否有账号支持该模型」的判定，
+// 重点覆盖混合调度陷阱：OpenAI 账号可通过协议转换支持 claude-* 模型，不可误判为不支持。
+func TestGatewayService_groupHasAnyAccountSupportingModel(t *testing.T) {
+	svc := &GatewayService{}
+
+	tests := []struct {
+		name     string
+		accounts []Account
+		model    string
+		expected bool
+	}{
+		{
+			name:     "空模型-不判定-返回true",
+			accounts: []Account{{Platform: PlatformOpenAI}},
+			model:    "",
+			expected: true,
+		},
+		{
+			name:     "OpenAI分组-claude模型-混合调度可支持-不误判",
+			accounts: []Account{{Platform: PlatformOpenAI}},
+			model:    "claude-3-5-sonnet-20241022",
+			expected: true,
+		},
+		{
+			name:     "OpenAI账号-有映射-收到gemini模型-不支持",
+			accounts: []Account{{Platform: PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o": "x"}}}},
+			model:    "gemini-2.5-flash",
+			expected: false,
+		},
+		{
+			name:     "OpenAI账号-无映射-default-allow-支持任意模型",
+			accounts: []Account{{Platform: PlatformOpenAI}},
+			model:    "gemini-2.5-flash",
+			expected: true, // 无 model_mapping 时 default-allow，检测不触发（与原选号语义一致）
+		},
+		{
+			name:     "Anthropic分组-收到gpt模型-不支持",
+			accounts: []Account{{Platform: PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{"claude-opus-4": "x"}}}},
+			model:    "gpt-4",
+			expected: false,
+		},
+		{
+			name: "混合账号集合-其一支持即true",
+			accounts: []Account{
+				{Platform: PlatformOpenAI},
+				{Platform: PlatformAntigravity},
+			},
+			model:    "gemini-2.5-flash",
+			expected: true, // Antigravity 支持 gemini-
+		},
+		{
+			name:     "空集合-返回false",
+			accounts: []Account{},
+			model:    "claude-3-5-sonnet-20241022",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := svc.groupHasAnyAccountSupportingModel(tt.accounts, tt.model)
+			require.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+// TestGatewayService_errIfModelNotSupportedInGroup 验证选号失败后的二次判定：
+// 仅当分组内确无任何账号支持该模型时，返回包装了 ErrModelNotSupported 的错误（可被 errors.Is 识别）；
+// 关键：判定基于全量账号（含当前限流账号），避免把「账号限流」误判为「模型用错」。
+func TestGatewayService_errIfModelNotSupportedInGroup(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(1)
+
+	t.Run("OpenAI分组收到gemini模型-无人支持-返回sentinel", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			listByGroupResult: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o": "x"}}},
+			},
+		}
+		svc := &GatewayService{accountRepo: repo}
+		err := svc.errIfModelNotSupportedInGroup(ctx, &groupID, PlatformOpenAI, true, "gemini-2.5-flash")
+		require.Error(t, err)
+		require.True(t, errors.Is(err, ErrModelNotSupported), "must wrap ErrModelNotSupported for errors.Is")
+		require.Contains(t, err.Error(), "gemini-2.5-flash")
+	})
+
+	t.Run("账号支持但当前限流-不误判-返回nil", func(t *testing.T) {
+		// 账号在 SQL 层因限流被排除出可调度列表，但它本身支持该模型。
+		// 全量判定必须识别出「有账号支持」，从而返回 nil（维持原 503 no available accounts）。
+		repo := &mockAccountRepoForPlatform{
+			listByGroupResult: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: false},
+			},
+		}
+		svc := &GatewayService{accountRepo: repo}
+		err := svc.errIfModelNotSupportedInGroup(ctx, &groupID, PlatformAnthropic, false, "claude-3-5-sonnet-20241022")
+		require.NoError(t, err)
+	})
+
+	t.Run("混合调度-OpenAI账号支持claude-不误判", func(t *testing.T) {
+		// anthropic 分组的混合调度下，OpenAI 账号能接 claude-* 模型，不应判为不支持。
+		repo := &mockAccountRepoForPlatform{
+			listByGroupResult: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Status: StatusActive},
+			},
+		}
+		svc := &GatewayService{accountRepo: repo}
+		err := svc.errIfModelNotSupportedInGroup(ctx, &groupID, PlatformAnthropic, false, "claude-3-5-sonnet-20241022")
+		require.NoError(t, err)
+	})
+
+	t.Run("空模型-不判定-返回nil", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			listByGroupResult: []Account{{ID: 1, Platform: PlatformOpenAI, Status: StatusActive}},
+		}
+		svc := &GatewayService{accountRepo: repo}
+		err := svc.errIfModelNotSupportedInGroup(ctx, &groupID, PlatformOpenAI, true, "")
+		require.NoError(t, err)
+	})
+
+	t.Run("无分组-不判定-返回nil", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			listByGroupResult: []Account{{ID: 1, Platform: PlatformOpenAI, Status: StatusActive}},
+		}
+		svc := &GatewayService{accountRepo: repo}
+		err := svc.errIfModelNotSupportedInGroup(ctx, nil, PlatformOpenAI, true, "gemini-2.5-flash")
+		require.NoError(t, err)
+	})
+
+	t.Run("分组内该平台无账号-不判定-返回nil", func(t *testing.T) {
+		// 分组内只有 gemini 账号，但请求走 openai 平台：属配置/路由问题，非模型用错，维持原 503。
+		repo := &mockAccountRepoForPlatform{
+			listByGroupResult: []Account{{ID: 1, Platform: PlatformGemini, Status: StatusActive}},
+		}
+		svc := &GatewayService{accountRepo: repo}
+		err := svc.errIfModelNotSupportedInGroup(ctx, &groupID, PlatformOpenAI, true, "gpt-4")
+		require.NoError(t, err)
+	})
 }

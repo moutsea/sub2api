@@ -101,6 +101,7 @@ type OpsErrorLogFilter struct {
 
 	// View controls error categorization for list endpoints.
 	// - errors: show actionable errors (exclude business-limited / 429 / 529)
+	// - sla: show SLA-counted errors (exclude business-limited only)
 	// - excluded: only show excluded errors
 	// - all: show everything
 	View string

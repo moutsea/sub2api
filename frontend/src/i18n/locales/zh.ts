@@ -2724,6 +2724,7 @@ export default {
         unresolved: '未解决',
         resolved: '已解决',
         viewErrors: '错误',
+        viewSla: 'SLA错误',
         viewExcluded: '排除项',
         statusCodeOther: '其他',
         owner: {

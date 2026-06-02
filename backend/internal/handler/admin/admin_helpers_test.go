@@ -42,6 +42,10 @@ func TestParseOpsViewParam(t *testing.T) {
 	c2.Request = httptest.NewRequest(http.MethodGet, "/?view=all", nil)
 	require.Equal(t, opsListViewAll, parseOpsViewParam(c2))
 
+	cSLA, _ := gin.CreateTestContext(w)
+	cSLA.Request = httptest.NewRequest(http.MethodGet, "/?view=sla", nil)
+	require.Equal(t, opsListViewSLA, parseOpsViewParam(cSLA))
+
 	c3, _ := gin.CreateTestContext(w)
 	c3.Request = httptest.NewRequest(http.MethodGet, "/?view=unknown", nil)
 	require.Equal(t, opsListViewErrors, parseOpsViewParam(c3))

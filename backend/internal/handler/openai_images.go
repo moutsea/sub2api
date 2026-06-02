@@ -124,6 +124,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		if err != nil {
 			log.Printf("[OpenAI Images Handler] SelectAccount failed: %v", err)
 			if len(failedAccountIDs) == 0 {
+				if isModelNotSupportedErr(err) {
+					markOpsModelMismatch(c)
+					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(parsed.Model), streamStarted)
+					return
+				}
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 				return
 			}

@@ -991,7 +991,7 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 		clauses = append(clauses, "COALESCE(resolved,false) = $"+itoa(len(args)))
 	}
 
-	// View filter: errors vs excluded vs all.
+	// View filter: errors vs sla vs excluded vs all.
 	// Excluded = upstream 429/529 and business-limited (quota/concurrency/billing) errors.
 	view := ""
 	if filter != nil {
@@ -1001,6 +1001,8 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	case "", "errors":
 		clauses = append(clauses, "COALESCE(is_business_limited,false) = false")
 		clauses = append(clauses, "COALESCE(upstream_status_code, status_code, 0) NOT IN (429, 529)")
+	case "sla":
+		clauses = append(clauses, "COALESCE(is_business_limited,false) = false")
 	case "excluded":
 		clauses = append(clauses, "(COALESCE(is_business_limited,false) = true OR COALESCE(upstream_status_code, status_code, 0) IN (429, 529))")
 	case "all":

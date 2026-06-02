@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import OpsErrorLogTable from './OpsErrorLogTable.vue'
-import { opsAPI, type OpsErrorLog } from '@/api/admin/ops'
+import { opsAPI, type OpsErrorListView, type OpsErrorLog } from '@/api/admin/ops'
 
 interface Props {
   show: boolean
@@ -33,7 +33,11 @@ const q = ref('')
 const statusCode = ref<number | 'other' | null>(null)
 const phase = ref<string>('')
 const errorOwner = ref<string>('')
-const viewMode = ref<'errors' | 'excluded' | 'all'>('errors')
+function defaultViewMode(): OpsErrorListView {
+  return props.errorType === 'request' ? 'sla' : 'errors'
+}
+
+const viewMode = ref<OpsErrorListView>(defaultViewMode())
 
 
 const modalTitle = computed(() => {
@@ -60,11 +64,15 @@ const ownerSelectOptions = computed(() => {
 
 
 const viewModeSelectOptions = computed(() => {
-  return [
+  const options = [
     { value: 'errors', label: t('admin.ops.errorDetails.viewErrors') || 'errors' },
     { value: 'excluded', label: t('admin.ops.errorDetails.viewExcluded') || 'excluded' },
     { value: 'all', label: t('common.all') }
   ]
+  if (props.errorType === 'request') {
+    options.unshift({ value: 'sla', label: t('admin.ops.errorDetails.viewSla') || 'SLA' })
+  }
+  return options
 })
 
 const phaseSelectOptions = computed(() => {
@@ -125,15 +133,15 @@ async function fetchErrorLogs() {
   }
 }
 
-  function resetFilters() {
-    q.value = ''
-    statusCode.value = null
-    phase.value = props.errorType === 'upstream' ? 'upstream' : ''
-    errorOwner.value = ''
-    viewMode.value = 'errors'
-    page.value = 1
-    fetchErrorLogs()
-  }
+function resetFilters() {
+  q.value = ''
+  statusCode.value = null
+  phase.value = props.errorType === 'upstream' ? 'upstream' : ''
+  errorOwner.value = ''
+  viewMode.value = defaultViewMode()
+  page.value = 1
+  fetchErrorLogs()
+}
 
 
 watch(
@@ -142,6 +150,15 @@ watch(
     if (!open) return
     page.value = 1
     pageSize.value = 10
+    resetFilters()
+  }
+)
+
+watch(
+  () => props.errorType,
+  () => {
+    if (!props.show) return
+    page.value = 1
     resetFilters()
   }
 )

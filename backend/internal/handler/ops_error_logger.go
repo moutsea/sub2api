@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"runtime"
 	"runtime/debug"
@@ -26,6 +28,9 @@ const (
 	opsStreamKey      = "ops_stream"
 	opsRequestBodyKey = "ops_request_body"
 	opsAccountIDKey   = "ops_account_id"
+	// opsModelMismatchKey 标记本次请求因「请求模型不被分组内任何账号支持」而失败（用户用错模型）。
+	// 这类错误是客户端请求问题，应从运维错误监控的 SLA/错误率中排除。
+	opsModelMismatchKey = "ops_model_mismatch"
 )
 
 const (
@@ -267,6 +272,29 @@ func setOpsSelectedAccount(c *gin.Context, accountID int64) {
 		return
 	}
 	c.Set(opsAccountIDKey, accountID)
+}
+
+// isModelNotSupportedErr 判断账号选择错误是否为「请求模型不被分组内任何账号支持」。
+// 用 errors.Is 识别 service 层包装的 sentinel，不依赖错误文案。
+func isModelNotSupportedErr(err error) bool {
+	return err != nil && errors.Is(err, service.ErrModelNotSupported)
+}
+
+// markOpsModelMismatch 标记本次请求为模型用错，供 ops error logger 从错误监控中排除。
+func markOpsModelMismatch(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(opsModelMismatchKey, true)
+}
+
+// modelNotSupportedClientMessage 返回面向客户端的、明确指向模型名的错误文案。
+func modelNotSupportedClientMessage(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "The requested model is not available for this API key. Please check the model name."
+	}
+	return fmt.Sprintf("The requested model %q is not available for this API key. Please check the model name.", model)
 }
 
 type opsCaptureWriter struct {
@@ -591,6 +619,14 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 
 		phase := classifyOpsPhase(parsed.ErrorType, parsed.Message, parsed.Code)
 		isBusinessLimited := classifyOpsIsBusinessLimited(parsed.ErrorType, phase, parsed.Code, status, parsed.Message)
+
+		// 模型用错（请求模型不被分组内任何账号支持）属于客户端请求问题，
+		// 从 SLA/错误率监控中排除（明细仍可在"全部/排除项"视图查看）。
+		if v, ok := c.Get(opsModelMismatchKey); ok {
+			if mismatch, ok := v.(bool); ok && mismatch {
+				isBusinessLimited = true
+			}
+		}
 
 		errorOwner := classifyOpsErrorOwner(phase, parsed.Message)
 		errorSource := classifyOpsErrorSource(phase, parsed.Message)

@@ -92,6 +92,12 @@ var (
 // ErrClaudeCodeOnly 表示分组仅允许 Claude Code 客户端访问
 var ErrClaudeCodeOnly = errors.New("this group only allows Claude Code clients")
 
+// ErrModelNotSupported 表示请求的模型不被分组内任何账号支持（用户用错模型，
+// 例如在 OpenAI 分组调用 Claude 模型，或请求了第三方不支持的模型）。
+// 这与「账号都在限流/忙」的临时性枯竭不同：后者仍返回 no available accounts（503），
+// 前者是客户端请求错误，应返回 400 且不计入运维错误监控。
+var ErrModelNotSupported = errors.New("requested model is not supported by any account in this group")
+
 // allowedHeaders 白名单headers（参考CRS项目）
 var allowedHeaders = map[string]bool{
 	"accept":                                    true,
@@ -567,6 +573,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	if len(accounts) == 0 {
+		if notSupportedErr := s.errIfModelNotSupportedInGroup(ctx, groupID, platform, hasForcePlatform, requestedModel); notSupportedErr != nil {
+			return nil, notSupportedErr
+		}
 		return nil, errors.New("no available accounts")
 	}
 
@@ -943,6 +952,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if len(candidates) == 0 {
+		if notSupportedErr := s.errIfModelNotSupportedInGroup(ctx, groupID, platform, hasForcePlatform, requestedModel); notSupportedErr != nil {
+			return nil, notSupportedErr
+		}
 		return nil, errors.New("no available accounts")
 	}
 
@@ -1742,6 +1754,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	if selected == nil {
 		if requestedModel != "" {
+			// 区分「模型无人支持（用户用错模型）」与「账号都在限流/忙」：
+			// 前者返回 ErrModelNotSupported，由 handler 转 400 且不计入错误监控。
+			if notSupportedErr := s.errIfModelNotSupportedInGroup(ctx, groupID, platform, true, requestedModel); notSupportedErr != nil {
+				return nil, notSupportedErr
+			}
 			return nil, fmt.Errorf("no available accounts supporting model: %s", requestedModel)
 		}
 		return nil, errors.New("no available accounts")
@@ -1988,6 +2005,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	if selected == nil {
 		if requestedModel != "" {
+			// 区分「模型无人支持（用户用错模型）」与「账号都在限流/忙」：
+			// 前者返回 ErrModelNotSupported，由 handler 转 400 且不计入错误监控。
+			if notSupportedErr := s.errIfModelNotSupportedInGroup(ctx, groupID, nativePlatform, false, requestedModel); notSupportedErr != nil {
+				return nil, notSupportedErr
+			}
 			return nil, fmt.Errorf("no available accounts supporting model: %s", requestedModel)
 		}
 		return nil, errors.New("no available accounts")
@@ -2019,6 +2041,70 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	}
 	// 其他平台使用账户的模型支持检查
 	return account.IsModelSupported(requestedModel)
+}
+
+// groupHasAnyAccountSupportingModel 判断账号集合中是否存在任意一个账号在其平台规则下支持该模型。
+// 仅看模型支持能力（平台映射/前缀），刻意忽略 schedulable/quota 等临时状态——
+// 那些是瞬时不可用，不代表「用错模型」。集合应为该请求实际可路由到的账号全集
+// （单平台或混合调度过滤后的列表），以避免把跨平台账号误判为不支持。
+func (s *GatewayService) groupHasAnyAccountSupportingModel(accounts []Account, requestedModel string) bool {
+	if requestedModel == "" {
+		// 未指定模型时不做此判定，交由原有逻辑处理。
+		return true
+	}
+	for i := range accounts {
+		if s.isModelSupportedByAccount(&accounts[i], requestedModel) {
+			return true
+		}
+	}
+	return false
+}
+
+// errIfModelNotSupportedInGroup 在选号失败后做二次判定：扫描分组内「全部账号」
+// （刻意不经 schedulable/限流过滤，避免把临时限流误判为模型不支持），
+// 若无任何账号在其平台规则下支持该模型，则返回包装了 ErrModelNotSupported 的错误，
+// 供 handler 识别后返回 400（而非误导性的 503 no available accounts）。
+// 判定不成立（确有账号支持，只是当前都不可调度）或无法判定时返回 nil，由调用方维持原错误。
+//
+// 仅在 cold path（selected==nil）调用，多一次轻量分组账号查询，不影响正常选号热路径。
+func (s *GatewayService) errIfModelNotSupportedInGroup(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, requestedModel string) error {
+	if requestedModel == "" {
+		return nil
+	}
+	// 无分组模式不做此判定（无法低成本枚举候选账号集合），维持原有 503 行为。
+	if groupID == nil || *groupID <= 0 {
+		return nil
+	}
+	if s.accountRepo == nil {
+		return nil
+	}
+
+	// 拉取分组内全部活跃账号（不过滤调度态），与 listSchedulableAccounts 使用一致的平台展开规则后判定。
+	all, err := s.accountRepo.ListByGroup(ctx, *groupID)
+	if err != nil {
+		// 查询失败时不臆断，维持原错误（fail-open）。记录日志以便排查。
+		log.Printf("[ModelRouting] model-support check skipped: ListByGroup failed: group=%d model=%s err=%v", *groupID, requestedModel, err)
+		return nil
+	}
+
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	candidates := make([]Account, 0, len(all))
+	for i := range all {
+		if platform != "" && !s.isAccountAllowedForPlatform(&all[i], platform, useMixed) {
+			continue
+		}
+		candidates = append(candidates, all[i])
+	}
+
+	// 分组内压根没有该平台的账号，属于配置/路由问题而非模型用错，维持原 503。
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	if s.groupHasAnyAccountSupportingModel(candidates, requestedModel) {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", requestedModel, ErrModelNotSupported)
 }
 
 // IsAntigravityModelSupported 检查 Antigravity 平台是否支持指定模型
