@@ -165,6 +165,7 @@ type UpdateAccountInput struct {
 	Type                  string // Account type: oauth, setup-token, apikey
 	Credentials           map[string]any
 	Extra                 map[string]any
+	ExtraProvided         bool // 区分未提供 extra 和显式设置为空对象
 	ProxyID               *int64
 	Concurrency           *int     // 使用指针区分"未提供"和"设置为0"
 	Priority              *int     // 使用指针区分"未提供"和"设置为0"
@@ -832,18 +833,22 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 			}
 		}
 
-		// IdC profile_arn fallback: Builder ID / Github / Google token JSON does not
-		// include a profileArn (the official Kiro client hardcodes it). When such a
-		// JSON is imported through the IdC entrypoint without a valid profile_arn,
-		// fall back to the Builder ID default ARN so downstream calls succeed.
+		// IdC profile_arn: the OIDC /token refresh response does not include a
+		// profileArn, so we actively fetch the real one via ListAvailableProfiles
+		// (interface result takes priority — it overrides any user-supplied value).
+		// If the fetch fails (network/credentials/empty), fall back to the Builder ID
+		// default ARN so account creation still succeeds.
 		if authType == KiroAuthMethodIdC {
-			if !isValidKiroProfileArn(input.Credentials["profile_arn"]) &&
+			if input.Credentials == nil {
+				input.Credentials = map[string]any{}
+			}
+			if arn := s.fetchKiroIdCProfileArn(ctx, input); arn != "" {
+				input.Credentials["profile_arn"] = arn
+				log.Printf("[Kiro] account %q: profile_arn auto-fetched via ListAvailableProfiles: %s", input.Name, arn)
+			} else if !isValidKiroProfileArn(input.Credentials["profile_arn"]) &&
 				!isValidKiroProfileArn(input.Credentials["profileArn"]) {
-				if input.Credentials == nil {
-					input.Credentials = map[string]any{}
-				}
 				input.Credentials["profile_arn"] = kiro.BuilderIdProfileArn
-				log.Printf("[Kiro] account %q: auto-filled BuilderId profile_arn fallback (no valid profile_arn supplied)", input.Name)
+				log.Printf("[Kiro] account %q: profile_arn auto-fetch failed, fell back to BuilderId default ARN", input.Name)
 			}
 		}
 	}
@@ -913,6 +918,64 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	return account, nil
 }
 
+// fetchKiroIdCProfileArn refreshes the IdC access token and fetches the real
+// profileArn via ListAvailableProfiles. It is best-effort: any failure returns
+// an empty string so the caller can fall back to the Builder ID default ARN.
+//
+// This runs during account creation (before the account is persisted), so it
+// relies only on the credentials in the input — not on a stored account.ID.
+var (
+	refreshKiroIdCAccessToken    = kiro.RefreshIdCAccessToken
+	fetchKiroAvailableProfileArn = kiro.FetchAvailableProfileArn
+)
+
+func (s *adminServiceImpl) fetchKiroIdCProfileArn(ctx context.Context, input *CreateAccountInput) string {
+	clientID, _ := input.Credentials["client_id"].(string)
+	clientSecret, _ := input.Credentials["client_secret"].(string)
+	refreshToken, _ := input.Credentials["refresh_token"].(string)
+	if clientID == "" || clientSecret == "" || refreshToken == "" {
+		return ""
+	}
+
+	region, _ := input.Credentials["region"].(string)
+	if region == "" {
+		region = kiro.DefaultRegion
+	}
+
+	// Resolve proxy URL from the proxy bound to this account (if any). The account
+	// is not yet persisted, so Proxy is not pre-loaded — look it up via proxyRepo.
+	proxyURL := ""
+	if input.ProxyID != nil && *input.ProxyID > 0 && s.proxyRepo != nil {
+		if proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID); err == nil && proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
+
+	// Bound the network work so a hanging upstream cannot stall account creation.
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tokenInfo, err := refreshKiroIdCAccessToken(fetchCtx, clientID, clientSecret, refreshToken, region, proxyURL)
+	if err != nil {
+		log.Printf("[Kiro] account %q: IdC token refresh for profile_arn fetch failed: %v", input.Name, err)
+		return ""
+	}
+	if tokenInfo.RefreshToken != "" {
+		input.Credentials["refresh_token"] = tokenInfo.RefreshToken
+	}
+
+	arn, err := fetchKiroAvailableProfileArn(fetchCtx, tokenInfo.AccessToken, region, proxyURL, "")
+	if err != nil {
+		log.Printf("[Kiro] account %q: ListAvailableProfiles failed: %v", input.Name, err)
+		return ""
+	}
+	if !isValidKiroProfileArn(arn) {
+		log.Printf("[Kiro] account %q: ListAvailableProfiles returned invalid arn %q", input.Name, arn)
+		return ""
+	}
+	return arn
+}
+
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
@@ -931,7 +994,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if len(input.Credentials) > 0 {
 		account.Credentials = input.Credentials
 	}
-	if len(input.Extra) > 0 {
+	if input.ExtraProvided || len(input.Extra) > 0 {
 		account.Extra = input.Extra
 	}
 	if input.ProxyID != nil {

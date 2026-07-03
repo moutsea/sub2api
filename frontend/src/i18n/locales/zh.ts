@@ -1588,7 +1588,19 @@ export default {
       // OpenAI specific hints
       openai: {
         baseUrlHint: '留空使用官方 OpenAI API',
-        apiKeyHint: '您的 OpenAI API Key'
+        apiKeyHint: '您的 OpenAI API Key',
+        codexImageGenerationBridge: 'Codex 图片生成桥接',
+        codexImageGenerationBridgeDesc:
+          '为 Codex /responses 请求自动注入 OpenAI 原生 image_generation 工具。只有实际生成图片时才按图片计费。',
+        codexImageGenerationBridgeInherit: '跟随全局',
+        codexImageGenerationBridgeInheritDesc: '不写入账号覆盖，使用系统默认策略。',
+        codexImageGenerationBridgeEnabled: '强制开启',
+        codexImageGenerationBridgeEnabledDesc: '允许该账号为 Codex 请求注入图片工具。',
+        codexImageGenerationBridgeDisabled: '强制关闭',
+        codexImageGenerationBridgeDisabledDesc: '禁止该账号为 Codex 请求注入图片工具。',
+        codexImageGenerationBridgeBadgeInherit: '全局策略',
+        codexImageGenerationBridgeBadgeEnabled: '账号开启',
+        codexImageGenerationBridgeBadgeDisabled: '账号关闭'
       },
       modelRestriction: '模型限制（可选）',
       modelWhitelist: '模型白名单',

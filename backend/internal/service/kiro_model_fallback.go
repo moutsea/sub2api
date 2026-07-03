@@ -11,11 +11,9 @@ import (
 )
 
 const (
-	kiroDynamicProbeModelOpus48           = "claude-opus-4-8"
-	kiroDynamicProbeModelOpus47           = "claude-opus-4-7"
-	kiroDynamicFallbackModelOpus46        = "claude-opus-4-6"
-	kiroOpusSlowFallbackInitialTimeout    = 40 * time.Second
-	kiroOpusSlowFallbackCancelGrace       = 2 * time.Second
+	kiroDynamicProbeModelOpus48    = "claude-opus-4-8"
+	kiroDynamicProbeModelOpus47    = "claude-opus-4-7"
+	kiroDynamicFallbackModelOpus46 = "claude-opus-4-6"
 
 	kiroModelCapabilitySupported   = "supported"
 	kiroModelCapabilityUnsupported = "unsupported"
@@ -33,10 +31,10 @@ type kiroModelCapabilityState struct {
 }
 
 func shouldAutoDetectKiroModel(account *Account, requestedModel string) bool {
-	return account != nil && account.IsKiro() && !account.IsKiroApiKey() && isKiroSlowFallbackProbeModel(requestedModel)
+	return account != nil && account.IsKiro() && !account.IsKiroApiKey() && isKiroDynamicProbeModel(requestedModel)
 }
 
-func isKiroSlowFallbackProbeModel(model string) bool {
+func isKiroDynamicProbeModel(model string) bool {
 	switch strings.TrimSpace(strings.ToLower(model)) {
 	case kiroDynamicProbeModelOpus48, "claude-opus-4.8":
 		return true
@@ -47,35 +45,12 @@ func isKiroSlowFallbackProbeModel(model string) bool {
 	}
 }
 
-func shouldFallbackSlowKiroOpus(account *Account, requestedModel, upstreamModel string) bool {
-	return shouldAutoDetectKiroModel(account, requestedModel) && isKiroSlowFallbackProbeModel(upstreamModel)
-}
-
-func kiroOpusSlowFallbackInitialResponseTimeout(account *Account, requestedModel, upstreamModel string) time.Duration {
-	if !shouldFallbackSlowKiroOpus(account, requestedModel, upstreamModel) {
-		return 0
-	}
-	return kiroOpusSlowFallbackInitialTimeout
-}
-
-func kiroOpusSlowFallbackRemainingInitialResponseTimeout(account *Account, requestedModel, upstreamModel string, startTime time.Time) time.Duration {
-	timeout := kiroOpusSlowFallbackInitialResponseTimeout(account, requestedModel, upstreamModel)
-	if timeout <= 0 || startTime.IsZero() {
-		return timeout
-	}
-	remaining := time.Until(startTime.Add(timeout))
-	if remaining <= 0 {
-		return time.Nanosecond
-	}
-	return remaining
-}
-
-type kiroOpusSlowFallbackInitialResponseTimeoutError struct {
+type kiroInitialResponseTimeoutError struct {
 	Phase   string
 	Timeout time.Duration
 }
 
-func (e *kiroOpusSlowFallbackInitialResponseTimeoutError) Error() string {
+func (e *kiroInitialResponseTimeoutError) Error() string {
 	if e == nil {
 		return "kiro opus initial response timeout"
 	}
@@ -86,8 +61,8 @@ func (e *kiroOpusSlowFallbackInitialResponseTimeoutError) Error() string {
 	return fmt.Sprintf("kiro opus %s timeout after %s", phase, e.Timeout)
 }
 
-func newKiroOpusSlowFallbackInitialResponseTimeoutError(phase string, timeout time.Duration) error {
-	return &kiroOpusSlowFallbackInitialResponseTimeoutError{
+func newKiroInitialResponseTimeoutError(phase string, timeout time.Duration) error {
+	return &kiroInitialResponseTimeoutError{
 		Phase:   phase,
 		Timeout: timeout,
 	}
@@ -155,7 +130,7 @@ func (s *KiroGatewayService) setKiroModelCapability(accountID int64, requestedMo
 }
 
 func (s *KiroGatewayService) maybeFallbackUnsupportedKiroModel(account *Account, requestedModel, upstreamModel, errorMsg string) (string, bool) {
-	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroSlowFallbackProbeModel(upstreamModel) {
+	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroDynamicProbeModel(upstreamModel) {
 		return "", false
 	}
 	if !isKiroUnsupportedModelError(errorMsg, requestedModel, kiro.GetModelID(requestedModel)) {
@@ -167,7 +142,7 @@ func (s *KiroGatewayService) maybeFallbackUnsupportedKiroModel(account *Account,
 }
 
 func (s *KiroGatewayService) markKiroModelSupported(account *Account, requestedModel, upstreamModel string) {
-	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroSlowFallbackProbeModel(upstreamModel) {
+	if !shouldAutoDetectKiroModel(account, requestedModel) || !isKiroDynamicProbeModel(upstreamModel) {
 		return
 	}
 	s.setKiroModelCapability(account.ID, requestedModel, kiroModelCapabilitySupported)

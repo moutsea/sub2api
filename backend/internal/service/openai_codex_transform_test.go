@@ -10,24 +10,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNormalizeCodexModel_RemapsLegacyGPT5FamiliesToGPT52Series(t *testing.T) {
+func TestNormalizeCodexModel_RemapsLegacyGPT5FamiliesToGPT54Mini(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  string
 	}{
-		{name: "gpt5", input: "gpt-5", want: "gpt-5.2"},
-		{name: "gpt5 mini", input: "gpt-5-mini", want: "gpt-5.2"},
-		{name: "gpt51", input: "gpt-5.1", want: "gpt-5.2"},
-		{name: "gpt51 high", input: "gpt-5.1-high", want: "gpt-5.2"},
-		{name: "gpt51 chat latest", input: "gpt-5.1-chat-latest", want: "gpt-5.2"},
-		{name: "gpt5 codex", input: "gpt-5-codex", want: "gpt-5.2-codex"},
-		{name: "gpt5 codex fuzzy", input: "gpt 5 codex", want: "gpt-5.2-codex"},
-		{name: "gpt51 codex", input: "gpt-5.1-codex", want: "gpt-5.2-codex"},
-		{name: "gpt51 codex high", input: "gpt-5.1-codex-high", want: "gpt-5.2-codex"},
-		{name: "gpt51 codex max", input: "gpt-5.1-codex-max", want: "gpt-5.2-codex"},
-		{name: "gpt5 codex mini", input: "gpt-5-codex-mini", want: "gpt-5.2-codex"},
-		{name: "codex mini latest", input: "codex-mini-latest", want: "gpt-5.2-codex"},
+		{name: "gpt5", input: "gpt-5", want: "gpt-5.4-mini"},
+		{name: "gpt5 mini", input: "gpt-5-mini", want: "gpt-5.4-mini"},
+		{name: "gpt51", input: "gpt-5.1", want: "gpt-5.4-mini"},
+		{name: "gpt51 high", input: "gpt-5.1-high", want: "gpt-5.4-mini"},
+		{name: "gpt51 chat latest", input: "gpt-5.1-chat-latest", want: "gpt-5.4-mini"},
+		{name: "gpt5 codex", input: "gpt-5-codex", want: "gpt-5.4-mini"},
+		{name: "gpt5 codex fuzzy", input: "gpt 5 codex", want: "gpt-5.4-mini"},
+		{name: "gpt51 codex", input: "gpt-5.1-codex", want: "gpt-5.4-mini"},
+		{name: "gpt51 codex high", input: "gpt-5.1-codex-high", want: "gpt-5.4-mini"},
+		{name: "gpt51 codex max", input: "gpt-5.1-codex-max", want: "gpt-5.4-mini"},
+		{name: "deprecated gpt52", input: "gpt-5.2", want: "gpt-5.4-mini"},
+		{name: "deprecated gpt53 codex", input: "gpt-5.3-codex", want: "gpt-5.4-mini"},
+		{name: "gpt5 codex mini", input: "gpt-5-codex-mini", want: "gpt-5.4-mini"},
+		{name: "codex mini latest", input: "codex-mini-latest", want: "gpt-5.4-mini"},
 	}
 
 	for _, tt := range tests {
@@ -48,6 +50,30 @@ func TestNormalizeCodexModel_AcceptsGPT55Aliases(t *testing.T) {
 		{name: "gpt55 codex alias", input: "gpt-5.5-codex", want: "gpt-5.5"},
 		{name: "provider gpt55 codex xhigh", input: "provider/gpt-5.5-codex-xhigh", want: "gpt-5.5"},
 		{name: "gpt55 fuzzy", input: "gpt 5.5", want: "gpt-5.5"},
+		{name: "codex auto review", input: "codex-auto-review", want: "codex-auto-review"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
+		})
+	}
+}
+
+func TestNormalizeCodexModel_AcceptsCurrentOfficialCodexModels(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "gpt54 mini", input: "gpt-5.4-mini", want: "gpt-5.4-mini"},
+		{name: "gpt54 mini high", input: "gpt-5.4-mini-high", want: "gpt-5.4-mini"},
+		{name: "provider gpt54 mini xhigh", input: "provider/gpt-5.4-mini-xhigh", want: "gpt-5.4-mini"},
+		{name: "gpt54 mini fuzzy", input: "gpt 5.4 mini", want: "gpt-5.4-mini"},
+		{name: "spark", input: "gpt-5.3-codex-spark", want: "gpt-5.3-codex-spark"},
+		{name: "spark high", input: "gpt-5.3-codex-spark-high", want: "gpt-5.3-codex-spark"},
+		{name: "provider spark xhigh", input: "provider/gpt-5.3-codex-spark-xhigh", want: "gpt-5.3-codex-spark"},
+		{name: "spark fuzzy", input: "gpt 5.3 codex spark", want: "gpt-5.3-codex-spark"},
 	}
 
 	for _, tt := range tests {
@@ -79,8 +105,11 @@ func TestGetOAuthModelFallback_PrefersGPT54BeforeOlderFallbacks(t *testing.T) {
 	}{
 		{model: "gpt-5.5", want: "gpt-5.4"},
 		{model: "gpt-5.5-codex", want: "gpt-5.4"},
-		{model: "gpt-5.4", want: "gpt-5.3-codex"},
-		{model: "gpt-5.3-codex", want: ""},
+		{model: "gpt-5.4-mini", want: ""},
+		{model: "gpt-5.4", want: "gpt-5.4-mini"},
+		{model: "gpt-5.3-codex-spark", want: "gpt-5.4-mini"},
+		{model: "gpt-5.3-codex", want: "gpt-5.4-mini"},
+		{model: "gpt-5.2", want: "gpt-5.4-mini"},
 	}
 
 	for _, tt := range tests {
@@ -306,7 +335,7 @@ func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
 	require.Len(t, input, 0)
 }
 
-func TestApplyCodexOAuthTransform_RemapsLegacyGPT51HighToGPT52WithEffort(t *testing.T) {
+func TestApplyCodexOAuthTransform_RemapsLegacyGPT51HighToGPT54MiniWithEffort(t *testing.T) {
 	setupCodexCache(t)
 
 	reqBody := map[string]any{
@@ -316,13 +345,13 @@ func TestApplyCodexOAuthTransform_RemapsLegacyGPT51HighToGPT52WithEffort(t *test
 
 	applyCodexOAuthTransform(reqBody)
 
-	require.Equal(t, "gpt-5.2", reqBody["model"])
+	require.Equal(t, "gpt-5.4-mini", reqBody["model"])
 	reasoning, ok := reqBody["reasoning"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "high", reasoning["effort"])
 }
 
-func TestApplyCodexOAuthTransform_RemapsLegacyGPT51CodexMaxToGPT52CodexXHigh(t *testing.T) {
+func TestApplyCodexOAuthTransform_RemapsLegacyGPT51CodexMaxToGPT54MiniXHigh(t *testing.T) {
 	setupCodexCache(t)
 
 	reqBody := map[string]any{
@@ -332,7 +361,7 @@ func TestApplyCodexOAuthTransform_RemapsLegacyGPT51CodexMaxToGPT52CodexXHigh(t *
 
 	applyCodexOAuthTransform(reqBody)
 
-	require.Equal(t, "gpt-5.2-codex", reqBody["model"])
+	require.Equal(t, "gpt-5.4-mini", reqBody["model"])
 	reasoning, ok := reqBody["reasoning"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "xhigh", reasoning["effort"])

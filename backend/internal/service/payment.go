@@ -27,6 +27,7 @@ const (
 	PaymentMethodAlipay         = "alipay"
 	PaymentMethodWechat         = "wechat_pay"
 	PaymentCurrencyCNY          = "cny"
+	stripePaymentSite           = "cfjwlpro"
 	PaymentStatusCreated        = "created"
 	PaymentStatusPending        = "pending"
 	PaymentStatusPaid           = "paid"
@@ -92,6 +93,7 @@ type StripeCheckoutSessionParams struct {
 	PaymentMethods []string
 	SuccessURL     string
 	CancelURL      string
+	Site           string
 }
 
 type StripeCheckoutSession struct {
@@ -230,6 +232,7 @@ func (s *PaymentService) CreateCheckoutSession(ctx context.Context, req CreateCh
 		PaymentMethods: paymentMethods,
 		SuccessURL:     req.SuccessURL,
 		CancelURL:      req.CancelURL,
+		Site:           stripePaymentSite,
 	})
 	if err != nil {
 		_ = s.repo.MarkPaymentOrderFailed(ctx, order.ID, "stripe_create_failed")
@@ -296,6 +299,12 @@ func (s *PaymentService) HandleStripeWebhook(ctx context.Context, payload []byte
 		SessionID: session.ID,
 		Status:    "received",
 	}
+	if !isStripeSessionForCurrentSite(session) {
+		log.Printf("[Payment] webhook: ignored non-site event type=%s event_id=%s session_id=%s site=%q", event.Type, event.ID, session.ID, session.Metadata["site"])
+		result.Status = "ignored_site"
+		result.Ignored = true
+		return result, nil
+	}
 
 	switch event.Type {
 	case "checkout.session.completed", "checkout.session.async_payment_succeeded":
@@ -355,6 +364,10 @@ func (s *PaymentService) HandleStripeWebhook(ctx context.Context, payload []byte
 		result.Ignored = true
 		return result, nil
 	}
+}
+
+func isStripeSessionForCurrentSite(session StripeCheckoutSession) bool {
+	return strings.TrimSpace(session.Metadata["site"]) == stripePaymentSite
 }
 
 func (s *PaymentService) ensureStripeConfigured() error {

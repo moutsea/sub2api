@@ -16,15 +16,10 @@ type Model struct {
 // DefaultModels OpenAI models list
 var DefaultModels = []Model{
 	{ID: "gpt-5.5", Object: "model", Created: 1776988800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
+	{ID: "gpt-5.4-mini", Object: "model", Created: 0, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Mini"},
 	{ID: "gpt-5.4", Object: "model", Created: 1772755200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4"},
-	{ID: "gpt-5.3-codex-xhigh", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex XHigh"},
-	{ID: "gpt-5.3-codex-high", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex High"},
-	{ID: "gpt-5.3-codex-medium", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Medium"},
-	{ID: "gpt-5.3-codex-low", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Low"},
-	{ID: "gpt-5.3-codex", Object: "model", Created: 1739404800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex"},
-	{ID: "gpt-5.2-codex-xhigh", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2 Codex XHigh"},
-	{ID: "gpt-5.2", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2"},
-	{ID: "gpt-5.2-codex", Object: "model", Created: 1733011200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2 Codex"},
+	{ID: "codex-auto-review", Object: "model", Created: 0, OwnedBy: "openai", Type: "model", DisplayName: "Codex Auto Review"},
+	{ID: "gpt-5.3-codex-spark", Object: "model", Created: 0, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Spark"},
 	{ID: "gpt-5.1-codex-max", Object: "model", Created: 1730419200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.1 Codex Max"},
 	{ID: "gpt-5.1-codex", Object: "model", Created: 1730419200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.1 Codex"},
 	{ID: "gpt-5.1", Object: "model", Created: 1731456000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.1"},
@@ -51,7 +46,12 @@ func cloneModels(models []Model) []Model {
 }
 
 func isOAuthOnlyModel(modelID string) bool {
-	return modelID == "gpt-5.5"
+	switch modelID {
+	case "gpt-5.5", "codex-auto-review", "gpt-5.3-codex-spark":
+		return true
+	default:
+		return false
+	}
 }
 
 // DefaultModelsForAccount returns the curated OpenAI model list for the given account type.

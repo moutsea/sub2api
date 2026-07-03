@@ -472,6 +472,10 @@ func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 	req.Model = "gpt-image-2"
 }
 
+func isOpenAIImageGenerationModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
+}
+
 func normalizeOpenAIImagesEndpointPath(path string) string {
 	trimmed := strings.TrimSpace(path)
 	switch {
@@ -973,16 +977,44 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
-	usage := gjson.GetBytes(body, "usage")
-	if !usage.Exists() {
+	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "usage")); ok {
+		return usage, true
+	}
+	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"))
+}
+
+func openAIUsageFromGJSON(usage gjson.Result) (OpenAIUsage, bool) {
+	if !usage.Exists() || !usage.IsObject() {
 		return OpenAIUsage{}, false
 	}
+	inputTokens := usage.Get("input_tokens").Int()
+	if inputTokens == 0 {
+		inputTokens = usage.Get("prompt_tokens").Int()
+	}
+	outputTokens := usage.Get("output_tokens").Int()
+	if outputTokens == 0 {
+		outputTokens = usage.Get("completion_tokens").Int()
+	}
+	cacheReadTokens := usage.Get("input_tokens_details.cached_tokens").Int()
+	if cacheReadTokens == 0 {
+		cacheReadTokens = usage.Get("prompt_tokens_details.cached_tokens").Int()
+	}
+	if cacheReadTokens == 0 {
+		cacheReadTokens = usage.Get("cache_read_input_tokens").Int()
+	}
+	imageOutputTokens := usage.Get("output_tokens_details.image_tokens").Int()
+	if imageOutputTokens == 0 {
+		imageOutputTokens = usage.Get("completion_tokens_details.image_tokens").Int()
+	}
+	if imageOutputTokens == 0 {
+		imageOutputTokens = usage.Get("image_output_tokens").Int()
+	}
 	return OpenAIUsage{
-		InputTokens:              int(usage.Get("input_tokens").Int()),
-		OutputTokens:             int(usage.Get("output_tokens").Int()),
+		InputTokens:              int(inputTokens),
+		OutputTokens:             int(outputTokens),
 		CacheCreationInputTokens: int(usage.Get("cache_creation_input_tokens").Int()),
-		CacheReadInputTokens:     int(usage.Get("cache_read_input_tokens").Int()),
-		ImageOutputTokens:        int(usage.Get("image_output_tokens").Int()),
+		CacheReadInputTokens:     int(cacheReadTokens),
+		ImageOutputTokens:        int(imageOutputTokens),
 	}, true
 }
 
@@ -1046,11 +1078,7 @@ func extractOpenAIImageCountFromJSONBytes(body []byte) int {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return 0
 	}
-	data := gjson.GetBytes(body, "data")
-	if data.Exists() && data.IsArray() {
-		return len(data.Array())
-	}
-	return 0
+	return countOpenAIResponseImageOutputsFromJSONBytes(body)
 }
 
 func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(

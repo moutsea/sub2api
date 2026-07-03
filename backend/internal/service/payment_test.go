@@ -60,6 +60,7 @@ func TestPaymentServiceCreateCheckoutSession(t *testing.T) {
 	require.Equal(t, []string{PaymentMethodWechat}, stripe.params.PaymentMethods)
 	require.Equal(t, int64(10000), stripe.params.AmountCents)
 	require.Equal(t, "cny", stripe.params.Currency)
+	require.Equal(t, stripePaymentSite, stripe.params.Site)
 }
 
 func TestPaymentServiceCreateCheckoutSessionRejectsInvalidAmount(t *testing.T) {
@@ -138,7 +139,7 @@ func TestPaymentServiceCreateCheckoutSessionDefaultsToStripeCheckoutMethods(t *t
 
 func TestPaymentServiceHandleStripeWebhookCreditsPaidSession(t *testing.T) {
 	now := time.Now()
-	payload := []byte(`{"id":"evt_paid","type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_paid"}}}`)
+	payload := []byte(`{"id":"evt_paid","type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_paid","metadata":{"site":"cfjwlpro"}}}}`)
 	repo := &fakePaymentRepo{creditResult: &PaymentOrder{
 		ID:                    "order_1",
 		UserID:                9,
@@ -174,7 +175,7 @@ func TestPaymentServiceHandleStripeWebhookCreditsPaidSession(t *testing.T) {
 
 func TestPaymentServiceHandleStripeWebhookSkipsNotifierForDuplicateCredit(t *testing.T) {
 	now := time.Now()
-	payload := []byte(`{"id":"evt_paid_dup","type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_paid"}}}`)
+	payload := []byte(`{"id":"evt_paid_dup","type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_paid","metadata":{"site":"cfjwlpro"}}}}`)
 	credited := false
 	repo := &fakePaymentRepo{
 		creditResult:   &PaymentOrder{ID: "order_1", UserID: 9, Amount: 50, Currency: "cny"},
@@ -199,7 +200,7 @@ func TestPaymentServiceHandleStripeWebhookSkipsNotifierForDuplicateCredit(t *tes
 
 func TestPaymentServiceHandleStripeWebhookDefersUnpaidCompletedSession(t *testing.T) {
 	now := time.Now()
-	payload := []byte(`{"id":"evt_pending","type":"checkout.session.completed","data":{"object":{"id":"cs_pending","amount_total":5000,"currency":"cny","payment_status":"unpaid"}}}`)
+	payload := []byte(`{"id":"evt_pending","type":"checkout.session.completed","data":{"object":{"id":"cs_pending","amount_total":5000,"currency":"cny","payment_status":"unpaid","metadata":{"site":"cfjwlpro"}}}}`)
 	repo := &fakePaymentRepo{}
 	svc := NewPaymentService(repo, nil, nil, &config.Config{
 		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
@@ -215,6 +216,50 @@ func TestPaymentServiceHandleStripeWebhookDefersUnpaidCompletedSession(t *testin
 	require.Equal(t, "pending_payment", result.Status)
 	require.Equal(t, "cs_pending", repo.pendingSessionID)
 	require.Empty(t, repo.creditCompletion.SessionID)
+}
+
+func TestPaymentServiceHandleStripeWebhookIgnoresOtherSite(t *testing.T) {
+	now := time.Now()
+	payload := []byte(`{"id":"evt_other_site","type":"checkout.session.completed","data":{"object":{"id":"cs_other","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_other","metadata":{"site":"other-site"}}}}`)
+	repo := &fakePaymentRepo{}
+	svc := NewPaymentService(repo, nil, nil, &config.Config{
+		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
+			Enabled:       true,
+			SecretKey:     "sk_test",
+			WebhookSecret: "whsec_test",
+			Currency:      "cny",
+		}},
+	})
+
+	result, err := svc.HandleStripeWebhook(context.Background(), payload, signedStripeHeader(payload, "whsec_test", now))
+	require.NoError(t, err)
+	require.True(t, result.Ignored)
+	require.Equal(t, "ignored_site", result.Status)
+	require.Equal(t, "cs_other", result.SessionID)
+	require.Empty(t, repo.creditCompletion.SessionID)
+	require.Empty(t, repo.pendingSessionID)
+}
+
+func TestPaymentServiceHandleStripeWebhookIgnoresMissingSite(t *testing.T) {
+	now := time.Now()
+	payload := []byte(`{"id":"evt_missing_site","type":"checkout.session.completed","data":{"object":{"id":"cs_missing","amount_total":5000,"currency":"cny","payment_status":"paid","payment_intent":"pi_missing"}}}`)
+	repo := &fakePaymentRepo{}
+	svc := NewPaymentService(repo, nil, nil, &config.Config{
+		Payment: config.PaymentConfig{Stripe: config.StripePaymentConfig{
+			Enabled:       true,
+			SecretKey:     "sk_test",
+			WebhookSecret: "whsec_test",
+			Currency:      "cny",
+		}},
+	})
+
+	result, err := svc.HandleStripeWebhook(context.Background(), payload, signedStripeHeader(payload, "whsec_test", now))
+	require.NoError(t, err)
+	require.True(t, result.Ignored)
+	require.Equal(t, "ignored_site", result.Status)
+	require.Equal(t, "cs_missing", result.SessionID)
+	require.Empty(t, repo.creditCompletion.SessionID)
+	require.Empty(t, repo.pendingSessionID)
 }
 
 func signedStripeHeader(payload []byte, secret string, now time.Time) string {

@@ -68,9 +68,11 @@ func (c *stripePaymentClient) CreateCheckoutSession(ctx context.Context, params 
 	form.Set("metadata[order_id]", params.OrderID)
 	form.Set("metadata[user_id]", strconv.FormatInt(params.UserID, 10))
 	form.Set("metadata[amount_cents]", strconv.FormatInt(params.AmountCents, 10))
+	form.Set("metadata[site]", stripeCheckoutSite(params.Site))
 	form.Set("payment_intent_data[metadata][order_id]", params.OrderID)
 	form.Set("payment_intent_data[metadata][user_id]", strconv.FormatInt(params.UserID, 10))
 	form.Set("payment_intent_data[metadata][amount_cents]", strconv.FormatInt(params.AmountCents, 10))
+	form.Set("payment_intent_data[metadata][site]", stripeCheckoutSite(params.Site))
 	if hasWechatPay {
 		form.Set("payment_method_options[wechat_pay][client]", "web")
 	}
@@ -103,6 +105,14 @@ func (c *stripePaymentClient) CreateCheckoutSession(ctx context.Context, params 
 		return nil, stripeServiceError("STRIPE_RESPONSE_INVALID", "failed to decode Stripe checkout session").WithCause(err)
 	}
 	return &session, nil
+}
+
+func stripeCheckoutSite(site string) string {
+	site = strings.TrimSpace(site)
+	if site == "" {
+		return stripePaymentSite
+	}
+	return site
 }
 
 func stripeErrorFromResponse(statusCode int, body []byte) error {

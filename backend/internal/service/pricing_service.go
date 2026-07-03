@@ -565,7 +565,7 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	}
 
 	// 5. OpenAI 模型回退策略
-	if strings.HasPrefix(lookupCandidates[0], "gpt-") {
+	if strings.HasPrefix(lookupCandidates[0], "gpt-") || strings.HasPrefix(lookupCandidates[0], "codex-") {
 		return s.matchOpenAIModel(lookupCandidates[0])
 	}
 
@@ -654,6 +654,7 @@ func (s *PricingService) extractBaseName(model string) string {
 func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	// Claude模型系列匹配规则
 	familyPatterns := map[string][]string{
+		"sonnet-5":   {"claude-sonnet-5"},
 		"opus-4.6":   {"claude-opus-4.6", "claude-opus-4-6"},
 		"opus-4.5":   {"claude-opus-4.5", "claude-opus-4-5"},
 		"opus-4":     {"claude-opus-4", "claude-3-opus"},
@@ -693,6 +694,8 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 				matchedFamily = "sonnet-4.5"
 			} else if strings.Contains(model, "3-5") || strings.Contains(model, "3.5") {
 				matchedFamily = "sonnet-3.5"
+			} else if strings.Contains(model, "5") {
+				matchedFamily = "sonnet-5"
 			} else {
 				matchedFamily = "sonnet-4"
 			}

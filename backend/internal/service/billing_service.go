@@ -148,6 +148,15 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:     false,
 	}
 
+	// Claude Sonnet 5
+	s.fallbackPrices["claude-sonnet-5"] = &ModelPricing{
+		InputPricePerToken:         3e-6,    // $3 per MTok
+		OutputPricePerToken:        15e-6,   // $15 per MTok
+		CacheCreationPricePerToken: 3.75e-6, // $3.75 per MTok
+		CacheReadPricePerToken:     0.3e-6,  // $0.30 per MTok
+		SupportsCacheBreakdown:     false,
+	}
+
 	// Claude Sonnet 4.6 (1M context)
 	s.fallbackPrices["claude-sonnet-4-6-1m"] = &ModelPricing{
 		InputPricePerToken:         6e-6,    // $6 per MTok
@@ -233,6 +242,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["claude-3-opus"]
 	}
 	if strings.Contains(modelLower, "sonnet") {
+		if isClaudeSonnet5Model(modelLower) {
+			return s.fallbackPrices["claude-sonnet-5"]
+		}
 		if strings.Contains(modelLower, "4.6") || strings.Contains(modelLower, "4-6") {
 			return s.fallbackPrices["claude-sonnet-4-6"]
 		}
@@ -252,10 +264,20 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	return s.fallbackPrices["claude-sonnet-4"]
 }
 
+func isClaudeSonnet5Model(model string) bool {
+	return strings.Contains(strings.ToLower(model), "sonnet-5")
+}
+
 // GetModelPricing 获取模型价格配置
 func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	// 标准化模型名称（转小写）
 	model = strings.ToLower(model)
+
+	if isClaudeSonnet5Model(model) {
+		if fallback := s.getFallbackPricing(model); fallback != nil {
+			return applyModelSpecificPricingPolicy(model, fallback), nil
+		}
+	}
 
 	// 1. 优先从动态价格服务获取
 	if s.pricingService != nil {

@@ -1453,7 +1453,19 @@ export default {
       // OpenAI specific hints
       openai: {
         baseUrlHint: 'Leave default for official OpenAI API',
-        apiKeyHint: 'Your OpenAI API Key'
+        apiKeyHint: 'Your OpenAI API Key',
+        codexImageGenerationBridge: 'Codex image-generation bridge',
+        codexImageGenerationBridgeDesc:
+          'Automatically inject the OpenAI native image_generation tool for Codex /responses requests. Image billing only applies when images are actually generated.',
+        codexImageGenerationBridgeInherit: 'Follow global',
+        codexImageGenerationBridgeInheritDesc: 'Do not write an account override; use the system default policy.',
+        codexImageGenerationBridgeEnabled: 'Force on',
+        codexImageGenerationBridgeEnabledDesc: 'Allow this account to inject the image tool for Codex requests.',
+        codexImageGenerationBridgeDisabled: 'Force off',
+        codexImageGenerationBridgeDisabledDesc: 'Block this account from injecting the image tool for Codex requests.',
+        codexImageGenerationBridgeBadgeInherit: 'Global policy',
+        codexImageGenerationBridgeBadgeEnabled: 'Account on',
+        codexImageGenerationBridgeBadgeDisabled: 'Account off'
       },
       modelRestriction: 'Model Restriction (Optional)',
       modelWhitelist: 'Model Whitelist',

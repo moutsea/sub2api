@@ -293,8 +293,8 @@ let activeTestController: AbortController | null = null
 const selectPreferredOpenAIModel = () => {
   const preferredIds =
     props.account?.type === 'oauth'
-      ? ['gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2', 'gpt-4.1', 'gpt-4o']
-      : ['gpt-5.4', 'gpt-5.2', 'gpt-4.1', 'gpt-4o', 'gpt-5.1', 'gpt-5']
+      ? ['gpt-5.5', 'gpt-5.4-mini', 'codex-auto-review', 'gpt-5.4', 'gpt-5.3-codex-spark', 'gpt-4.1', 'gpt-4o']
+      : ['gpt-5.4-mini', 'gpt-5.4', 'gpt-4.1', 'gpt-4o', 'gpt-5.1', 'gpt-5']
   const preferred = preferredIds
     .map((id) => availableModels.value.find((model) => model.id === id))
     .find(Boolean)

@@ -59,6 +59,59 @@ func isOpenAICompatModelSupportedByAccount(account *Account, requestedModel stri
 	return account != nil && account.IsModelSupported(requestedModel)
 }
 
+func isOpenAICompatPlatform(platform string) bool {
+	return platform == PlatformOpenAI || platform == PlatformKiro
+}
+
+func (s *OpenAIGatewayService) listOpenAICompatAccountsForModelCheck(ctx context.Context, groupID *int64) ([]Account, error) {
+	if s.accountRepo == nil {
+		return nil, nil
+	}
+	if groupID != nil && *groupID > 0 {
+		all, err := s.accountRepo.ListByGroup(ctx, *groupID)
+		if err != nil {
+			return nil, err
+		}
+		candidates := make([]Account, 0, len(all))
+		for i := range all {
+			if isOpenAICompatPlatform(all[i].Platform) {
+				candidates = append(candidates, all[i])
+			}
+		}
+		return candidates, nil
+	}
+
+	candidates := make([]Account, 0)
+	for _, platform := range []string{PlatformOpenAI, PlatformKiro} {
+		accounts, err := s.accountRepo.ListByPlatform(ctx, platform)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, accounts...)
+	}
+	return candidates, nil
+}
+
+func (s *OpenAIGatewayService) errIfModelNotSupportedInOpenAICompatAccounts(ctx context.Context, groupID *int64, requestedModel string) error {
+	if requestedModel == "" {
+		return nil
+	}
+	accounts, err := s.listOpenAICompatAccountsForModelCheck(ctx, groupID)
+	if err != nil {
+		log.Printf("[OpenAI ModelRouting] model-support check skipped: group=%d model=%s err=%v", derefGroupID(groupID), requestedModel, err)
+		return nil
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
+	for i := range accounts {
+		if isOpenAICompatModelSupportedByAccount(&accounts[i], requestedModel) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: %w", requestedModel, ErrModelNotSupported)
+}
+
 // OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
 type OpenAICodexUsageSnapshot struct {
 	PrimaryUsedPercent          *float64 `json:"primary_used_percent,omitempty"`
@@ -80,6 +133,8 @@ type OpenAIUsage struct {
 	ImageOutputTokens        int     `json:"image_output_tokens,omitempty"`
 	ServiceTier              *string `json:"-"`
 	ServiceTierPresent       bool    `json:"-"`
+	ImageCount               int     `json:"-"`
+	ImageSize                string  `json:"-"`
 }
 
 // OpenAIForwardResult represents the result of forwarding
@@ -356,6 +411,9 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 
 	if selected == nil {
 		if requestedModel != "" {
+			if notSupportedErr := s.errIfModelNotSupportedInOpenAICompatAccounts(ctx, groupID, requestedModel); notSupportedErr != nil {
+				return nil, notSupportedErr
+			}
 			return nil, fmt.Errorf("no available OpenAI accounts supporting model: %s", requestedModel)
 		}
 		return nil, errors.New("no available OpenAI accounts")
@@ -421,6 +479,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		return nil, err
 	}
 	if len(accounts) == 0 {
+		if notSupportedErr := s.errIfModelNotSupportedInOpenAICompatAccounts(ctx, groupID, requestedModel); notSupportedErr != nil {
+			return nil, notSupportedErr
+		}
 		return nil, errors.New("no available accounts")
 	}
 
@@ -497,6 +558,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	if len(candidates) == 0 {
+		if notSupportedErr := s.errIfModelNotSupportedInOpenAICompatAccounts(ctx, groupID, requestedModel); notSupportedErr != nil {
+			return nil, notSupportedErr
+		}
 		return nil, errors.New("no available accounts")
 	}
 
@@ -725,6 +789,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent"))
+	apiKey := getAPIKeyFromGinContext(c)
+	imageGenerationAllowed := GroupAllowsImageGeneration(nil)
+	if apiKey != nil {
+		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
+	}
+	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && s.isCodexImageGenerationBridgeEnabled(account)
+	imageIntent := IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
+	if imageIntent && !imageGenerationAllowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": ImageGenerationPermissionMessage()}})
+		return nil, errors.New("image generation disabled for group")
+	}
+	imageBillingConfig := OpenAIResponsesImageBillingConfig{}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
 	mappedModel := account.GetMappedModel(reqModel)
@@ -798,6 +874,34 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if _, exists := reqBody[unsupportedField]; exists {
 			delete(reqBody, unsupportedField)
 			bodyModified = true
+		}
+	}
+
+	if imageGenerationAllowed && (codexImageGenerationBridgeEnabled || openAIRequestBodyImageGenerationToolNeedsNormalization(body) || isOpenAIImageGenerationModel(mappedModel)) {
+		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(reqBody) {
+			bodyModified = true
+			log.Printf("[OpenAI] Injected /responses image_generation tool for Codex client")
+		}
+		if normalizeOpenAIResponsesImageGenerationTools(reqBody) {
+			bodyModified = true
+			log.Printf("[OpenAI] Normalized /responses image_generation tool payload")
+		}
+		if err := validateOpenAIResponsesImageModel(reqBody, mappedModel); err != nil {
+			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": err.Error(), "param": "model"}})
+			return nil, err
+		}
+		if hasOpenAIImageGenerationTool(reqBody) {
+			imageIntent = true
+		}
+		if codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(reqBody) {
+			bodyModified = true
+			log.Printf("[OpenAI] Added Codex image_generation bridge instructions")
+		}
+	}
+	if imageIntent || hasOpenAIImageGenerationTool(reqBody) {
+		if cfg, err := resolveOpenAIResponsesImageBillingConfigDetailed(reqBody, mappedModel); err == nil {
+			imageBillingConfig = cfg
 		}
 	}
 	// OAuth transform already handles its path; this also covers official OpenAI API key accounts.
@@ -1003,6 +1107,17 @@ retryWithFallbackModel:
 			return nil, err
 		}
 	}
+	resultModel := originalModel
+	imageCount := usage.ImageCount
+	imageSize := usage.ImageSize
+	if imageCount > 0 {
+		if strings.TrimSpace(imageBillingConfig.Model) != "" {
+			resultModel = imageBillingConfig.Model
+		}
+		if strings.TrimSpace(imageBillingConfig.SizeTier) != "" {
+			imageSize = imageBillingConfig.SizeTier
+		}
+	}
 
 	// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
 	if account.Type == AccountTypeOAuth {
@@ -1019,11 +1134,13 @@ retryWithFallbackModel:
 	return &OpenAIForwardResult{
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        *usage,
-		Model:        originalModel,
+		Model:        resultModel,
 		ServiceTier:  resolvedServiceTier(usage, serviceTier),
 		Stream:       reqStream,
 		Duration:     time.Since(startTime),
 		FirstTokenMs: firstTokenMs,
+		ImageCount:   imageCount,
+		ImageSize:    imageSize,
 	}, nil
 }
 
@@ -1288,6 +1405,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	usage := &OpenAIUsage{}
+	imageCounter := newOpenAIImageOutputCounter()
+	defer func() {
+		applyOpenAIImageOutputAccounting(usage, imageCounter)
+	}()
 	var firstTokenMs *int
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -1389,6 +1510,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
+			imageCounter.AddSSEData([]byte(data))
 			s.parseSSEUsage(data, usage)
 			return nil
 		}
@@ -1551,27 +1673,23 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 }
 
 func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
-	// Parse response.completed event for usage (OpenAI Responses format)
-	var event struct {
-		Type     string `json:"type"`
-		Response struct {
-			Usage struct {
-				InputTokens       int `json:"input_tokens"`
-				OutputTokens      int `json:"output_tokens"`
-				InputTokenDetails struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
-		} `json:"response"`
+	s.parseSSEUsageBytes([]byte(data), usage)
+}
+
+func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage) {
+	if usage == nil || len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+		return
 	}
 
-	if json.Unmarshal([]byte(data), &event) == nil && event.Type == "response.completed" {
-		usage.InputTokens = event.Response.Usage.InputTokens
-		usage.OutputTokens = event.Response.Usage.OutputTokens
-		usage.CacheReadInputTokens = event.Response.Usage.InputTokenDetails.CachedTokens
+	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+		usage.InputTokens = parsedUsage.InputTokens
+		usage.OutputTokens = parsedUsage.OutputTokens
+		usage.CacheCreationInputTokens = parsedUsage.CacheCreationInputTokens
+		usage.CacheReadInputTokens = parsedUsage.CacheReadInputTokens
+		usage.ImageOutputTokens = parsedUsage.ImageOutputTokens
 	}
 
-	if serviceTier, present := extractOpenAIServiceTierFromJSON([]byte(data)); present {
+	if serviceTier, present := extractOpenAIServiceTierFromJSON(data); present {
 		usage.ServiceTier = serviceTier
 		usage.ServiceTierPresent = true
 	}
@@ -1590,25 +1708,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
-	// Parse usage
-	var response struct {
-		Usage struct {
-			InputTokens       int `json:"input_tokens"`
-			OutputTokens      int `json:"output_tokens"`
-			InputTokenDetails struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
-		} `json:"usage"`
+	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
+	if !usageOK {
+		return nil, fmt.Errorf("parse response: invalid json response")
 	}
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	usage := &OpenAIUsage{
-		InputTokens:          response.Usage.InputTokens,
-		OutputTokens:         response.Usage.OutputTokens,
-		CacheReadInputTokens: response.Usage.InputTokenDetails.CachedTokens,
-	}
+	usage := &usageValue
 	if serviceTier, present := extractOpenAIServiceTierFromJSON(body); present {
 		usage.ServiceTier = serviceTier
 		usage.ServiceTierPresent = true
@@ -1617,6 +1721,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	body = s.stripInjectedInstructionsFromResponseBody(body, injectedInstructions)
 	responseModel := clientVisibleOpenAIModel(originalModel, mappedModel)
 	body = s.replaceModelInResponseBody(body, mappedModel, responseModel)
+	applyOpenAIImageOutputAccountingFromJSON(usage, body)
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
 
@@ -1653,19 +1758,8 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(ctx context.Context, resp *h
 
 	usage := &OpenAIUsage{}
 	if ok {
-		var response struct {
-			Usage struct {
-				InputTokens       int `json:"input_tokens"`
-				OutputTokens      int `json:"output_tokens"`
-				InputTokenDetails struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(finalResponse, &response); err == nil {
-			usage.InputTokens = response.Usage.InputTokens
-			usage.OutputTokens = response.Usage.OutputTokens
-			usage.CacheReadInputTokens = response.Usage.InputTokenDetails.CachedTokens
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+			*usage = parsedUsage
 		}
 		if serviceTier, present := extractOpenAIServiceTierFromJSON(finalResponse); present {
 			usage.ServiceTier = serviceTier
@@ -1675,6 +1769,7 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(ctx context.Context, resp *h
 		body = s.replaceModelInResponseBody(body, mappedModel, clientVisibleOpenAIModel(originalModel, mappedModel))
 		// Correct tool calls in final response
 		body = s.correctToolCallsInResponseBody(body)
+		applyOpenAIImageOutputAccountingFromJSON(usage, body)
 	} else {
 		usage = s.parseSSEUsageFromBody(bodyText)
 		bodyText = s.sanitizeOpenAISSEBody(bodyText, mappedModel, clientVisibleOpenAIModel(originalModel, mappedModel), injectedInstructions)
@@ -1821,17 +1916,12 @@ func (s *OpenAIGatewayService) stripInjectedInstructionsFromResponseBody(body []
 
 func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
 	usage := &OpenAIUsage{}
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		if !openaiSSEDataRe.MatchString(line) {
-			continue
-		}
-		data := openaiSSEDataRe.ReplaceAllString(line, "")
-		if data == "" || data == "[DONE]" {
-			continue
-		}
-		s.parseSSEUsage(data, usage)
-	}
+	imageCounter := newOpenAIImageOutputCounter()
+	forEachOpenAISSEDataPayload(body, func(data []byte) {
+		imageCounter.AddSSEData(data)
+		s.parseSSEUsageBytes(data, usage)
+	})
+	applyOpenAIImageOutputAccounting(usage, imageCounter)
 	return usage
 }
 
@@ -1905,7 +1995,8 @@ func shouldExposeMappedOpenAIModel(originalModel, mappedModel string) bool {
 	if originalModel == "" || mappedModel == "" || originalModel == mappedModel {
 		return false
 	}
-	return strings.HasPrefix(mappedModel, "gpt-5.2") && !strings.HasPrefix(originalModel, "gpt-5.2")
+	return (strings.HasPrefix(mappedModel, "gpt-5.4-mini") && !strings.HasPrefix(originalModel, "gpt-5.4-mini")) ||
+		(strings.HasPrefix(mappedModel, "gpt-5.2") && !strings.HasPrefix(originalModel, "gpt-5.2"))
 }
 
 func openAIResponseModelMatches(actualModel, expectedModel string) bool {
@@ -1928,8 +2019,12 @@ func normalizeOpenAIResponseModel(model string) string {
 	switch {
 	case hasOpenAIModelPrefix(model, "gpt-5.5"):
 		return "gpt-5.5"
+	case hasOpenAIModelPrefix(model, "gpt-5.4-mini"):
+		return "gpt-5.4-mini"
 	case hasOpenAIModelPrefix(model, "gpt-5.4"):
 		return "gpt-5.4"
+	case hasOpenAIModelPrefix(model, "gpt-5.3-codex-spark"):
+		return "gpt-5.3-codex-spark"
 	case hasOpenAIModelPrefix(model, "gpt-5.3-codex"):
 		return "gpt-5.3-codex"
 	case hasOpenAIModelPrefix(model, "gpt-5.3"):

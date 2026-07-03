@@ -23,6 +23,20 @@ type stubOpenAIAccountRepo struct {
 	accounts []Account
 }
 
+func (r stubOpenAIAccountRepo) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
+	return append([]Account(nil), r.accounts...), nil
+}
+
+func (r stubOpenAIAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	out := make([]Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		if account.Platform == platform {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	return append([]Account(nil), r.accounts...), nil
 }
@@ -313,6 +327,91 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurre
 	}
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_ModelUnsupportedReturnsSentinelWithoutConcurrencyService(t *testing.T) {
+	groupID := int64(1)
+	account := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-4o": "gpt-4o"},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gemini-2.5-flash", nil)
+	if selection != nil {
+		t.Fatalf("expected nil selection, got %#v", selection)
+	}
+	if !errors.Is(err, ErrModelNotSupported) {
+		t.Fatalf("expected ErrModelNotSupported, got %v", err)
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_ModelUnsupportedReturnsSentinelWithLoadBatch(t *testing.T) {
+	groupID := int64(1)
+	account := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-4o": "gpt-4o"},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{account}},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gemini-2.5-flash", nil)
+	if selection != nil {
+		t.Fatalf("expected nil selection, got %#v", selection)
+	}
+	if !errors.Is(err, ErrModelNotSupported) {
+		t.Fatalf("expected ErrModelNotSupported, got %v", err)
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_SupportedButUnschedulableDoesNotReturnModelSentinel(t *testing.T) {
+	groupID := int64(1)
+	account := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: false,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-4o": "gpt-4o"},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4o", nil)
+	if selection != nil {
+		t.Fatalf("expected nil selection, got %#v", selection)
+	}
+	if err == nil {
+		t.Fatalf("expected generic no available error")
+	}
+	if errors.Is(err, ErrModelNotSupported) {
+		t.Fatalf("did not expect ErrModelNotSupported for supported but unschedulable account: %v", err)
 	}
 }
 
@@ -696,6 +795,36 @@ func TestOpenAIResponseModelMatches_NormalizesGPT55Snapshot(t *testing.T) {
 	}
 	if normalized := normalizeOpenAIResponseModel("gpt-5.5-2026-04-24"); normalized != "gpt-5.5" {
 		t.Fatalf("expected gpt-5.5 snapshot to normalize, got %q", normalized)
+	}
+}
+
+func TestOpenAIResponseModelMatches_NormalizesCurrentOfficialCodexModels(t *testing.T) {
+	tests := []struct {
+		actual string
+		want   string
+	}{
+		{actual: "gpt-5.4-mini-2026-04-24", want: "gpt-5.4-mini"},
+		{actual: "gpt-5.3-codex-spark-2026-04-24", want: "gpt-5.3-codex-spark"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.actual, func(t *testing.T) {
+			if !openAIResponseModelMatches(tt.actual, tt.want) {
+				t.Fatalf("expected %q to match %q", tt.actual, tt.want)
+			}
+			if normalized := normalizeOpenAIResponseModel(tt.actual); normalized != tt.want {
+				t.Fatalf("normalized model = %q, want %q", normalized, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientVisibleOpenAIModel_ExposesGPT54MiniRemap(t *testing.T) {
+	if got := clientVisibleOpenAIModel("gpt-5.2", "gpt-5.4-mini"); got != "gpt-5.4-mini" {
+		t.Fatalf("visible model = %q, want gpt-5.4-mini", got)
+	}
+	if got := clientVisibleOpenAIModel("gpt-5.3-codex", "gpt-5.4-mini"); got != "gpt-5.4-mini" {
+		t.Fatalf("visible model = %q, want gpt-5.4-mini", got)
 	}
 }
 

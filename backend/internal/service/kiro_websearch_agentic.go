@@ -230,6 +230,12 @@ func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Co
 			body = newBody
 		}
 	}
+	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
+		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
+		if newBody, err := json.Marshal(claudeReq); err == nil {
+			body = newBody
+		}
+	}
 
 	// Check if WebSearch is enabled
 	if !IsWebSearchEnabled() {
@@ -461,6 +467,9 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 		}
 	}
 	requestReq := &execReq
+	if injectKiroOAuthIdentitySystemPrompt(account, requestReq) {
+		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
+	}
 
 	// Get access token
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)

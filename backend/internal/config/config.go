@@ -284,6 +284,9 @@ type GatewayConfig struct {
 
 	// API-key 账号在客户端未提供 anthropic-beta 时，是否按需自动补齐（默认关闭以保持兼容）
 	InjectBetaForAPIKey bool `mapstructure:"inject_beta_for_apikey"`
+	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
+	// 默认开启，让 Codex 客户端可直接触发 Responses API 原生图片工具；仅实际返回图片时才按图片计费。
+	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
 
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
@@ -849,6 +852,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
+	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", true)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.log_signature_debug", false)
 	viper.SetDefault("gateway.request_jitter_min_ms", 0) // 默认禁用抖动（设为 0）

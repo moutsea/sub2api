@@ -11,19 +11,22 @@ func TestGetModelIDMapsOpus47ToOpus47(t *testing.T) {
 
 func TestGetModelIDMapsKiroOAuthModels(t *testing.T) {
 	tests := map[string]string{
-		"auto":                  "auto",
-		"deepseek-3.2":          "deepseek-3.2",
-		"deepseek-v3.2":         "deepseek-3.2",
-		"glm-5":                 "glm-5",
-		"minimax-m2.5":          "minimax-m2.5",
-		"minimax-m2.1":          "minimax-m2.1",
-		"qwen3-coder-next":      "qwen3-coder-next",
-		"qwen3-coder-480b-a35b": "qwen3-coder-next",
-		"claude-sonnet-4":       "claude-sonnet-4",
-		"claude-sonnet-4.5":     "claude-sonnet-4.5",
-		"claude-opus-4-8":       "claude-opus-4.8",
-		"claude-opus-4.8":       "claude-opus-4.8",
-		"claude-opus-4.7":       "claude-opus-4.7",
+		"auto":                     "auto",
+		"deepseek-3.2":             "deepseek-3.2",
+		"deepseek-v3.2":            "deepseek-3.2",
+		"glm-5":                    "glm-5",
+		"minimax-m2.5":             "minimax-m2.5",
+		"minimax-m2.1":             "minimax-m2.1",
+		"qwen3-coder-next":         "qwen3-coder-next",
+		"qwen3-coder-480b-a35b":    "qwen3-coder-next",
+		"claude-sonnet-5":          "claude-sonnet-5",
+		"claude-sonnet-5.0":        "claude-sonnet-5",
+		"claude-sonnet-5-thinking": "claude-sonnet-5",
+		"claude-sonnet-4":          "claude-sonnet-4",
+		"claude-sonnet-4.5":        "claude-sonnet-4.5",
+		"claude-opus-4-8":          "claude-opus-4.8",
+		"claude-opus-4.8":          "claude-opus-4.8",
+		"claude-opus-4.7":          "claude-opus-4.7",
 	}
 	for model, want := range tests {
 		if got := GetModelID(model); got != want {
@@ -38,6 +41,8 @@ func TestIsOAuthModelSupported(t *testing.T) {
 		"deepseek-3.2":             true,
 		"glm-5":                    true,
 		"qwen3-coder-next":         true,
+		"claude-sonnet-5":          true,
+		"claude-sonnet-5-thinking": true,
 		"claude-opus-4-8":          true,
 		"claude-opus-4.8":          true,
 		"claude-opus-4-8-thinking": true,
@@ -54,13 +59,15 @@ func TestIsOAuthModelSupported(t *testing.T) {
 
 func TestGetContextWindowLimitForKiroOAuthModels(t *testing.T) {
 	tests := map[string]int{
-		"deepseek-3.2":     KiroContextWindowLimit128K,
-		"glm-5":            KiroContextWindowLimit,
-		"minimax-m2.5":     KiroContextWindowLimit,
-		"qwen3-coder-next": KiroContextWindowLimit256K,
-		"claude-opus-4-8":  KiroContextWindowLimit1M,
-		"claude-opus-4.8":  KiroContextWindowLimit1M,
-		"claude-opus-4.7":  KiroContextWindowLimit1M,
+		"deepseek-3.2":             KiroContextWindowLimit128K,
+		"glm-5":                    KiroContextWindowLimit,
+		"minimax-m2.5":             KiroContextWindowLimit,
+		"qwen3-coder-next":         KiroContextWindowLimit256K,
+		"claude-sonnet-5":          KiroContextWindowLimit1M,
+		"claude-sonnet-5-thinking": KiroContextWindowLimit1M,
+		"claude-opus-4-8":          KiroContextWindowLimit1M,
+		"claude-opus-4.8":          KiroContextWindowLimit1M,
+		"claude-opus-4.7":          KiroContextWindowLimit1M,
 	}
 	for model, want := range tests {
 		if got := GetContextWindowLimit(model); got != want {
@@ -126,6 +133,16 @@ func TestApplyThinkingDefaultsFromModelName(t *testing.T) {
 	}
 	if req.Thinking["type"] != "enabled" {
 		t.Fatalf("thinking type = %v, want enabled", req.Thinking["type"])
+	}
+}
+
+func TestApplyThinkingDefaultsFromModelNameSkipsSonnet5(t *testing.T) {
+	req := &ClaudeRequest{Model: "claude-sonnet-5-thinking"}
+	if ApplyThinkingDefaultsFromModelName(req) {
+		t.Fatal("sonnet 5 adaptive thinking is upstream-default and should not inject manual thinking")
+	}
+	if req.Thinking != nil {
+		t.Fatalf("thinking = %v, want nil", req.Thinking)
 	}
 }
 

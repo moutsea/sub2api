@@ -65,34 +65,6 @@ func TestResolveKiroUpstreamModelIgnoresApiKeyAccounts(t *testing.T) {
 	require.Equal(t, kiroDynamicProbeModelOpus47, got)
 }
 
-func TestKiroOpusInitialResponseTimeoutRequiresOAuthSlowFallbackModel(t *testing.T) {
-	oauthAccount := &Account{
-		ID:          8,
-		Platform:    PlatformKiro,
-		Credentials: map[string]any{"auth_type": KiroAuthMethodSocial},
-	}
-	apiKeyAccount := &Account{
-		ID:          9,
-		Platform:    PlatformKiro,
-		Credentials: map[string]any{"auth_type": KiroAuthMethodAPIKey},
-	}
-
-	require.Equal(t, 40*time.Second, kiroOpusSlowFallbackInitialResponseTimeout(oauthAccount, "claude-opus-4.8", "claude-opus-4.8"))
-	require.Equal(t, 40*time.Second, kiroOpusSlowFallbackInitialResponseTimeout(oauthAccount, kiroDynamicProbeModelOpus48, kiroDynamicProbeModelOpus48))
-	require.Equal(t, 40*time.Second, kiroOpusSlowFallbackInitialResponseTimeout(oauthAccount, "claude-opus-4.7", "claude-opus-4.7"))
-	require.Equal(t, 40*time.Second, kiroOpusSlowFallbackInitialResponseTimeout(oauthAccount, kiroDynamicProbeModelOpus47, kiroDynamicProbeModelOpus47))
-	require.Zero(t, kiroOpusSlowFallbackInitialResponseTimeout(apiKeyAccount, kiroDynamicProbeModelOpus48, kiroDynamicProbeModelOpus48))
-	require.Zero(t, kiroOpusSlowFallbackInitialResponseTimeout(apiKeyAccount, kiroDynamicProbeModelOpus47, kiroDynamicProbeModelOpus47))
-	require.Zero(t, kiroOpusSlowFallbackInitialResponseTimeout(oauthAccount, kiroDynamicFallbackModelOpus46, kiroDynamicFallbackModelOpus46))
-
-	startedAt := time.Now().Add(-35 * time.Second)
-	remaining := kiroOpusSlowFallbackRemainingInitialResponseTimeout(oauthAccount, kiroDynamicProbeModelOpus47, kiroDynamicProbeModelOpus47, startedAt)
-	require.True(t, remaining > 0 && remaining <= 5*time.Second)
-
-	expired := kiroOpusSlowFallbackRemainingInitialResponseTimeout(oauthAccount, kiroDynamicProbeModelOpus47, kiroDynamicProbeModelOpus47, time.Now().Add(-45*time.Second))
-	require.Equal(t, time.Nanosecond, expired)
-}
-
 func TestKiroOAuthModelsOnlyApplyToNonApiKeyAccounts(t *testing.T) {
 	oauthAccount := &Account{
 		ID:          8,
@@ -107,6 +79,7 @@ func TestKiroOAuthModelsOnlyApplyToNonApiKeyAccounts(t *testing.T) {
 
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "deepseek-3.2"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "glm-5"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus48))
 	require.False(t, IsKiroModelSupportedByAccount(apiKeyAccount, "deepseek-3.2"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "claude-sonnet-4-5"))

@@ -55,6 +55,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
 		}
 	}
+	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
+		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
+	}
 	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
 	mappedModel := kiro.GetModelID(activeUpstreamModel)
 
@@ -123,44 +126,13 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 	var resp *http.Response
 	var lastErr error
-	modelFallbackAttempted := activeUpstreamModel != originalModel
 	tokenRefreshed := false
 
-	prepareSlowModelFallback := func(timeout time.Duration) error {
-		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
-			return nil
-		}
-		log.Printf("%s status=all_endpoints_initial_response_timeout requested_model=%s effective_model=%s timeout=%s fallback=%s",
-			prefix, originalModel, activeUpstreamModel, timeout, kiroDynamicFallbackModelOpus46)
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:    account.Platform,
-			AccountID:   account.ID,
-			AccountName: account.Name,
-			Kind:        "model_fallback",
-			Message:     fmt.Sprintf("%s initial response timeout on all endpoints; retrying with %s", activeUpstreamModel, kiroDynamicFallbackModelOpus46),
-		})
-		activeUpstreamModel = kiroDynamicFallbackModelOpus46
-		mappedModel = kiro.GetModelID(activeUpstreamModel)
-		var err error
-		_, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
-		if err != nil {
-			return fmt.Errorf("prepare slow fallback request: %w", err)
-		}
-		modelFallbackAttempted = true
-		log.Printf("%s slow_model_fallback_retry requested_model=%s effective_model=%s request_size=%d mapped_model=%s",
-			prefix, originalModel, activeUpstreamModel, len(reqBody), mappedModel)
-		return nil
-	}
-
-modelAttemptLoop:
-	for {
+	{
 		resp = nil
 		lastErr = nil
-		initialTimeoutEndpoints := 0
-		attemptedEndpoints := 0
 
 		for epIdx, ep := range endpoints {
-			attemptedEndpoints++
 			attempt := 1
 			for attempt <= kiroMaxRetries {
 				select {
@@ -192,23 +164,7 @@ modelAttemptLoop:
 				// Apply request jitter before upstream call to prevent thundering herd
 				s.applyRequestJitter(ctx)
 
-				initialTimeout := kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)
-				var initialTimedOut bool
-				resp, err, initialTimedOut = s.doUpstreamWithInitialTimeout(ctx, upstreamReq, proxyURL, account.ID, account.Concurrency, initialTimeout)
-				if initialTimedOut {
-					initialTimeoutEndpoints++
-					lastErr = newKiroOpusSlowFallbackInitialResponseTimeoutError("response_headers", initialTimeout)
-					log.Printf("%s endpoint=%s status=initial_response_timeout model=%s timeout=%s",
-						prefix, ep.Name, activeUpstreamModel, initialTimeout)
-					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-						Platform:    account.Platform,
-						AccountID:   account.ID,
-						AccountName: account.Name,
-						Kind:        "model_fallback_candidate",
-						Message:     fmt.Sprintf("%s initial response timeout on endpoint %s", activeUpstreamModel, ep.Name),
-					})
-					break
-				}
+				resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 				if err != nil {
 					if attempt < kiroMaxRetries {
 						log.Printf("%s endpoint=%s status=request_failed retry=%d/%d error=%v", prefix, ep.Name, attempt, kiroMaxRetries, err)
@@ -274,7 +230,6 @@ modelAttemptLoop:
 						if err != nil {
 							return nil, fmt.Errorf("prepare fallback request: %w", err)
 						}
-						modelFallbackAttempted = true
 						log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
 						continue
 					}
@@ -316,14 +271,6 @@ modelAttemptLoop:
 		}
 
 		if resp == nil {
-			if initialTimeoutEndpoints > 0 && initialTimeoutEndpoints == attemptedEndpoints {
-				if err := prepareSlowModelFallback(kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
-					return nil, err
-				}
-				if modelFallbackAttempted && activeUpstreamModel == kiroDynamicFallbackModelOpus46 {
-					continue modelAttemptLoop
-				}
-			}
 			if lastErr != nil {
 				return nil, lastErr
 			}

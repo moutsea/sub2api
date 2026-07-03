@@ -63,6 +63,7 @@ func TestPricingServiceMatchOpenAIModel_FallsBackToNearestPricedModel(t *testing
 		{model: "gpt-5.5-codex", want: 0.51},
 		{model: "gpt-5.6-codex", want: 0.51},
 		{model: "gpt-5.4-codex-high", want: 0.51},
+		{model: "codex-auto-review", want: 0.51},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +93,83 @@ func TestBillingServiceGetModelPricing_UsesGPTFallbackInsteadOfClaudeForUnknownO
 	}
 	if pricing.OutputPricePerToken != 30e-06 {
 		t.Fatalf("output pricing = %v, want %v", pricing.OutputPricePerToken, 30e-06)
+	}
+}
+
+func TestPricingServiceGetModelPricing_Sonnet5DoesNotFallBackToSonnet4(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-sonnet-4": {
+				InputCostPerToken: 4,
+			},
+		},
+	}
+
+	if pricing := svc.GetModelPricing("claude-sonnet-5"); pricing != nil {
+		t.Fatalf("pricing = %v, want nil when sonnet 5 dynamic pricing is absent", pricing)
+	}
+}
+
+func TestPricingServiceGetModelPricing_Sonnet5FamilyMatchesDynamicPricing(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-sonnet-5": {
+				InputCostPerToken:  2e-6,
+				OutputCostPerToken: 10e-6,
+			},
+			"claude-sonnet-4": {
+				InputCostPerToken: 4,
+			},
+		},
+	}
+
+	pricing := svc.GetModelPricing("claude-sonnet-5-thinking")
+	if pricing == nil {
+		t.Fatal("expected sonnet 5 pricing")
+	}
+	if pricing.InputCostPerToken != 2e-6 {
+		t.Fatalf("input pricing = %v, want %v", pricing.InputCostPerToken, 2e-6)
+	}
+	if pricing.OutputCostPerToken != 10e-6 {
+		t.Fatalf("output pricing = %v, want %v", pricing.OutputCostPerToken, 10e-6)
+	}
+}
+
+func TestBillingServiceGetModelPricing_Sonnet5UsesOwnPricingEntryMatchingSonnet46(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-sonnet-5": {
+				InputCostPerToken:           2e-6,
+				OutputCostPerToken:          10e-6,
+				CacheCreationInputTokenCost: 2.5e-6,
+				CacheReadInputTokenCost:     0.2e-6,
+			},
+		},
+	})
+
+	sonnet5Fallback := svc.fallbackPrices["claude-sonnet-5"]
+	if sonnet5Fallback == nil {
+		t.Fatal("expected explicit sonnet 5 fallback pricing entry")
+	}
+	if sonnet5Fallback == svc.fallbackPrices["claude-sonnet-4-6"] {
+		t.Fatal("sonnet 5 pricing should be its own entry, not the sonnet 4.6 pointer")
+	}
+
+	pricing, err := svc.GetModelPricing("claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("expected sonnet 5 pricing, got error %v", err)
+	}
+	if pricing.InputPricePerToken != 3e-6 {
+		t.Fatalf("input pricing = %v, want %v", pricing.InputPricePerToken, 3e-6)
+	}
+	if pricing.OutputPricePerToken != 15e-6 {
+		t.Fatalf("output pricing = %v, want %v", pricing.OutputPricePerToken, 15e-6)
+	}
+	if pricing.CacheCreationPricePerToken != 3.75e-6 {
+		t.Fatalf("cache creation pricing = %v, want %v", pricing.CacheCreationPricePerToken, 3.75e-6)
+	}
+	if pricing.CacheReadPricePerToken != 0.3e-6 {
+		t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadPricePerToken, 0.3e-6)
 	}
 }
 

@@ -707,6 +707,7 @@ const groupIds = ref<number[]>([])
 
 // All models list (combined Anthropic + OpenAI)
 const allModels = [
+  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
   { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
   { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
@@ -717,8 +718,9 @@ const allModels = [
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
   { value: 'gpt-5.5', label: 'GPT-5.5' },
-  { value: 'gpt-5.2-2025-12-11', label: 'GPT-5.2' },
-  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
+  { value: 'codex-auto-review', label: 'Codex Auto Review' },
   { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
   { value: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
   { value: 'gpt-5.1-2025-11-13', label: 'GPT-5.1' },
@@ -728,6 +730,12 @@ const allModels = [
 
 // Preset mappings (combined Anthropic + OpenAI)
 const presetMappings = [
+  {
+    label: 'Sonnet 5',
+    from: 'claude-sonnet-5',
+    to: 'claude-sonnet-5',
+    color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400'
+  },
   {
     label: 'Sonnet 4',
     from: 'claude-sonnet-4-20250514',
@@ -768,16 +776,22 @@ const presetMappings = [
     color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400'
   },
   {
-    label: 'GPT-5.2',
-    from: 'gpt-5.2-2025-12-11',
-    to: 'gpt-5.2-2025-12-11',
-    color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
+    label: 'GPT-5.4 Mini',
+    from: 'gpt-5.4-mini',
+    to: 'gpt-5.4-mini',
+    color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400'
   },
   {
-    label: 'GPT-5.2 Codex',
-    from: 'gpt-5.2-codex',
-    to: 'gpt-5.2-codex',
-    color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400'
+    label: 'GPT-5.3 Codex Spark',
+    from: 'gpt-5.3-codex-spark',
+    to: 'gpt-5.3-codex-spark',
+    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
+  },
+  {
+    label: 'Codex Auto Review',
+    from: 'codex-auto-review',
+    to: 'codex-auto-review',
+    color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400'
   },
   {
     label: 'Max->Codex',

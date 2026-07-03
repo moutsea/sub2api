@@ -15,79 +15,95 @@ import (
 const (
 	opencodeCodexHeaderURL = "https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/session/prompt/codex_header.txt"
 	codexCacheTTL          = 15 * time.Minute
+
+	codexImageGenerationBridgeMarker = "<sub2api-codex-image-generation>"
+	codexImageGenerationBridgeText   = codexImageGenerationBridgeMarker + "\nWhen the user asks for raster image generation or editing, use the OpenAI Responses native `image_generation` tool attached to this request. The local Codex client may not expose an `image_gen` namespace, but that does not mean image generation is unavailable. Do not ask the user to switch to CLI fallback solely because `image_gen` is absent.\n</sub2api-codex-image-generation>"
 )
 
 //go:embed prompts/codex_cli_instructions.md
 var codexCLIInstructions string
 
 var codexModelMap = map[string]string{
-	"gpt-5.5":        "gpt-5.5",
-	"gpt-5.5-none":   "gpt-5.5",
-	"gpt-5.5-low":    "gpt-5.5",
-	"gpt-5.5-medium": "gpt-5.5",
-	"gpt-5.5-high":   "gpt-5.5",
-	"gpt-5.5-xhigh":  "gpt-5.5",
-	// gpt-5 / gpt-5.1 系列已不再稳定可用，统一重映射到 gpt-5.2 系列。
-	"gpt-5.1-codex":            "gpt-5.2-codex",
-	"gpt-5.1-codex-low":        "gpt-5.2-codex",
-	"gpt-5.1-codex-medium":     "gpt-5.2-codex",
-	"gpt-5.1-codex-high":       "gpt-5.2-codex",
-	"gpt-5.1-codex-max":        "gpt-5.2-codex",
-	"gpt-5.1-codex-max-low":    "gpt-5.2-codex",
-	"gpt-5.1-codex-max-medium": "gpt-5.2-codex",
-	"gpt-5.1-codex-max-high":   "gpt-5.2-codex",
-	"gpt-5.1-codex-max-xhigh":  "gpt-5.2-codex",
-	"gpt-5.2":                  "gpt-5.2",
-	"gpt-5.2-none":             "gpt-5.2",
-	"gpt-5.2-low":              "gpt-5.2",
-	"gpt-5.2-medium":           "gpt-5.2",
-	"gpt-5.2-high":             "gpt-5.2",
-	"gpt-5.2-xhigh":            "gpt-5.2",
-	"gpt-5.2-codex":            "gpt-5.2-codex",
-	"gpt-5.2-codex-low":        "gpt-5.2-codex",
-	"gpt-5.2-codex-medium":     "gpt-5.2-codex",
-	"gpt-5.2-codex-high":       "gpt-5.2-codex",
-	"gpt-5.2-codex-xhigh":      "gpt-5.2-codex",
-	// gpt-5.3 系列：OAuth 端只认 gpt-5.3-codex，裸名 gpt-5.3 不可用，统一映射到 codex 变体。
-	"gpt-5.3":                   "gpt-5.3-codex",
-	"gpt-5.3-none":              "gpt-5.3-codex",
-	"gpt-5.3-low":               "gpt-5.3-codex",
-	"gpt-5.3-medium":            "gpt-5.3-codex",
-	"gpt-5.3-high":              "gpt-5.3-codex",
-	"gpt-5.3-xhigh":             "gpt-5.3-codex",
-	"gpt-5.3-codex":             "gpt-5.3-codex",
-	"gpt-5.3-codex-low":         "gpt-5.3-codex",
-	"gpt-5.3-codex-medium":      "gpt-5.3-codex",
-	"gpt-5.3-codex-high":        "gpt-5.3-codex",
-	"gpt-5.3-codex-xhigh":       "gpt-5.3-codex",
-	"gpt-5.4":                   "gpt-5.4",
-	"gpt-5.4-none":              "gpt-5.4",
-	"gpt-5.4-low":               "gpt-5.4",
-	"gpt-5.4-medium":            "gpt-5.4",
-	"gpt-5.4-high":              "gpt-5.4",
-	"gpt-5.4-xhigh":             "gpt-5.4",
-	"gpt-5.4-codex":             "gpt-5.4",
-	"gpt-5.4-codex-low":         "gpt-5.4",
-	"gpt-5.4-codex-medium":      "gpt-5.4",
-	"gpt-5.4-codex-high":        "gpt-5.4",
-	"gpt-5.4-codex-xhigh":       "gpt-5.4",
-	"gpt-5.1-codex-mini":        "gpt-5.2-codex",
-	"gpt-5.1-codex-mini-medium": "gpt-5.2-codex",
-	"gpt-5.1-codex-mini-high":   "gpt-5.2-codex",
-	"gpt-5.1":                   "gpt-5.2",
-	"gpt-5.1-none":              "gpt-5.2",
-	"gpt-5.1-low":               "gpt-5.2",
-	"gpt-5.1-medium":            "gpt-5.2",
-	"gpt-5.1-high":              "gpt-5.2",
-	"gpt-5.1-chat-latest":       "gpt-5.2",
-	"gpt-5-codex":               "gpt-5.2-codex",
-	"codex-mini-latest":         "gpt-5.2-codex",
-	"gpt-5-codex-mini":          "gpt-5.2-codex",
-	"gpt-5-codex-mini-medium":   "gpt-5.2-codex",
-	"gpt-5-codex-mini-high":     "gpt-5.2-codex",
-	"gpt-5":                     "gpt-5.2",
-	"gpt-5-mini":                "gpt-5.2",
-	"gpt-5-nano":                "gpt-5.2",
+	"codex-auto-review":          "codex-auto-review",
+	"gpt-5.5":                    "gpt-5.5",
+	"gpt-5.5-none":               "gpt-5.5",
+	"gpt-5.5-low":                "gpt-5.5",
+	"gpt-5.5-medium":             "gpt-5.5",
+	"gpt-5.5-high":               "gpt-5.5",
+	"gpt-5.5-xhigh":              "gpt-5.5",
+	"gpt-5.4-mini":               "gpt-5.4-mini",
+	"gpt-5.4-mini-none":          "gpt-5.4-mini",
+	"gpt-5.4-mini-low":           "gpt-5.4-mini",
+	"gpt-5.4-mini-medium":        "gpt-5.4-mini",
+	"gpt-5.4-mini-high":          "gpt-5.4-mini",
+	"gpt-5.4-mini-xhigh":         "gpt-5.4-mini",
+	"gpt-5.4":                    "gpt-5.4",
+	"gpt-5.4-none":               "gpt-5.4",
+	"gpt-5.4-low":                "gpt-5.4",
+	"gpt-5.4-medium":             "gpt-5.4",
+	"gpt-5.4-high":               "gpt-5.4",
+	"gpt-5.4-xhigh":              "gpt-5.4",
+	"gpt-5.4-codex":              "gpt-5.4",
+	"gpt-5.4-codex-low":          "gpt-5.4",
+	"gpt-5.4-codex-medium":       "gpt-5.4",
+	"gpt-5.4-codex-high":         "gpt-5.4",
+	"gpt-5.4-codex-xhigh":        "gpt-5.4",
+	"gpt-5.3-codex-spark":        "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-none":   "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-low":    "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-medium": "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-high":   "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-xhigh":  "gpt-5.3-codex-spark",
+
+	// 废弃和旧 Codex/GPT-5 系列不再作为目标模型，统一迁移到当前推荐的轻量 Codex 模型。
+	"gpt-5.3":                   "gpt-5.4-mini",
+	"gpt-5.3-none":              "gpt-5.4-mini",
+	"gpt-5.3-low":               "gpt-5.4-mini",
+	"gpt-5.3-medium":            "gpt-5.4-mini",
+	"gpt-5.3-high":              "gpt-5.4-mini",
+	"gpt-5.3-xhigh":             "gpt-5.4-mini",
+	"gpt-5.3-codex":             "gpt-5.4-mini",
+	"gpt-5.3-codex-low":         "gpt-5.4-mini",
+	"gpt-5.3-codex-medium":      "gpt-5.4-mini",
+	"gpt-5.3-codex-high":        "gpt-5.4-mini",
+	"gpt-5.3-codex-xhigh":       "gpt-5.4-mini",
+	"gpt-5.2":                   "gpt-5.4-mini",
+	"gpt-5.2-none":              "gpt-5.4-mini",
+	"gpt-5.2-low":               "gpt-5.4-mini",
+	"gpt-5.2-medium":            "gpt-5.4-mini",
+	"gpt-5.2-high":              "gpt-5.4-mini",
+	"gpt-5.2-xhigh":             "gpt-5.4-mini",
+	"gpt-5.2-codex":             "gpt-5.4-mini",
+	"gpt-5.2-codex-low":         "gpt-5.4-mini",
+	"gpt-5.2-codex-medium":      "gpt-5.4-mini",
+	"gpt-5.2-codex-high":        "gpt-5.4-mini",
+	"gpt-5.2-codex-xhigh":       "gpt-5.4-mini",
+	"gpt-5.1-codex":             "gpt-5.4-mini",
+	"gpt-5.1-codex-low":         "gpt-5.4-mini",
+	"gpt-5.1-codex-medium":      "gpt-5.4-mini",
+	"gpt-5.1-codex-high":        "gpt-5.4-mini",
+	"gpt-5.1-codex-max":         "gpt-5.4-mini",
+	"gpt-5.1-codex-max-low":     "gpt-5.4-mini",
+	"gpt-5.1-codex-max-medium":  "gpt-5.4-mini",
+	"gpt-5.1-codex-max-high":    "gpt-5.4-mini",
+	"gpt-5.1-codex-max-xhigh":   "gpt-5.4-mini",
+	"gpt-5.1-codex-mini":        "gpt-5.4-mini",
+	"gpt-5.1-codex-mini-medium": "gpt-5.4-mini",
+	"gpt-5.1-codex-mini-high":   "gpt-5.4-mini",
+	"gpt-5.1":                   "gpt-5.4-mini",
+	"gpt-5.1-none":              "gpt-5.4-mini",
+	"gpt-5.1-low":               "gpt-5.4-mini",
+	"gpt-5.1-medium":            "gpt-5.4-mini",
+	"gpt-5.1-high":              "gpt-5.4-mini",
+	"gpt-5.1-chat-latest":       "gpt-5.4-mini",
+	"gpt-5-codex":               "gpt-5.4-mini",
+	"codex-mini-latest":         "gpt-5.4-mini",
+	"gpt-5-codex-mini":          "gpt-5.4-mini",
+	"gpt-5-codex-mini-medium":   "gpt-5.4-mini",
+	"gpt-5-codex-mini-high":     "gpt-5.4-mini",
+	"gpt-5":                     "gpt-5.4-mini",
+	"gpt-5-mini":                "gpt-5.4-mini",
+	"gpt-5-nano":                "gpt-5.4-mini",
 }
 
 type codexTransformResult struct {
@@ -267,45 +283,51 @@ func normalizeCodexModel(model string) string {
 	if hasOpenAIModelPrefix(normalized, "gpt-5.5") {
 		return "gpt-5.5"
 	}
+	if hasOpenAIModelPrefix(normalized, "gpt-5.4-mini") {
+		return "gpt-5.4-mini"
+	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.4") {
 		return "gpt-5.4"
 	}
+	if hasOpenAIModelPrefix(normalized, "gpt-5.3-codex-spark") {
+		return "gpt-5.3-codex-spark"
+	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.3-codex") {
-		return "gpt-5.3-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.3") {
-		return "gpt-5.3-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.2-codex") {
-		return "gpt-5.2-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.2") {
-		return "gpt-5.2"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.1-codex-max") {
-		return "gpt-5.2-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.1-codex-mini") {
-		return "gpt-5.2-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "codex-mini-latest") ||
 		hasOpenAIModelPrefix(normalized, "gpt-5-codex-mini") {
-		return "gpt-5.2-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.1-codex") {
-		return "gpt-5.2-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.1") {
-		return "gpt-5.2"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5-codex") {
-		return "gpt-5.2-codex"
+		return "gpt-5.4-mini"
 	}
 	if hasOpenAIModelPrefix(normalized, "codex") {
 		return "gpt-5.4"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5") {
-		return "gpt-5.2"
+		return "gpt-5.4-mini"
 	}
 	if strings.HasPrefix(normalized, "gpt-5.") {
 		return ""
@@ -342,12 +364,12 @@ func canonicalizeCodexModelID(model string) string {
 
 // extractCodexModelEffort extracts the reasoning effort suffix from the original model name
 // by comparing it with the normalized model name.
-// e.g. ("gpt-5.3-codex-xhigh", "gpt-5.3-codex") → "xhigh"
+// e.g. ("gpt-5.3-codex-spark-xhigh", "gpt-5.3-codex-spark") → "xhigh"
 //
-//	("gpt-5.2-high", "gpt-5.2") → "high"
-//	("gpt-5.1-codex", "gpt-5.1-codex") → "" (no effort suffix)
+//	("gpt-5.4-mini-high", "gpt-5.4-mini") → "high"
+//	("gpt-5.5", "gpt-5.5") → "" (no effort suffix)
 //
-// Also handles cross-version normalization (e.g. 5.3→5.2) by matching the effort
+// Also handles cross-version normalization (e.g. 5.3→5.4-mini) by matching the effort
 // suffix directly from the original model name when the prefix check fails.
 func extractCodexModelEffort(originalModel, normalizedModel string) string {
 	if originalModel == "" || normalizedModel == "" || originalModel == normalizedModel {
@@ -373,7 +395,7 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 		}
 	}
 
-	// gpt-5.1-codex-max 无显式 effort 后缀时，贴近映射到 5.2 的 xhigh 档位。
+	// gpt-5.1-codex-max 无显式 effort 后缀时，贴近旧 max 档位设置 xhigh。
 	if strings.Contains(original, "gpt-5.1-codex-max") &&
 		!strings.HasSuffix(original, "-low") &&
 		!strings.HasSuffix(original, "-medium") &&
@@ -382,7 +404,7 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 		return "xhigh"
 	}
 
-	// Fallback: when normalization changes the version (e.g. 5.3→5.2),
+	// Fallback: when normalization changes the version (e.g. 5.3→5.4-mini),
 	// the prefix won't match. Extract effort from the trailing segment directly.
 	if lastDash := strings.LastIndex(original, "-"); lastDash >= 0 {
 		suffix := original[lastDash+1:]
@@ -394,16 +416,15 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 	return ""
 }
 
-// stripCodexModelSuffix removes the "-codex" segment from GPT model names.
 // stripCodexModelSuffix removes the "-codex" infix for models where the ChatGPT
 // OAuth endpoint requires the base name (e.g. gpt-5.4-codex → gpt-5.4).
-// gpt-5.3 系列在 OAuth 端必须保留 -codex 后缀，否则上游返回错误。
+// gpt-5.3-codex-spark 保留 -codex 后缀；废弃的 5.3-codex 会先归一化到 gpt-5.4-mini。
 // Non-GPT models are returned unchanged.
 func stripCodexModelSuffix(model string) string {
 	if !strings.HasPrefix(model, "gpt-") {
 		return model
 	}
-	// gpt-5.3 系列保留 -codex 后缀（OAuth 端只认 gpt-5.3-codex，不认 gpt-5.3）
+	// 当前保留 gpt-5.3-codex-spark 的 -codex 后缀。
 	lower := strings.ToLower(model)
 	if strings.Contains(lower, "gpt-5.3") {
 		return model
@@ -412,7 +433,7 @@ func stripCodexModelSuffix(model string) string {
 }
 
 // oauthModelFallbackVersion is the safe model version for non-Plus OAuth accounts.
-const oauthModelFallbackVersion = "gpt-5.2"
+const oauthModelFallbackVersion = "gpt-5.4-mini"
 
 // getOAuthModelFallback returns a downgraded model for OAuth accounts when the
 // upstream rejects a model (e.g. Free accounts cannot use gpt-5.4).
@@ -420,14 +441,8 @@ const oauthModelFallbackVersion = "gpt-5.2"
 func getOAuthModelFallback(currentModel string) string {
 	lower := strings.ToLower(currentModel)
 
-	// 已经是 5.2 或更低版本，无需回退
-	if strings.Contains(lower, "gpt-5.2") || strings.Contains(lower, "gpt-5.1") ||
-		strings.Contains(lower, "gpt-5-") || lower == "gpt-5" {
-		return ""
-	}
-
-	// 已经是 5.3，无需回退（5.3 已恢复可用）
-	if strings.Contains(lower, "gpt-5.3") {
+	// 已经是轻量推荐模型时不继续自动降级。
+	if strings.Contains(lower, "gpt-5.4-mini") {
 		return ""
 	}
 
@@ -436,15 +451,21 @@ func getOAuthModelFallback(currentModel string) string {
 		return "gpt-5.4"
 	}
 
-	// gpt-5.4 → gpt-5.3-codex（OAuth 端只认 gpt-5.3-codex，不认裸名 gpt-5.3）
-	if strings.Contains(lower, "gpt-5.4") {
-		return "gpt-5.3-codex"
+	// gpt-5.3-codex-spark 是 Pro research preview，不可用时回退到当前推荐的轻量模型。
+	if strings.Contains(lower, "gpt-5.3-codex-spark") {
+		return oauthModelFallbackVersion
 	}
 
-	// 其他未知高版本 → gpt-5.2
-	if strings.Contains(lower, "codex") {
-		return "gpt-5.2-codex"
+	// 废弃的 5.3 系列不再作为自动 fallback 目标。
+	if strings.Contains(lower, "gpt-5.3") {
+		return oauthModelFallbackVersion
 	}
+
+	// gpt-5.4 → gpt-5.4-mini
+	if strings.Contains(lower, "gpt-5.4") {
+		return oauthModelFallbackVersion
+	}
+
 	return oauthModelFallbackVersion
 }
 
@@ -726,6 +747,133 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 	}
 
 	return modified
+}
+
+func hasOpenAIImageGenerationTool(reqBody map[string]any) bool {
+	rawTools, ok := reqBody["tools"]
+	if !ok || rawTools == nil {
+		return false
+	}
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(firstNonEmptyString(toolMap["type"])) == "image_generation" {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeOpenAIResponsesImageGenerationTools(reqBody map[string]any) bool {
+	rawTools, ok := reqBody["tools"]
+	if !ok || rawTools == nil {
+		return false
+	}
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
+			continue
+		}
+		if _, ok := toolMap["output_format"]; !ok {
+			if value := strings.TrimSpace(firstNonEmptyString(toolMap["format"])); value != "" {
+				toolMap["output_format"] = value
+				modified = true
+			}
+		}
+		if _, ok := toolMap["output_compression"]; !ok {
+			if value, exists := toolMap["compression"]; exists && value != nil {
+				toolMap["output_compression"] = value
+				modified = true
+			}
+		}
+		if _, ok := toolMap["format"]; ok {
+			delete(toolMap, "format")
+			modified = true
+		}
+		if _, ok := toolMap["compression"]; ok {
+			delete(toolMap, "compression")
+			modified = true
+		}
+	}
+	return modified
+}
+
+func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
+	if len(reqBody) == 0 {
+		return false
+	}
+
+	tool := map[string]any{
+		"type":          "image_generation",
+		"output_format": "png",
+	}
+
+	rawTools, ok := reqBody["tools"]
+	if !ok || rawTools == nil {
+		reqBody["tools"] = []any{tool}
+		return true
+	}
+
+	tools, ok := rawTools.([]any)
+	if !ok {
+		reqBody["tools"] = []any{tool}
+		return true
+	}
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(firstNonEmptyString(toolMap["type"])) == "image_generation" {
+			return false
+		}
+	}
+
+	reqBody["tools"] = append(tools, tool)
+	return true
+}
+
+func applyCodexImageGenerationBridgeInstructions(reqBody map[string]any) bool {
+	if len(reqBody) == 0 || !hasOpenAIImageGenerationTool(reqBody) {
+		return false
+	}
+
+	existing, _ := reqBody["instructions"].(string)
+	if strings.Contains(existing, codexImageGenerationBridgeMarker) {
+		return false
+	}
+
+	existing = strings.TrimRight(existing, " \t\r\n")
+	if strings.TrimSpace(existing) == "" {
+		reqBody["instructions"] = codexImageGenerationBridgeText
+		return true
+	}
+
+	reqBody["instructions"] = existing + "\n\n" + codexImageGenerationBridgeText
+	return true
+}
+
+func validateOpenAIResponsesImageModel(reqBody map[string]any, model string) error {
+	if !hasOpenAIImageGenerationTool(reqBody) {
+		return nil
+	}
+	model = strings.TrimSpace(model)
+	if !isOpenAIImageGenerationModel(model) {
+		return nil
+	}
+	return fmt.Errorf("/v1/responses image_generation requests require a Responses-capable text model; image-only model %q is not allowed", model)
 }
 
 func codexCachePath(filename string) string {

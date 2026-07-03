@@ -25,6 +25,8 @@ func TestStripePaymentClientCreateCheckoutSessionUsesMultiplePaymentMethods(t *t
 			require.Equal(t, []string{PaymentMethodAlipay, PaymentMethodWechat}, form["payment_method_types[]"])
 			require.Equal(t, "web", form.Get("payment_method_options[wechat_pay][client]"))
 			require.Equal(t, "账户余额充值 $50.00", form.Get("line_items[0][price_data][product_data][name]"))
+			require.Equal(t, stripePaymentSite, form.Get("metadata[site]"))
+			require.Equal(t, stripePaymentSite, form.Get("payment_intent_data[metadata][site]"))
 
 			responseBody, err := json.Marshal(StripeCheckoutSession{
 				ID:  "cs_test",

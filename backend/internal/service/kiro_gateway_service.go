@@ -109,89 +109,6 @@ type KiroGatewayService struct {
 	freeTierSF           singleflight.Group // dedup concurrent subscription type fetches per account
 }
 
-type cancelOnCloseReadCloser struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-}
-
-func (r *cancelOnCloseReadCloser) Close() error {
-	err := r.ReadCloser.Close()
-	if r.cancel != nil {
-		r.cancel()
-	}
-	return err
-}
-
-func (s *KiroGatewayService) doUpstreamWithInitialTimeout(ctx context.Context, req *http.Request, proxyURL string, accountID int64, accountConcurrency int, timeout time.Duration) (*http.Response, error, bool) {
-	return s.doUpstreamWithInitialTimeoutAndGrace(ctx, req, proxyURL, accountID, accountConcurrency, timeout, kiroOpusSlowFallbackCancelGrace)
-}
-
-func (s *KiroGatewayService) doUpstreamWithInitialTimeoutAndGrace(ctx context.Context, req *http.Request, proxyURL string, accountID int64, accountConcurrency int, timeout, cancelGrace time.Duration) (*http.Response, error, bool) {
-	if timeout <= 0 {
-		resp, err := s.httpUpstream.Do(req, proxyURL, accountID, accountConcurrency)
-		return resp, err, false
-	}
-	if cancelGrace < 0 {
-		cancelGrace = 0
-	}
-
-	reqCtx, cancel := context.WithCancel(ctx)
-	req = req.WithContext(reqCtx)
-
-	type upstreamResult struct {
-		resp *http.Response
-		err  error
-	}
-	resultCh := make(chan upstreamResult, 1)
-	go func() {
-		resp, err := s.httpUpstream.Do(req, proxyURL, accountID, accountConcurrency)
-		resultCh <- upstreamResult{resp: resp, err: err}
-	}()
-
-	closeResponse := func(result upstreamResult) {
-		if result.resp != nil && result.resp.Body != nil {
-			_ = result.resp.Body.Close()
-		}
-	}
-	drainAndClose := func() {
-		go func() {
-			closeResponse(<-resultCh)
-		}()
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case result := <-resultCh:
-		if result.err != nil || result.resp == nil || result.resp.Body == nil {
-			cancel()
-			return result.resp, result.err, false
-		}
-
-		result.resp.Body = &cancelOnCloseReadCloser{
-			ReadCloser: result.resp.Body,
-			cancel:     cancel,
-		}
-		return result.resp, nil, false
-	case <-timer.C:
-		cancel()
-		graceTimer := time.NewTimer(cancelGrace)
-		defer graceTimer.Stop()
-		select {
-		case result := <-resultCh:
-			closeResponse(result)
-		case <-graceTimer.C:
-			drainAndClose()
-		}
-		return nil, context.DeadlineExceeded, true
-	case <-ctx.Done():
-		cancel()
-		drainAndClose()
-		return nil, ctx.Err(), false
-	}
-}
-
 // NewKiroGatewayService creates a new KiroGatewayService
 func NewKiroGatewayService(
 	accountRepo AccountRepository,
@@ -534,6 +451,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
 		}
 	}
+	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
+		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
+	}
 	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
 	mappedModel := kiro.GetModelID(activeUpstreamModel)
 	contextWindowLimit := kiro.GetContextWindowLimit(claudeReq.Model)
@@ -639,47 +559,12 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	// Endpoint loop: try each endpoint, with retries per endpoint
 	var resp *http.Response
 	var lastErr error
-	var activeRequestStart time.Time
-	modelFallbackAttempted := activeUpstreamModel != originalModel
 	tokenRefreshed := false // shared across endpoints to avoid redundant refresh
 
-	prepareSlowModelFallback := func(phase string, timeout time.Duration) error {
-		if modelFallbackAttempted || !shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
-			return nil
-		}
-
-		log.Printf("%s status=%s requested_model=%s effective_model=%s timeout=%s fallback=%s",
-			prefix, phase, originalModel, activeUpstreamModel, timeout, kiroDynamicFallbackModelOpus46)
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:    account.Platform,
-			AccountID:   account.ID,
-			AccountName: account.Name,
-			Kind:        "model_fallback",
-			Message:     fmt.Sprintf("%s %s timeout; retrying with %s", activeUpstreamModel, phase, kiroDynamicFallbackModelOpus46),
-		})
-
-		activeUpstreamModel = kiroDynamicFallbackModelOpus46
-		mappedModel = kiro.GetModelID(activeUpstreamModel)
-		contextWindowLimit = kiro.GetContextWindowLimit(activeUpstreamModel)
-		var err error
-		cwReq, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
-		if err != nil {
-			return fmt.Errorf("prepare slow fallback request: %w", err)
-		}
-		modelFallbackAttempted = true
-		log.Printf("%s slow_model_fallback_retry requested_model=%s effective_model=%s request_size=%d mapped_model=%s",
-			prefix, originalModel, activeUpstreamModel, len(reqBody), mappedModel)
-		return nil
-	}
-
-modelAttemptLoop:
-	for {
+	{
 		resp = nil
 		lastErr = nil
-		initialTimeoutEndpoints := 0
-		attemptedEndpoints := 0
 		for epIdx, ep := range endpoints {
-			attemptedEndpoints++
 			attempt := 1
 			for attempt <= kiroMaxRetries {
 				select {
@@ -713,24 +598,7 @@ modelAttemptLoop:
 				// Apply request jitter before upstream call to prevent thundering herd
 				s.applyRequestJitter(ctx)
 
-				activeRequestStart = time.Now()
-				initialTimeout := kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)
-				var initialTimedOut bool
-				resp, err, initialTimedOut = s.doUpstreamWithInitialTimeout(ctx, upstreamReq, proxyURL, account.ID, account.Concurrency, initialTimeout)
-				if initialTimedOut {
-					initialTimeoutEndpoints++
-					lastErr = newKiroOpusSlowFallbackInitialResponseTimeoutError("response_headers", initialTimeout)
-					log.Printf("%s endpoint=%s status=initial_response_timeout model=%s timeout=%s",
-						prefix, ep.Name, activeUpstreamModel, initialTimeout)
-					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-						Platform:    account.Platform,
-						AccountID:   account.ID,
-						AccountName: account.Name,
-						Kind:        "model_fallback_candidate",
-						Message:     fmt.Sprintf("%s initial response timeout on endpoint %s", activeUpstreamModel, ep.Name),
-					})
-					break
-				}
+				resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 				if err != nil {
 					safeErr := sanitizeUpstreamErrorMessage(err.Error())
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -842,7 +710,6 @@ modelAttemptLoop:
 						if err != nil {
 							return nil, fmt.Errorf("prepare fallback request: %w", err)
 						}
-						modelFallbackAttempted = true
 						log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
 						continue
 					}
@@ -942,14 +809,6 @@ modelAttemptLoop:
 
 		// All endpoints exhausted
 		if resp == nil {
-			if initialTimeoutEndpoints > 0 && initialTimeoutEndpoints == attemptedEndpoints {
-				if err := prepareSlowModelFallback("all_endpoints_initial_response", kiroOpusSlowFallbackInitialResponseTimeout(account, originalModel, activeUpstreamModel)); err != nil {
-					return nil, err
-				}
-				if modelFallbackAttempted && activeUpstreamModel == kiroDynamicFallbackModelOpus46 {
-					continue modelAttemptLoop
-				}
-			}
 			if lastErr != nil {
 				setOpsUpstreamError(c, 0, lastErr.Error(), "")
 				return nil, lastErr
@@ -959,9 +818,7 @@ modelAttemptLoop:
 
 	endpointDone:
 		// 处理段裹进 IIFE：让 defer resp.Body.Close 在自然作用域内执行，
-		// 避免在 modelAttemptLoop 多次 iter 时累积 defer（捕获共享变量的隐患）。
-		// fallbackTriggered=true 表示需要 continue modelAttemptLoop 走慢响应降级。
-		fallbackTriggered := false
+		// 避免响应处理提前返回时泄漏 resp.Body。
 		result, err := func() (*ForwardResult, error) {
 			defer func() { _ = resp.Body.Close() }()
 
@@ -1025,19 +882,9 @@ modelAttemptLoop:
 					cacheReadTokens,
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
-					kiroStreamOptions{
-						initialResponseTimeout: kiroOpusSlowFallbackRemainingInitialResponseTimeout(account, originalModel, activeUpstreamModel, activeRequestStart),
-					},
+					kiroStreamOptions{},
 				)
 				if err != nil {
-					var timeoutErr *kiroOpusSlowFallbackInitialResponseTimeoutError
-					if errors.As(err, &timeoutErr) && shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
-						if fallbackErr := prepareSlowModelFallback("first_renderable_event", timeoutErr.Timeout); fallbackErr != nil {
-							return nil, fallbackErr
-						}
-						fallbackTriggered = true
-						return nil, nil
-					}
 					log.Printf("%s status=stream_error error=%v", prefix, err)
 					return nil, err
 				}
@@ -1057,19 +904,9 @@ modelAttemptLoop:
 					cacheReadTokens,
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
-					kiroStreamOptions{
-						initialResponseTimeout: kiroOpusSlowFallbackRemainingInitialResponseTimeout(account, originalModel, activeUpstreamModel, activeRequestStart),
-					},
+					kiroStreamOptions{},
 				)
 				if err != nil {
-					var timeoutErr *kiroOpusSlowFallbackInitialResponseTimeoutError
-					if errors.As(err, &timeoutErr) && shouldFallbackSlowKiroOpus(account, originalModel, activeUpstreamModel) {
-						if fallbackErr := prepareSlowModelFallback("non_stream_response", timeoutErr.Timeout); fallbackErr != nil {
-							return nil, fallbackErr
-						}
-						fallbackTriggered = true
-						return nil, nil
-					}
 					log.Printf("%s status=non_stream_error error=%v", prefix, err)
 					return nil, err
 				}
@@ -1123,9 +960,6 @@ modelAttemptLoop:
 			}, nil
 		}()
 
-		if fallbackTriggered {
-			continue modelAttemptLoop
-		}
 		if err != nil {
 			return nil, err
 		}
@@ -1473,7 +1307,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			}
 			log.Printf("Kiro stream initial response timeout before downstream commit: timeout=%v model=%s",
 				opts.initialResponseTimeout, originalModel)
-			return nil, newKiroOpusSlowFallbackInitialResponseTimeoutError("first_renderable_event", opts.initialResponseTimeout)
+			return nil, newKiroInitialResponseTimeoutError("first_renderable_event", opts.initialResponseTimeout)
 
 		case <-keepaliveTicker.C:
 			if !streamCommitted {
@@ -1718,7 +1552,7 @@ func readKiroNonStreamingBodyWithTimeout(c *gin.Context, resp *http.Response, ti
 		return result.body, result.err
 	case <-timer.C:
 		_ = resp.Body.Close()
-		return nil, newKiroOpusSlowFallbackInitialResponseTimeoutError("non_stream_response", timeout)
+		return nil, newKiroInitialResponseTimeoutError("non_stream_response", timeout)
 	case <-ctxDone:
 		_ = resp.Body.Close()
 		return nil, c.Request.Context().Err()
