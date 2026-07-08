@@ -1230,7 +1230,7 @@ async function handleSubmit() {
       payload.reference_images = await Promise.all(sourceFilesForRequest.map(fileToBase64DataURL))
     }
 
-    const response = await openAIImagesAPI.generate({
+    const response = await openAIImagesAPI.generatePreview({
       apiKey: selectedApiKey.value.key,
       payload,
       signal: activeController.signal

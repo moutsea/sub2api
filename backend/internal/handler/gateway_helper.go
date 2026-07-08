@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,67 @@ import (
 
 // claudeCodeValidator is a singleton validator for Claude Code client detection
 var claudeCodeValidator = service.NewClaudeCodeValidator()
+
+const (
+	// OpenAI-compatible Kiro requests commit an initial SSE chunk early, so they
+	// keep the wider budget used only to cap account failover duration.
+	kiroOAuthFailoverTotalBudget       = 105 * time.Second
+	kiroOAuthFailoverNextAttemptBuffer = 45 * time.Second
+
+	// Non-streaming Claude Messages cannot use SSE ACK, so return a retryable
+	// client error before Cloudflare's 120s window. Streaming Kiro OAuth requests
+	// use post-failover ACK instead of this 80s client-retry cutoff.
+	kiroClaudeOAuthClientRetryDeadline    = 80 * time.Second
+	kiroClaudeOAuthNextAttemptMinBudget   = 35 * time.Second
+	kiroClaudeOAuthClientRetryAfterHeader = "3"
+
+	// After one account has already timed out and we have switched to another
+	// Kiro OAuth account, commit a Claude SSE ACK before Cloudflare's 120s
+	// window instead of returning another pre-commit timeout.
+	kiroClaudeOAuthPostFailoverAckTimeout = 40 * time.Second
+)
+
+func isKiroInitialResponseTimeoutMessage(message string) bool {
+	return strings.HasPrefix(strings.TrimSpace(message), "kiro_initial_response_timeout")
+}
+
+func isKiroInitialResponseTimeoutFailover(err *service.UpstreamFailoverError) bool {
+	return err != nil &&
+		err.StatusCode == http.StatusGatewayTimeout &&
+		isKiroInitialResponseTimeoutMessage(err.Message)
+}
+
+func shouldStopKiroOAuthInitialFailover(account *service.Account, err *service.UpstreamFailoverError, startedAt time.Time) bool {
+	return shouldStopKiroOAuthInitialFailoverWithBudget(account, err, startedAt, kiroOAuthFailoverTotalBudget, kiroOAuthFailoverNextAttemptBuffer)
+}
+
+func shouldStopKiroClaudeOAuthInitialFailover(account *service.Account, err *service.UpstreamFailoverError, startedAt time.Time) bool {
+	return shouldStopKiroOAuthInitialFailoverWithBudget(account, err, startedAt, kiroClaudeOAuthClientRetryDeadline, kiroClaudeOAuthNextAttemptMinBudget)
+}
+
+func shouldStopKiroOAuthInitialFailoverWithBudget(account *service.Account, err *service.UpstreamFailoverError, startedAt time.Time, totalBudget, nextAttemptMinBudget time.Duration) bool {
+	if account == nil || !account.IsKiro() || account.IsKiroApiKey() {
+		return false
+	}
+	if !isKiroInitialResponseTimeoutFailover(err) || startedAt.IsZero() || totalBudget <= 0 {
+		return false
+	}
+	elapsed := time.Since(startedAt)
+	return elapsed >= totalBudget ||
+		totalBudget-elapsed < nextAttemptMinBudget
+}
+
+func shouldEnableKiroClaudeOAuthPostFailoverAck(account *service.Account, isStream bool, switchCount int) bool {
+	return isStream && switchCount > 0 && account != nil && account.IsKiro() && !account.IsKiroApiKey()
+}
+
+func shouldBypassKiroClaudeOAuthClientRetryForAck(account *service.Account, err *service.UpstreamFailoverError, isStream bool) bool {
+	return isStream &&
+		account != nil &&
+		account.IsKiro() &&
+		!account.IsKiroApiKey() &&
+		isKiroInitialResponseTimeoutFailover(err)
+}
 
 // SetClaudeCodeClientContext 检查请求是否来自 Claude Code 客户端，并设置到 context 中
 // 返回更新后的 context

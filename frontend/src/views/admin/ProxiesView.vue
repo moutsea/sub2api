@@ -622,15 +622,15 @@
         {{ t('admin.proxies.accountsEmpty') }}
       </div>
       <div v-else class="max-h-80 overflow-auto">
-        <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-dark-700">
-          <thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-dark-800 dark:text-dark-400">
+        <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-dark-700/60">
+          <thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-dark-800/90 dark:text-dark-400">
             <tr>
               <th class="px-4 py-2 text-left">{{ t('admin.proxies.accountName') }}</th>
               <th class="px-4 py-2 text-left">{{ t('admin.accounts.columns.platformType') }}</th>
               <th class="px-4 py-2 text-left">{{ t('admin.proxies.accountNotes') }}</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900">
+          <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700/60 dark:bg-dark-900">
             <tr v-for="account in proxyAccounts" :key="account.id">
               <td class="px-4 py-2 font-medium text-gray-900 dark:text-white">{{ account.name }}</td>
               <td class="px-4 py-2">

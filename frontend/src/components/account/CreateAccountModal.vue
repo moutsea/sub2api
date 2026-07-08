@@ -1200,8 +1200,8 @@
           <p class="input-hint">{{ t('admin.accounts.gemini.tier.aiStudioHint') }}</p>
         </div>
 
-        <!-- Model Restriction Section (不适用于 Gemini) -->
-        <div v-if="form.platform !== 'gemini'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <!-- Model Restriction Section -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
 
           <!-- Mode Toggle -->
@@ -1976,7 +1976,7 @@
         </p>
         <div class="overflow-x-auto">
           <table class="w-full text-xs">
-            <thead class="bg-gray-50 dark:bg-dark-600">
+            <thead class="bg-gray-50 dark:bg-dark-800/90">
               <tr>
                 <th class="px-3 py-2 text-left font-medium text-gray-700 dark:text-gray-300">
                   {{ t('admin.accounts.gemini.quotaPolicy.columns.channel') }}
@@ -1989,7 +1989,7 @@
                 </th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-200 dark:divide-dark-600">
+            <tbody class="divide-y divide-gray-200 dark:divide-dark-700/60">
               <tr>
                 <td class="px-3 py-2 text-gray-900 dark:text-white">
                   {{ t('admin.accounts.gemini.quotaPolicy.rows.googleOne.channel') }}

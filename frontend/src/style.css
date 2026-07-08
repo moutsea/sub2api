@@ -163,11 +163,11 @@
 
   /* ============ 玻璃效果 ============ */
   .glass {
-    @apply bg-white/80 backdrop-blur-xl dark:bg-dark-800/80;
+    @apply bg-white/80 backdrop-blur-xl dark:bg-dark-900/85;
   }
 
   .glass-card {
-    @apply bg-white/70 dark:bg-dark-800/70;
+    @apply bg-white/70 dark:bg-dark-900/75;
     @apply backdrop-blur-xl;
     @apply rounded-2xl;
     @apply border border-white/20 dark:border-dark-700/50;
@@ -177,7 +177,7 @@
 
   /* ============ 卡片样式 ============ */
   .card {
-    @apply bg-white dark:bg-dark-800/50;
+    @apply bg-white dark:bg-dark-900/60;
     @apply rounded-2xl;
     @apply border border-gray-100 dark:border-dark-700/50;
     @apply shadow-card;
@@ -190,7 +190,7 @@
   }
 
   .card-glass {
-    @apply bg-white/70 dark:bg-dark-800/70;
+    @apply bg-white/70 dark:bg-dark-900/75;
     @apply backdrop-blur-xl;
     @apply border border-white/20 dark:border-dark-700/50;
     @apply shadow-glass;
@@ -270,14 +270,14 @@
   .table th {
     @apply px-4 py-3 text-left font-medium;
     @apply text-gray-600 dark:text-dark-300;
-    @apply bg-gray-50 dark:bg-dark-800/50;
+    @apply bg-gray-50 dark:bg-dark-800/80;
     @apply border-b border-gray-200 dark:border-dark-700;
   }
 
   .table td {
     @apply px-4 py-3;
     @apply text-gray-700 dark:text-gray-300;
-    @apply border-b border-gray-100 dark:border-dark-800;
+    @apply border-b border-gray-100 dark:border-dark-700/60;
   }
 
   .table tr:last-child td {
@@ -286,7 +286,7 @@
 
   .table tbody tr {
     @apply transition-colors duration-150;
-    @apply hover:bg-gray-50 dark:hover:bg-dark-800/30;
+    @apply hover:bg-gray-50 dark:hover:bg-dark-800/70;
   }
 
   /* ============ 徽章样式 ============ */
@@ -322,10 +322,10 @@
   /* ============ 下拉菜单 ============ */
   .dropdown {
     @apply absolute z-50;
-    @apply bg-white dark:bg-dark-800;
+    @apply bg-white dark:bg-dark-900;
     @apply rounded-xl;
     @apply border border-gray-200 dark:border-dark-700;
-    @apply shadow-lg;
+    @apply shadow-lg dark:shadow-black/30;
     @apply py-1;
     @apply origin-top-right animate-scale-in;
   }
@@ -333,7 +333,7 @@
   .dropdown-item {
     @apply px-4 py-2 text-sm;
     @apply text-gray-700 dark:text-gray-300;
-    @apply hover:bg-gray-100 dark:hover:bg-dark-700;
+    @apply hover:bg-gray-100 dark:hover:bg-dark-800;
     @apply cursor-pointer transition-colors;
     @apply flex items-center gap-2;
   }
@@ -348,7 +348,7 @@
   .modal-content {
     @apply w-full;
     @apply max-h-[95vh] sm:max-h-[90vh];
-    @apply bg-white dark:bg-dark-800;
+    @apply bg-white dark:bg-dark-900;
     @apply rounded-2xl shadow-2xl;
     @apply border border-gray-200 dark:border-dark-700;
     @apply flex flex-col;
@@ -441,7 +441,7 @@
   .dialog-container {
     @apply flex w-full flex-col;
     @apply max-h-[90vh];
-    @apply rounded-2xl bg-white dark:bg-dark-800;
+    @apply rounded-2xl bg-white dark:bg-dark-900;
     @apply shadow-xl;
   }
 
@@ -464,7 +464,7 @@
   .toast {
     @apply fixed right-4 top-4 z-[100];
     @apply min-w-[320px] max-w-md;
-    @apply bg-white dark:bg-dark-800;
+    @apply bg-white dark:bg-dark-900;
     @apply rounded-xl shadow-lg;
     @apply border-l-4;
     @apply p-4;
@@ -491,7 +491,7 @@
   .sidebar {
     @apply fixed inset-y-0 left-0 z-40;
     @apply w-64 bg-white dark:bg-dark-900;
-    @apply border-r border-gray-200 dark:border-dark-800;
+    @apply border-r border-gray-200 dark:border-dark-700;
     @apply flex flex-col;
     @apply transition-transform duration-300;
   }
@@ -499,7 +499,7 @@
   .sidebar-header {
     @apply h-16 px-6;
     @apply flex items-center gap-3;
-    @apply border-b border-gray-100 dark:border-dark-800;
+    @apply border-b border-gray-100 dark:border-dark-700;
   }
 
   .sidebar-nav {
@@ -528,7 +528,7 @@
   .sidebar-section-title {
     @apply mb-2 px-3;
     @apply text-xs font-semibold uppercase tracking-wider;
-    @apply text-gray-400 dark:text-dark-500;
+    @apply text-gray-400 dark:text-dark-400;
   }
 
   /* ============ 页面头部 ============ */
@@ -699,7 +699,7 @@
 
   /* 玻璃效果 */
   .glass {
-    @apply bg-white/80 backdrop-blur-xl dark:bg-dark-800/80;
+    @apply bg-white/80 backdrop-blur-xl dark:bg-dark-900/85;
   }
 
   /* 隐藏滚动条 */

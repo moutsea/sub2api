@@ -52,13 +52,13 @@ type kiroInitialResponseTimeoutError struct {
 
 func (e *kiroInitialResponseTimeoutError) Error() string {
 	if e == nil {
-		return "kiro opus initial response timeout"
+		return "kiro initial response timeout"
 	}
 	phase := strings.TrimSpace(e.Phase)
 	if phase == "" {
 		phase = "initial_response"
 	}
-	return fmt.Sprintf("kiro opus %s timeout after %s", phase, e.Timeout)
+	return fmt.Sprintf("kiro %s timeout after %s", phase, e.Timeout)
 }
 
 func newKiroInitialResponseTimeoutError(phase string, timeout time.Duration) error {

@@ -125,6 +125,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	kiroVersion := "0.11.107"
 
 	var resp *http.Response
+	var respDeadline *kiroInitialDeadline
 	var lastErr error
 	tokenRefreshed := false
 
@@ -141,8 +142,12 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				default:
 				}
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
+				s.applyRequestJitter(ctx)
+
+				reqCtx, deadline := s.startKiroInitialDeadline(ctx, account)
+				upstreamReq, err := http.NewRequestWithContext(reqCtx, "POST", ep.URL, bytes.NewReader(reqBody))
 				if err != nil {
+					deadline.close()
 					return nil, fmt.Errorf("create request: %w", err)
 				}
 
@@ -161,11 +166,22 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 					upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
 				}
 
-				// Apply request jitter before upstream call to prevent thundering herd
-				s.applyRequestJitter(ctx)
-
 				resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+				deadline.stopHeaderTimer()
 				if err != nil {
+					if deadline.isTimeoutError(err) {
+						deadline.close()
+						log.Printf("%s endpoint=%s status=initial_response_timeout phase=response_headers timeout=%s", prefix, ep.Name, deadline.timeout)
+						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+							Platform:    account.Platform,
+							AccountID:   account.ID,
+							AccountName: account.Name,
+							Kind:        "initial_response_timeout",
+							Message:     kiroInitialResponseTimeoutMessage("response_headers", deadline.timeout),
+						})
+						return nil, kiroInitialResponseFailover("response_headers", deadline.timeout)
+					}
+					deadline.close()
 					if attempt < kiroMaxRetries {
 						log.Printf("%s endpoint=%s status=request_failed retry=%d/%d error=%v", prefix, ep.Name, attempt, kiroMaxRetries, err)
 						if !sleepKiroBackoffWithContext(ctx, attempt) {
@@ -181,6 +197,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				if resp.StatusCode == http.StatusTooManyRequests {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
 					break
@@ -189,6 +206,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				if resp.StatusCode == http.StatusUnauthorized {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 
 					if tokenRefreshed || s.tokenProvider == nil {
 						lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
@@ -210,6 +228,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				if resp.StatusCode == 529 {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
 					break
@@ -218,6 +237,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				if resp.StatusCode == http.StatusBadRequest {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 
 					// "profileArn is required" is endpoint-specific — failover to next endpoint
@@ -248,6 +268,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 					if attempt < kiroMaxRetries {
 						log.Printf("%s endpoint=%s status=%d retrying %d/%d", prefix, ep.Name, resp.StatusCode, attempt, kiroMaxRetries)
 						if !sleepKiroBackoffWithContext(ctx, attempt) {
@@ -261,6 +282,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 					break
 				}
 
+				respDeadline = attachKiroInitialDeadline(resp, deadline)
 				goto endpointDone
 			}
 
@@ -278,7 +300,10 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		}
 
 	endpointDone:
-		defer func() { _ = resp.Body.Close() }()
+		defer func() {
+			_ = resp.Body.Close()
+			respDeadline.close()
+		}()
 
 		if resp.StatusCode >= 400 {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -310,8 +335,19 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 			usage = result.usage
 			firstTokenMs = result.firstTokenMs
 		} else {
-			result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
+			result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, respDeadline.remaining())
 			if err != nil {
+				if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
+					log.Printf("%s status=initial_response_timeout phase=%s timeout=%s", prefix, timeoutErr.Phase, timeoutErr.Timeout)
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:    account.Platform,
+						AccountID:   account.ID,
+						AccountName: account.Name,
+						Kind:        "initial_response_timeout",
+						Message:     kiroInitialResponseTimeoutMessage(timeoutErr.Phase, timeoutErr.Timeout),
+					})
+					return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
+				}
 				return nil, err
 			}
 			usage = result.usage

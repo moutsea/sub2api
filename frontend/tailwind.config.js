@@ -33,19 +33,19 @@ export default {
           900: '#0f172a',
           950: '#020617'
         },
-        // 深色模式背景
+        // 深色模式背景 - 中性灰系，和 #181818 主背景保持一致
         dark: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617'
+          50: '#fafafa',
+          100: '#f5f5f5',
+          200: '#e5e5e5',
+          300: '#d4d4d4',
+          400: '#a3a3a3',
+          500: '#737373',
+          600: '#525252',
+          700: '#333333',
+          800: '#242424',
+          900: '#1f1f1f',
+          950: '#181818'
         }
       },
       fontFamily: {
@@ -76,11 +76,13 @@ export default {
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
         'gradient-primary': 'linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)',
-        'gradient-dark': 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+        'gradient-dark': 'linear-gradient(135deg, #242424 0%, #181818 100%)',
         'gradient-glass':
           'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%)',
         'mesh-gradient':
-          'radial-gradient(at 40% 20%, rgba(20, 184, 166, 0.12) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(6, 182, 212, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(20, 184, 166, 0.08) 0px, transparent 50%)'
+          'radial-gradient(at 40% 20%, rgba(20, 184, 166, 0.12) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(6, 182, 212, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(20, 184, 166, 0.08) 0px, transparent 50%)',
+        'mesh-gradient-dark':
+          'radial-gradient(at 40% 20%, rgba(20, 184, 166, 0.05) 0px, transparent 45%), radial-gradient(at 80% 0%, rgba(115, 115, 115, 0.05) 0px, transparent 45%), radial-gradient(at 0% 50%, rgba(20, 184, 166, 0.04) 0px, transparent 45%)'
       },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',

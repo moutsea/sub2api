@@ -394,8 +394,8 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
 
     <div v-else class="overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
       <div class="max-h-[600px] overflow-y-auto" @scroll="onScroll">
-        <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
-          <thead class="sticky top-0 z-10 bg-gray-50 dark:bg-dark-900">
+        <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700/60">
+          <thead class="sticky top-0 z-10 bg-gray-50 dark:bg-dark-800/90">
             <tr>
               <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 {{ t('admin.ops.alertEvents.table.time') }}
@@ -423,11 +423,11 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
               </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-800">
+          <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700/60 dark:bg-dark-900">
             <tr
               v-for="row in events"
               :key="row.id"
-              class="cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-700/50"
+              class="cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-800/70"
               @click="openDetail(row)"
               :title="row.title || ''"
             >
@@ -614,16 +614,16 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
             {{ t('admin.ops.alertEvents.detail.historyEmpty') }}
           </div>
           <div v-else class="overflow-hidden rounded-lg border border-gray-100 dark:border-dark-700">
-            <table class="min-w-full divide-y divide-gray-100 dark:divide-dark-700">
-              <thead class="bg-gray-50 dark:bg-dark-900">
+            <table class="min-w-full divide-y divide-gray-100 dark:divide-dark-700/60">
+              <thead class="bg-gray-50 dark:bg-dark-800/90">
                 <tr>
                   <th class="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.ops.alertEvents.table.time') }}</th>
                   <th class="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.ops.alertEvents.table.status') }}</th>
                   <th class="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.ops.alertEvents.table.metric') }}</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-                <tr v-for="it in history" :key="it.id" class="hover:bg-gray-50 dark:hover:bg-dark-700/50">
+              <tbody class="divide-y divide-gray-100 dark:divide-dark-700/60 dark:bg-dark-900">
+                <tr v-for="it in history" :key="it.id" class="hover:bg-gray-50 dark:hover:bg-dark-800/70">
                   <td class="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">{{ formatDateTime(it.fired_at || it.created_at) }}</td>
                   <td class="px-3 py-2 text-xs">
                     <span class="inline-flex items-center rounded-full px-2 py-1 text-[10px] font-bold ring-1 ring-inset" :class="statusBadgeClass(it.status)">
@@ -645,4 +645,3 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
     </BaseDialog>
   </div>
 </template>
-

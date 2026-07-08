@@ -148,11 +148,12 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 	toolNameReverseMap map[string]string,
 	cacheCreationTokens, cacheReadTokens int,
 	thinkingEnabled bool,
+	initialResponseTimeout time.Duration,
 ) (*kiroOpenAIStreamResult, error) {
 	messageID := "chatcmpl-" + uuid.New().String()[:24]
 
 	// Read full response body
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	respBody, err := readKiroNonStreamingBodyWithTimeout(c, resp, initialResponseTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}

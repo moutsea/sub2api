@@ -68,8 +68,8 @@
       'is-scrollable': isScrollable
     }"
   >
-    <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
-      <thead class="table-header bg-gray-50 dark:bg-dark-800">
+    <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700/60">
+      <thead class="table-header bg-gray-50 dark:bg-dark-800/90">
         <tr>
           <th
             v-for="(column, index) in columns"
@@ -78,7 +78,7 @@
             :class="[
               'sticky-header-cell py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400',
               getAdaptivePaddingClass(),
-              { 'cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-700': column.sortable },
+              { 'cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-700/80': column.sortable },
               getStickyColumnClass(column, index)
             ]"
             @click="column.sortable && handleSort(column.key)"
@@ -116,7 +116,7 @@
           </th>
         </tr>
       </thead>
-      <tbody class="table-body divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900">
+      <tbody class="table-body divide-y divide-gray-200 bg-white dark:divide-dark-700/60 dark:bg-dark-900">
         <!-- Loading skeleton -->
         <tr v-if="loading" v-for="i in 5" :key="i">
           <td v-for="column in columns" :key="column.key" :class="['whitespace-nowrap py-4', getAdaptivePaddingClass()]">
@@ -152,7 +152,7 @@
           v-else
           v-for="(row, index) in sortedData"
           :key="resolveRowKey(row, index)"
-          class="hover:bg-gray-50 dark:hover:bg-dark-800"
+          class="hover:bg-gray-50 dark:hover:bg-dark-800/70"
         >
           <td
             v-for="(column, colIndex) in columns"
@@ -416,7 +416,7 @@ const getAdaptivePaddingClass = () => {
 }
 
 .dark .table-wrapper .table-header {
-  background-color: rgb(31 41 55);
+  background-color: rgb(36 36 36);
 }
 
 /* 表体保持在表头下方 */
@@ -434,7 +434,7 @@ const getAdaptivePaddingClass = () => {
 }
 
 .dark .sticky-header-cell {
-  background-color: rgb(31 41 55);
+  background-color: rgb(36 36 36);
 }
 
 /* Sticky 列基础样式 */
@@ -474,7 +474,7 @@ tbody .sticky-col {
 }
 
 .dark tbody .sticky-col {
-  background-color: rgb(17 24 39);
+  background-color: rgb(31 31 31);
 }
 
 /* hover 状态保持 */
@@ -483,7 +483,7 @@ tbody tr:hover .sticky-col {
 }
 
 .dark tbody tr:hover .sticky-col {
-  background-color: rgb(31 41 55);
+  background-color: rgb(36 36 36);
 }
 
 /* 阴影只在可滚动时显示 */

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 )
 
@@ -57,6 +58,80 @@ func newBlockingKiroStreamHTTPResponse(body io.ReadCloser) *http.Response {
 		StatusCode: http.StatusOK,
 		Body:       body,
 		Header:     http.Header{},
+	}
+}
+
+type gatedReadCloser struct {
+	once     sync.Once
+	release  chan struct{}
+	data     []byte
+	readDone bool
+}
+
+func newGatedReadCloser(data string) *gatedReadCloser {
+	return &gatedReadCloser{
+		release: make(chan struct{}),
+		data:    []byte(data),
+	}
+}
+
+func (r *gatedReadCloser) Read(p []byte) (int, error) {
+	<-r.release
+	if r.readDone {
+		return 0, io.EOF
+	}
+	r.readDone = true
+	return copy(p, r.data), nil
+}
+
+func (r *gatedReadCloser) Close() error {
+	r.once.Do(func() {
+		close(r.release)
+	})
+	return nil
+}
+
+func (r *gatedReadCloser) Release() {
+	r.once.Do(func() {
+		close(r.release)
+	})
+}
+
+func TestKiroOAuthInitialResponseTimeoutDisabled(t *testing.T) {
+	oauthAccount := &Account{Platform: PlatformKiro}
+	apiKeyAccount := &Account{
+		Platform: PlatformKiro,
+		Credentials: map[string]any{
+			"auth_type": KiroAuthMethodAPIKey,
+		},
+	}
+
+	defaultSvc := &KiroGatewayService{}
+	if got := defaultSvc.kiroOAuthInitialResponseTimeout(oauthAccount); got != 0 {
+		t.Fatalf("default timeout = %s, want disabled", got)
+	}
+	if got := defaultSvc.kiroOAuthInitialResponseTimeout(apiKeyAccount); got != 0 {
+		t.Fatalf("apikey timeout = %s, want disabled", got)
+	}
+
+	cappedSvc := &KiroGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{ResponseHeaderTimeout: 30},
+		},
+	}
+	if got := cappedSvc.kiroOAuthInitialResponseTimeout(oauthAccount); got != 0 {
+		t.Fatalf("configured timeout = %s, want disabled", got)
+	}
+}
+
+func TestKiroInitialResponseFailoverMessageIncludesTimeout(t *testing.T) {
+	failoverErr := kiroInitialResponseFailover(" first_renderable_event ", 60*time.Second)
+
+	if failoverErr.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", failoverErr.StatusCode, http.StatusGatewayTimeout)
+	}
+	if failoverErr.Message != "kiro_initial_response_timeout:first_renderable_event:timeout=1m0s" {
+		t.Fatalf("message = %q", failoverErr.Message)
 	}
 }
 
@@ -122,6 +197,72 @@ func TestKiroStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("response body = %q, want empty before timeout", rec.Body.String())
+	}
+}
+
+func TestKiroStreamingInitialAckBeforeFirstRenderableEvent(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	body := newGatedReadCloser(`{"content":"hello"}{"stop":true}`)
+	defer body.Close()
+
+	type streamResult struct {
+		result *kiroStreamResult
+		err    error
+	}
+	done := make(chan streamResult, 1)
+	go func() {
+		result, err := svc.handleStreamingResponseWithOptions(
+			c,
+			newBlockingKiroStreamHTTPResponse(body),
+			time.Now(),
+			"claude-opus-4-7",
+			10,
+			nil,
+			0,
+			0,
+			false,
+			false,
+			kiroStreamOptions{
+				initialResponseTimeout: 500 * time.Millisecond,
+				initialAckTimeout:      10 * time.Millisecond,
+			},
+		)
+		done <- streamResult{result: result, err: err}
+	}()
+
+	deadline := time.After(200 * time.Millisecond)
+	for rec.Body.Len() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected initial ACK to be written before first renderable event")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	ackBody := rec.Body.String()
+	if !strings.Contains(ackBody, "message_start") {
+		t.Fatalf("ACK body = %q, want message_start", ackBody)
+	}
+	if strings.Contains(ackBody, "hello") {
+		t.Fatalf("ACK body = %q, should not contain delayed token", ackBody)
+	}
+
+	body.Release()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("err = %v, want nil", got.err)
+		}
+		if got.result == nil {
+			t.Fatal("result = nil, want stream result")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream did not finish after releasing delayed body")
+	}
+	if !strings.Contains(rec.Body.String(), "hello") {
+		t.Fatalf("response body = %q, want delayed token", rec.Body.String())
 	}
 }
 

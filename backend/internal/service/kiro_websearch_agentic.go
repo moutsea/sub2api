@@ -298,9 +298,13 @@ func (s *KiroGatewayService) forwardNonStreamWithWebSearch(ctx context.Context, 
 		}
 
 		// Read response body
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := readKiroNonStreamingBodyWithTimeout(c, resp, getKiroInitialDeadline(resp).remaining())
 		resp.Body.Close()
 		if err != nil {
+			if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
+				log.Printf("%s iteration=%d status=initial_response_timeout phase=%s timeout=%s", prefix, iteration, timeoutErr.Phase, timeoutErr.Timeout)
+				return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
+			}
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 
@@ -385,9 +389,13 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 		}
 
 		// Read response body
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := readKiroNonStreamingBodyWithTimeout(c, resp, getKiroInitialDeadline(resp).remaining())
 		resp.Body.Close()
 		if err != nil {
+			if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
+				log.Printf("%s stream iteration=%d status=initial_response_timeout phase=%s timeout=%s", prefix, iteration, timeoutErr.Phase, timeoutErr.Timeout)
+				return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
+			}
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 
@@ -521,8 +529,14 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			default:
 			}
 
-			upstreamReq, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(cwReqBody))
+			// Apply request jitter before the upstream call. Start the initial-response
+			// deadline after jitter so queue smoothing does not consume the Kiro budget.
+			s.applyRequestJitter(ctx)
+
+			reqCtx, deadline := s.startKiroInitialDeadline(ctx, account)
+			upstreamReq, err := http.NewRequestWithContext(reqCtx, "POST", ep.URL, bytes.NewReader(cwReqBody))
 			if err != nil {
+				deadline.close()
 				return nil, fmt.Errorf("create request: %w", err)
 			}
 
@@ -542,11 +556,22 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
 			}
 
-			// Apply request jitter before upstream call to prevent thundering herd
-			s.applyRequestJitter(ctx)
-
 			resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+			deadline.stopHeaderTimer()
 			if err != nil {
+				if deadline.isTimeoutError(err) {
+					deadline.close()
+					log.Printf("%s endpoint=%s status=initial_response_timeout phase=response_headers timeout=%s", prefix, ep.Name, deadline.timeout)
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:    account.Platform,
+						AccountID:   account.ID,
+						AccountName: account.Name,
+						Kind:        "initial_response_timeout",
+						Message:     kiroInitialResponseTimeoutMessage("response_headers", deadline.timeout),
+					})
+					return nil, kiroInitialResponseFailover("response_headers", deadline.timeout)
+				}
+				deadline.close()
 				safeErr := sanitizeUpstreamErrorMessage(err.Error())
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:    account.Platform,
@@ -573,6 +598,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			if resp.StatusCode == http.StatusUnauthorized {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+				deadline.close()
 
 				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -609,6 +635,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+				deadline.close()
 
 				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
@@ -630,6 +657,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			if resp.StatusCode == 529 {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+				deadline.close()
 
 				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
@@ -651,6 +679,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			if resp.StatusCode != http.StatusOK {
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
+				deadline.close()
 
 				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
@@ -718,6 +747,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 
 			// Success
 			s.markKiroModelSupported(account, requestReq.Model, activeUpstreamModel)
+			attachKiroInitialDeadline(resp, deadline)
 			return resp, nil
 		}
 

@@ -63,8 +63,8 @@
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
 
-        <!-- Model Restriction Section (不适用于 Gemini) -->
-        <div v-if="account.platform !== 'gemini'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <!-- Model Restriction Section -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
 
           <!-- Mode Toggle -->

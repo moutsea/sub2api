@@ -1424,39 +1424,9 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
-		// For OAuth accounts: return default Gemini models
-		if account.IsOAuth() {
-			response.Success(c, geminicli.DefaultModels)
-			return
-		}
-
-		// For API Key accounts: return models based on model_mapping
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
-			response.Success(c, geminicli.DefaultModels)
-			return
-		}
-
-		var models []geminicli.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range geminicli.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, geminicli.Model{
-					ID:          requestedModel,
-					Type:        "model",
-					DisplayName: requestedModel,
-					CreatedAt:   "",
-				})
-			}
-		}
-		response.Success(c, models)
+		// Account testing should offer the curated Gemini test model catalog.
+		// Model whitelist/mapping only affects normal request forwarding.
+		response.Success(c, geminicli.DefaultModels)
 		return
 	}
 

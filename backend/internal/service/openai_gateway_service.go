@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	mathrand "math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -605,26 +607,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		}
 
 		if len(available) > 0 {
-			sort.SliceStable(available, func(i, j int) bool {
-				a, b := available[i], available[j]
-				if a.account.Priority != b.account.Priority {
-					return a.account.Priority < b.account.Priority
-				}
-				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-				}
-				switch {
-				case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-					return true
-				case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-					return false
-				case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-					return false
-				default:
-					return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-				}
-			})
-			shuffleWithinSortGroups(available)
+			s.sortOpenAIAccountWithLoadCandidates(available)
 
 			for _, item := range available {
 				result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
@@ -657,6 +640,157 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	return nil, errors.New("no available accounts")
+}
+
+func (s *OpenAIGatewayService) sortOpenAIAccountWithLoadCandidates(accounts []accountWithLoad) {
+	if len(accounts) <= 1 {
+		return
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+	})
+
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && samePriorityLoadGroup(accounts[i], accounts[j]) {
+			j++
+		}
+		s.orderOpenAIEqualPriorityLoadGroup(accounts[i:j])
+		i = j
+	}
+}
+
+func (s *OpenAIGatewayService) orderOpenAIEqualPriorityLoadGroup(accounts []accountWithLoad) {
+	if len(accounts) <= 1 {
+		return
+	}
+	if s.weightedShuffleOpenAIKiroCreditGroup(accounts) {
+		return
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		return s.openAIAccountResetAndLastUsedLess(accounts[i].account, accounts[j].account)
+	})
+	s.shuffleOpenAIWithinResetAndLastUsedGroups(accounts)
+}
+
+func (s *OpenAIGatewayService) weightedShuffleOpenAIKiroCreditGroup(accounts []accountWithLoad) bool {
+	if len(accounts) <= 1 || s.usageCache == nil {
+		return false
+	}
+	credits := make([]float64, len(accounts))
+	creditsDiffer := false
+	for i, item := range accounts {
+		if item.account == nil || !item.account.IsKiro() {
+			return false
+		}
+		credit := s.usageCache.GetKiroAvailableCredits(item.account.ID)
+		if credit < 0 {
+			return false
+		}
+		if i > 0 && credit != credits[0] {
+			creditsDiffer = true
+		}
+		credits[i] = credit
+	}
+	if !creditsDiffer {
+		return false
+	}
+
+	type weightedItem struct {
+		item accountWithLoad
+		key  float64
+	}
+	weighted := make([]weightedItem, len(accounts))
+	for i, item := range accounts {
+		weight := credits[i]
+		if weight < 1 {
+			weight = 1
+		}
+		u := mathrand.Float64()
+		if u <= 0 {
+			u = math.SmallestNonzeroFloat64
+		}
+		weighted[i] = weightedItem{
+			item: item,
+			key:  -math.Log(u) / weight,
+		}
+	}
+	sort.Slice(weighted, func(i, j int) bool {
+		return weighted[i].key < weighted[j].key
+	})
+	for i := range weighted {
+		accounts[i] = weighted[i].item
+	}
+	return true
+}
+
+func (s *OpenAIGatewayService) openAIAccountResetAndLastUsedLess(a, b *Account) bool {
+	aReset := s.openAIAccountResetTime(a.ID)
+	bReset := s.openAIAccountResetTime(b.ID)
+	switch {
+	case aReset != nil && bReset != nil:
+		if !aReset.Equal(*bReset) {
+			return aReset.Before(*bReset)
+		}
+	case aReset != nil && bReset == nil:
+		return true
+	case aReset == nil && bReset != nil:
+		return false
+	}
+	switch {
+	case a.LastUsedAt == nil && b.LastUsedAt != nil:
+		return true
+	case a.LastUsedAt != nil && b.LastUsedAt == nil:
+		return false
+	case a.LastUsedAt == nil && b.LastUsedAt == nil:
+		return false
+	default:
+		return a.LastUsedAt.Before(*b.LastUsedAt)
+	}
+}
+
+func (s *OpenAIGatewayService) openAIAccountResetTime(accountID int64) *time.Time {
+	if s.usageCache == nil {
+		return nil
+	}
+	return s.usageCache.GetResetTime(accountID)
+}
+
+func (s *OpenAIGatewayService) shuffleOpenAIWithinResetAndLastUsedGroups(accounts []accountWithLoad) {
+	if len(accounts) <= 1 {
+		return
+	}
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && s.sameOpenAIResetAndLastUsedGroup(accounts[i].account, accounts[j].account) {
+			j++
+		}
+		if j-i > 1 {
+			mathrand.Shuffle(j-i, func(a, b int) {
+				accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
+			})
+		}
+		i = j
+	}
+}
+
+func (s *OpenAIGatewayService) sameOpenAIResetAndLastUsedGroup(a, b *Account) bool {
+	aReset := s.openAIAccountResetTime(a.ID)
+	bReset := s.openAIAccountResetTime(b.ID)
+	switch {
+	case aReset == nil && bReset == nil:
+	case aReset == nil || bReset == nil:
+		return false
+	case !aReset.Equal(*bReset):
+		return false
+	}
+	return sameLastUsedAt(a.LastUsedAt, b.LastUsedAt)
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {

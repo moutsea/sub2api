@@ -426,6 +426,9 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 			outputPrice *= pricing.LongContextOutputMultiplier
 		}
 	}
+	if tokens.CacheReadTokens > 0 && cacheReadPrice <= 0 {
+		cacheReadPrice = inputPrice
+	}
 
 	// 计算输入token费用（使用per-token价格）
 	breakdown.InputCost = float64(tokens.InputTokens) * inputPrice

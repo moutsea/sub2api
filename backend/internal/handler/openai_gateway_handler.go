@@ -26,6 +26,7 @@ type OpenAIGatewayHandler struct {
 	kiroGatewayService  *service.KiroGatewayService
 	billingCacheService *service.BillingCacheService
 	concurrencyHelper   *ConcurrencyHelper
+	imagePreviewJobs    *imagePreviewJobStore
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -45,6 +46,7 @@ func NewOpenAIGatewayHandler(
 		kiroGatewayService:  kiroGatewayService,
 		billingCacheService: billingCacheService,
 		concurrencyHelper:   NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
+		imagePreviewJobs:    newImagePreviewJobStore(),
 	}
 }
 
@@ -431,6 +433,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
 	streamStarted := false
+	requestStartedAt := time.Now()
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 
 	// Check wait queue
@@ -590,6 +593,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverStatus = failoverErr.StatusCode
 				lastFailoverMsg = failoverErr.Message
+				if shouldStopKiroOAuthInitialFailover(account, failoverErr, requestStartedAt) {
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					log.Printf("Account %d: kiro initial response failover budget exhausted after %s", account.ID, time.Since(requestStartedAt))
+					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
+					return
+				}
 				// 全局硬上限：单请求内最多切换 10 次，避免过长链路。
 				if totalSwitchCount >= maxTotalSwitches {
 					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
@@ -658,6 +667,9 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, lastMessage string, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode, lastMessage)
+	if !streamStarted && isKiroInitialResponseTimeoutMessage(lastMessage) {
+		c.Header("Retry-After", kiroClaudeOAuthClientRetryAfterHeader)
+	}
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
@@ -677,7 +689,12 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int, lastMessage stri
 		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
 	case 529:
 		return http.StatusServiceUnavailable, "upstream_error", "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
+	case 504:
+		if isKiroInitialResponseTimeoutMessage(lastMessage) {
+			return http.StatusTooManyRequests, "rate_limit_error", "Kiro upstream initial response timeout, please retry later"
+		}
+		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
+	case 500, 502, 503:
 		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "upstream_error", "Upstream request failed"

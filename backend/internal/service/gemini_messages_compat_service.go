@@ -36,6 +36,11 @@ const (
 	geminiRetryMaxDelay  = 16 * time.Second
 )
 
+// Gemini tool calling may require thoughtSignature on parts that include functionCall.
+// Clients often omit it; this dummy signature mirrors the reference implementation
+// and lets compatible upstreams skip strict signature validation.
+const geminiDummyThoughtSignature = "skip_thought_signature_validator"
+
 type GeminiMessagesCompatService struct {
 	accountRepo               AccountRepository
 	groupRepo                 GroupRepository
@@ -280,6 +285,16 @@ func (s *GeminiMessagesCompatService) validateUpstreamBaseURL(raw string) (strin
 	return normalized, nil
 }
 
+func setGeminiAPIKeyBearerForCustomBaseURL(req *http.Request, apiKey, configuredBaseURL, normalizedBaseURL string) {
+	if req == nil || strings.TrimSpace(apiKey) == "" || strings.TrimSpace(configuredBaseURL) == "" {
+		return
+	}
+	if strings.TrimRight(strings.TrimSpace(normalizedBaseURL), "/") == strings.TrimRight(geminicli.AIStudioBaseURL, "/") {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+}
+
 // HasAntigravityAccounts 检查是否有可用的 antigravity 账户
 func (s *GeminiMessagesCompatService) HasAntigravityAccounts(ctx context.Context, groupID *int64) (bool, error) {
 	accounts, err := s.listSchedulableAccountsOnce(ctx, groupID, PlatformAntigravity, false)
@@ -397,6 +412,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	geminiReq = ensureGeminiFunctionCallThoughtSignatures(geminiReq)
 	originalClaudeBody := body
 
 	proxyURL := ""
@@ -420,7 +436,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				return nil, "", errors.New("gemini api_key not configured")
 			}
 
-			baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+			configuredBaseURL := strings.TrimSpace(account.GetCredential("base_url"))
+			baseURL := configuredBaseURL
 			if baseURL == "" {
 				baseURL = geminicli.AIStudioBaseURL
 			}
@@ -438,13 +455,14 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				fullURL += "?alt=sse"
 			}
 
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(geminiReq))
+			restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
 			if err != nil {
 				return nil, "", err
 			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
-			upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
+			setGeminiAPIKeyBearerForCustomBaseURL(upstreamReq, apiKey, configuredBaseURL, normalizedBaseURL)
 			return upstreamReq, "x-request-id", nil
 		}
 		requestIDHeader = "x-request-id"
@@ -515,7 +533,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					fullURL += "?alt=sse"
 				}
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(geminiReq))
+				restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
+				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
 				if err != nil {
 					return nil, "", err
 				}
@@ -621,7 +640,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				retryGeminiReq, txErr := convertClaudeMessagesToGeminiGenerateContent(strippedClaudeBody)
 				if txErr == nil {
 					log.Printf("Gemini account %d: detected signature-related 400, retrying with downgraded Claude blocks (%s)", account.ID, stageName)
-					geminiReq = retryGeminiReq
+					geminiReq = ensureGeminiFunctionCallThoughtSignatures(retryGeminiReq)
 					// Consume one retry budget attempt and continue with the updated request payload.
 					sleepGeminiBackoff(1)
 					continue
@@ -832,12 +851,19 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Request body is empty")
 	}
 
+	// Gemini API rejects messages whose parts array is empty.
+	if filteredBody, err := filterEmptyPartsFromGeminiRequest(body); err == nil {
+		body = filteredBody
+	}
+
 	switch action {
 	case "generateContent", "streamGenerateContent", "countTokens":
 		// ok
 	default:
 		return nil, s.writeGoogleError(c, http.StatusNotFound, "Unsupported action: "+action)
 	}
+
+	body = ensureGeminiFunctionCallThoughtSignatures(body)
 
 	mappedModel := originalModel
 	if account.Type == AccountTypeAPIKey {
@@ -869,7 +895,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, "", errors.New("gemini api_key not configured")
 			}
 
-			baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+			configuredBaseURL := strings.TrimSpace(account.GetCredential("base_url"))
+			baseURL := configuredBaseURL
 			if baseURL == "" {
 				baseURL = geminicli.AIStudioBaseURL
 			}
@@ -889,7 +916,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
-			upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
+			setGeminiAPIKeyBearerForCustomBaseURL(upstreamReq, apiKey, configuredBaseURL, normalizedBaseURL)
 			return upstreamReq, "x-request-id", nil
 		}
 		requestIDHeader = "x-request-id"
@@ -1843,6 +1870,8 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 
 	var last map[string]any
 	var lastWithParts map[string]any
+	var collectedTextParts []string
+	seenText := ""
 	usage := &ClaudeUsage{}
 
 	for {
@@ -1854,7 +1883,7 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 				switch payload {
 				case "", "[DONE]":
 					if payload == "[DONE]" {
-						return pickGeminiCollectResult(last, lastWithParts), usage, nil
+						return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, nil
 					}
 				default:
 					var parsed map[string]any
@@ -1873,6 +1902,15 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 						}
 						if parts := extractGeminiParts(parsed); len(parts) > 0 {
 							lastWithParts = parsed
+							for _, part := range parts {
+								if text, ok := part["text"].(string); ok && text != "" {
+									delta, newSeen := computeGeminiTextDelta(seenText, text)
+									seenText = newSeen
+									if delta != "" {
+										collectedTextParts = append(collectedTextParts, delta)
+									}
+								}
+							}
 						}
 					}
 				}
@@ -1887,7 +1925,7 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 		}
 	}
 
-	return pickGeminiCollectResult(last, lastWithParts), usage, nil
+	return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, nil
 }
 
 func pickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) map[string]any {
@@ -1898,6 +1936,68 @@ func pickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) 
 		return last
 	}
 	return map[string]any{}
+}
+
+func mergeCollectedTextParts(response map[string]any, textParts []string) map[string]any {
+	if len(textParts) == 0 {
+		return response
+	}
+
+	mergedText := strings.Join(textParts, "")
+	result := make(map[string]any, len(response))
+	for k, v := range response {
+		result[k] = v
+	}
+
+	candidates, ok := result["candidates"].([]any)
+	if !ok || len(candidates) == 0 {
+		candidates = []any{map[string]any{}}
+	}
+
+	candidate, ok := candidates[0].(map[string]any)
+	if !ok {
+		candidate = make(map[string]any)
+		candidates[0] = candidate
+	}
+
+	content, ok := candidate["content"].(map[string]any)
+	if !ok {
+		content = map[string]any{"role": "model"}
+		candidate["content"] = content
+	}
+
+	existingParts, ok := content["parts"].([]any)
+	if !ok {
+		existingParts = []any{}
+	}
+
+	newParts := make([]any, 0, len(existingParts)+1)
+	textUpdated := false
+	for _, part := range existingParts {
+		partMap, ok := part.(map[string]any)
+		if !ok {
+			newParts = append(newParts, part)
+			continue
+		}
+		if _, hasText := partMap["text"]; hasText && !textUpdated {
+			copiedPart := make(map[string]any, len(partMap))
+			for k, v := range partMap {
+				copiedPart[k] = v
+			}
+			copiedPart["text"] = mergedText
+			newParts = append(newParts, copiedPart)
+			textUpdated = true
+			continue
+		}
+		newParts = append(newParts, partMap)
+	}
+	if !textUpdated {
+		newParts = append([]any{map[string]any{"text": mergedText}}, newParts...)
+	}
+
+	content["parts"] = newParts
+	result["candidates"] = candidates
+	return result
 }
 
 type geminiNativeStreamResult struct {
@@ -2149,7 +2249,8 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 		return nil, errors.New("invalid path")
 	}
 
-	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	configuredBaseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	baseURL := configuredBaseURL
 	if baseURL == "" {
 		baseURL = geminicli.AIStudioBaseURL
 	}
@@ -2176,7 +2277,7 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 			return nil, errors.New("gemini api_key not configured")
 		}
 		req.Header.Set("x-goog-api-key", apiKey)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		setGeminiAPIKeyBearerForCustomBaseURL(req, apiKey, configuredBaseURL, normalizedBaseURL)
 	case AccountTypeOAuth:
 		if s.tokenProvider == nil {
 			return nil, errors.New("gemini token provider not configured")
@@ -2292,9 +2393,16 @@ func extractGeminiUsage(geminiResp map[string]any) *ClaudeUsage {
 	}
 	prompt, _ := asInt(usageMeta["promptTokenCount"])
 	cand, _ := asInt(usageMeta["candidatesTokenCount"])
+	cached, _ := asInt(usageMeta["cachedContentTokenCount"])
+	thoughts, _ := asInt(usageMeta["thoughtsTokenCount"])
+	inputTokens := prompt - cached
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
 	return &ClaudeUsage{
-		InputTokens:  prompt,
-		OutputTokens: cand,
+		InputTokens:          inputTokens,
+		OutputTokens:         cand + thoughts,
+		CacheReadInputTokens: cached,
 	}
 }
 
@@ -2421,6 +2529,58 @@ func nextGeminiDailyResetUnix() *int64 {
 	reset := geminiDailyResetTime(time.Now())
 	ts := reset.Unix()
 	return &ts
+}
+
+func ensureGeminiFunctionCallThoughtSignatures(body []byte) []byte {
+	if !bytes.Contains(body, []byte("functionCall")) {
+		return body
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+
+	contents, ok := payload["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		return body
+	}
+
+	modified := false
+	for _, rawContent := range contents {
+		content, ok := rawContent.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := content["parts"].([]any)
+		if !ok || len(parts) == 0 {
+			continue
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok || part == nil {
+				continue
+			}
+			functionCall, ok := part["functionCall"].(map[string]any)
+			if !ok || functionCall == nil {
+				continue
+			}
+			signature, _ := part["thoughtSignature"].(string)
+			if strings.TrimSpace(signature) == "" {
+				part["thoughtSignature"] = geminiDummyThoughtSignature
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return body
+	}
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func extractGeminiFinishReason(geminiResp map[string]any) string {
@@ -2622,7 +2782,13 @@ func convertClaudeMessagesToGeminiContents(messages any, toolUseIDToName map[str
 					if strings.TrimSpace(id) != "" && strings.TrimSpace(name) != "" {
 						toolUseIDToName[id] = name
 					}
+					signature, _ := bm["signature"].(string)
+					signature = strings.TrimSpace(signature)
+					if signature == "" {
+						signature = geminiDummyThoughtSignature
+					}
 					parts = append(parts, map[string]any{
+						"thoughtSignature": signature,
 						"functionCall": map[string]any{
 							"name": name,
 							"args": bm["input"],
@@ -2706,10 +2872,15 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 		return nil
 	}
 
+	hasWebSearch := false
 	funcDecls := make([]any, 0, len(arr))
 	for _, t := range arr {
 		tm, ok := t.(map[string]any)
 		if !ok {
+			continue
+		}
+		if isClaudeWebSearchToolMap(tm) {
+			hasWebSearch = true
 			continue
 		}
 
@@ -2755,13 +2926,117 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 		})
 	}
 
-	if len(funcDecls) == 0 {
+	out := make([]any, 0, 2)
+	if len(funcDecls) > 0 {
+		out = append(out, map[string]any{
+			"functionDeclarations": funcDecls,
+		})
+	}
+	if hasWebSearch {
+		out = append(out, map[string]any{
+			"googleSearch": map[string]any{},
+		})
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	return []any{
-		map[string]any{
-			"functionDeclarations": funcDecls,
-		},
+	return out
+}
+
+func normalizeGeminiRequestForAIStudio(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return body
+	}
+
+	modified := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		googleSearch, ok := tool["googleSearch"]
+		if !ok {
+			continue
+		}
+		if _, exists := tool["google_search"]; exists {
+			continue
+		}
+		tool["google_search"] = googleSearch
+		delete(tool, "googleSearch")
+		modified = true
+	}
+
+	if !modified {
+		return body
+	}
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func filterEmptyPartsFromGeminiRequest(body []byte) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+
+	contents, ok := payload["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		return body, nil
+	}
+
+	filtered := make([]any, 0, len(contents))
+	modified := false
+	for _, rawContent := range contents {
+		content, ok := rawContent.(map[string]any)
+		if !ok {
+			filtered = append(filtered, rawContent)
+			continue
+		}
+		parts, hasParts := content["parts"]
+		if !hasParts {
+			filtered = append(filtered, rawContent)
+			continue
+		}
+		partsSlice, ok := parts.([]any)
+		if !ok {
+			filtered = append(filtered, rawContent)
+			continue
+		}
+		if len(partsSlice) == 0 {
+			modified = true
+			continue
+		}
+		filtered = append(filtered, rawContent)
+	}
+
+	if !modified {
+		return body, nil
+	}
+	payload["contents"] = filtered
+	return json.Marshal(payload)
+}
+
+func isClaudeWebSearchToolMap(tool map[string]any) bool {
+	toolType, _ := tool["type"].(string)
+	if strings.HasPrefix(toolType, "web_search") || toolType == "google_search" {
+		return true
+	}
+
+	name, _ := tool["name"].(string)
+	switch strings.TrimSpace(name) {
+	case "web_search", "google_search", "web_search_20250305":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2777,7 +3052,8 @@ func cleanToolSchema(schema any) any {
 		for key, value := range v {
 			// 跳过不支持的字段
 			if key == "$schema" || key == "$id" || key == "$ref" ||
-				key == "additionalProperties" || key == "minLength" ||
+				key == "$defs" || key == "definitions" ||
+				key == "additionalProperties" || key == "patternProperties" || key == "minLength" ||
 				key == "maxLength" || key == "minItems" || key == "maxItems" {
 				continue
 			}
@@ -2787,6 +3063,17 @@ func cleanToolSchema(schema any) any {
 		// 规范化 type 字段为大写
 		if typeVal, ok := cleaned["type"].(string); ok {
 			cleaned["type"] = strings.ToUpper(typeVal)
+		} else if typeValues, ok := cleaned["type"].([]any); ok {
+			for _, typeValue := range typeValues {
+				typeName, ok := typeValue.(string)
+				if ok && !strings.EqualFold(typeName, "null") {
+					cleaned["type"] = strings.ToUpper(typeName)
+					break
+				}
+			}
+			if _, ok := cleaned["type"].([]any); ok {
+				delete(cleaned, "type")
+			}
 		}
 		return cleaned
 	case []any:

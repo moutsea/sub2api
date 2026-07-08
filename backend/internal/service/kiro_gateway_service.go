@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -28,6 +29,29 @@ const (
 	kiroRetryBaseDelay = 1 * time.Second
 	kiroRetryMaxDelay  = 16 * time.Second
 )
+
+type kiroInitialAckTimeoutContextKey struct{}
+
+// WithKiroInitialAckTimeout allows callers to commit a Claude SSE response before
+// the first renderable Kiro event. It is intended for post-account-failover
+// requests where returning another pre-commit timeout would risk Cloudflare 524.
+func WithKiroInitialAckTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	if ctx == nil || timeout <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, kiroInitialAckTimeoutContextKey{}, timeout)
+}
+
+func kiroInitialAckTimeoutFromContext(ctx context.Context) time.Duration {
+	if ctx == nil {
+		return 0
+	}
+	timeout, _ := ctx.Value(kiroInitialAckTimeoutContextKey{}).(time.Duration)
+	if timeout < 0 {
+		return 0
+	}
+	return timeout
+}
 
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
 type kiroEndpointConfig struct {
@@ -169,6 +193,161 @@ func (s *KiroGatewayService) applyRequestJitter(ctx context.Context) {
 	case <-t.C:
 	case <-ctx.Done():
 	}
+}
+
+type kiroInitialDeadline struct {
+	start    time.Time
+	timeout  time.Duration
+	cancel   context.CancelFunc
+	timer    *time.Timer
+	timedOut atomic.Bool
+}
+
+type kiroInitialDeadlineContextKey struct{}
+
+type kiroInitialDeadlineBody struct {
+	io.ReadCloser
+	deadline *kiroInitialDeadline
+	once     sync.Once
+	closeErr error
+}
+
+func (b *kiroInitialDeadlineBody) Close() error {
+	b.once.Do(func() {
+		if b.ReadCloser != nil {
+			b.closeErr = b.ReadCloser.Close()
+		}
+		b.deadline.close()
+	})
+	return b.closeErr
+}
+
+func (s *KiroGatewayService) kiroOAuthInitialResponseTimeout(account *Account) time.Duration {
+	return 0
+}
+
+func (s *KiroGatewayService) startKiroInitialDeadline(ctx context.Context, account *Account) (context.Context, *kiroInitialDeadline) {
+	timeout := s.kiroOAuthInitialResponseTimeout(account)
+	if timeout <= 0 {
+		return ctx, nil
+	}
+
+	reqCtx, cancel := context.WithCancel(ctx)
+	deadline := &kiroInitialDeadline{
+		start:   time.Now(),
+		timeout: timeout,
+		cancel:  cancel,
+	}
+	deadline.timer = time.AfterFunc(timeout, func() {
+		deadline.timedOut.Store(true)
+		cancel()
+	})
+	return reqCtx, deadline
+}
+
+func (d *kiroInitialDeadline) stopHeaderTimer() {
+	if d == nil || d.timer == nil {
+		return
+	}
+	d.timer.Stop()
+}
+
+func (d *kiroInitialDeadline) close() {
+	if d == nil {
+		return
+	}
+	d.stopHeaderTimer()
+	if d.cancel != nil {
+		d.cancel()
+	}
+}
+
+func (d *kiroInitialDeadline) isTimedOut() bool {
+	return d != nil && d.timedOut.Load()
+}
+
+func (d *kiroInitialDeadline) isTimeoutError(err error) bool {
+	if d == nil {
+		return false
+	}
+	if d.isTimedOut() {
+		return true
+	}
+	if d.timeout <= 0 || time.Since(d.start) < d.timeout {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func (d *kiroInitialDeadline) remaining() time.Duration {
+	if d == nil || d.timeout <= 0 {
+		return 0
+	}
+	remaining := d.timeout - time.Since(d.start)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
+}
+
+func (d *kiroInitialDeadline) streamOptions() kiroStreamOptions {
+	if d == nil {
+		return kiroStreamOptions{}
+	}
+	return kiroStreamOptions{initialResponseTimeout: d.remaining()}
+}
+
+func kiroStreamOptionsFromContext(ctx context.Context, deadline *kiroInitialDeadline) kiroStreamOptions {
+	opts := deadline.streamOptions()
+	opts.initialAckTimeout = kiroInitialAckTimeoutFromContext(ctx)
+	return opts
+}
+
+func attachKiroInitialDeadline(resp *http.Response, deadline *kiroInitialDeadline) *kiroInitialDeadline {
+	if resp == nil || deadline == nil {
+		return deadline
+	}
+	if resp.Body != nil {
+		resp.Body = &kiroInitialDeadlineBody{ReadCloser: resp.Body, deadline: deadline}
+	}
+	if resp.Request != nil {
+		resp.Request = resp.Request.WithContext(context.WithValue(resp.Request.Context(), kiroInitialDeadlineContextKey{}, deadline))
+	}
+	return deadline
+}
+
+func getKiroInitialDeadline(resp *http.Response) *kiroInitialDeadline {
+	if resp == nil || resp.Request == nil {
+		return nil
+	}
+	deadline, _ := resp.Request.Context().Value(kiroInitialDeadlineContextKey{}).(*kiroInitialDeadline)
+	return deadline
+}
+
+func kiroInitialResponseTimeoutMessage(phase string, timeout time.Duration) string {
+	message := "kiro_initial_response_timeout"
+	if phase = strings.TrimSpace(phase); phase != "" {
+		message += ":" + phase
+	}
+	if timeout > 0 {
+		message += ":timeout=" + timeout.String()
+	}
+	return message
+}
+
+func kiroInitialResponseFailover(phase string, timeout time.Duration) *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Message:    kiroInitialResponseTimeoutMessage(phase, timeout),
+	}
+}
+
+func isKiroInitialResponseTimeout(err error) (*kiroInitialResponseTimeoutError, bool) {
+	var timeoutErr *kiroInitialResponseTimeoutError
+	if errors.As(err, &timeoutErr) {
+		return timeoutErr, true
+	}
+	return nil, false
 }
 
 const (
@@ -558,6 +737,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	// Endpoint loop: try each endpoint, with retries per endpoint
 	var resp *http.Response
+	var respDeadline *kiroInitialDeadline
 	var lastErr error
 	tokenRefreshed := false // shared across endpoints to avoid redundant refresh
 
@@ -574,8 +754,14 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				default:
 				}
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
+				// Apply request jitter before the upstream call. Start the initial-response
+				// deadline after jitter so queue smoothing does not consume the Kiro budget.
+				s.applyRequestJitter(ctx)
+
+				reqCtx, deadline := s.startKiroInitialDeadline(ctx, account)
+				upstreamReq, err := http.NewRequestWithContext(reqCtx, "POST", ep.URL, bytes.NewReader(reqBody))
 				if err != nil {
+					deadline.close()
 					return nil, fmt.Errorf("create request: %w", err)
 				}
 
@@ -595,11 +781,22 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					upstreamReq.Header.Set("X-Amz-Target", ep.AmzTarget)
 				}
 
-				// Apply request jitter before upstream call to prevent thundering herd
-				s.applyRequestJitter(ctx)
-
 				resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+				deadline.stopHeaderTimer()
 				if err != nil {
+					if deadline.isTimeoutError(err) {
+						deadline.close()
+						log.Printf("%s endpoint=%s status=initial_response_timeout phase=response_headers timeout=%s", prefix, ep.Name, deadline.timeout)
+						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+							Platform:    account.Platform,
+							AccountID:   account.ID,
+							AccountName: account.Name,
+							Kind:        "initial_response_timeout",
+							Message:     kiroInitialResponseTimeoutMessage("response_headers", deadline.timeout),
+						})
+						return nil, kiroInitialResponseFailover("response_headers", deadline.timeout)
+					}
+					deadline.close()
 					safeErr := sanitizeUpstreamErrorMessage(err.Error())
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						Platform:           account.Platform,
@@ -627,6 +824,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				if resp.StatusCode == http.StatusTooManyRequests {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 
 					upstreamMsg := extractKiroErrorMessage(respBody)
 					upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -650,6 +848,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				if resp.StatusCode == http.StatusUnauthorized {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 
 					upstreamMsg := extractKiroErrorMessage(respBody)
 
@@ -678,6 +877,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				if resp.StatusCode == 529 {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 					log.Printf("%s endpoint=%s status=529 overloaded, trying next endpoint", prefix, ep.Name)
 					lastErr = &UpstreamFailoverError{StatusCode: resp.StatusCode}
@@ -688,6 +888,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				if resp.StatusCode == http.StatusBadRequest {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 
 					errorMsg := extractKiroErrorMessage(respBody)
@@ -761,6 +962,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {
 					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 					_ = resp.Body.Close()
+					deadline.close()
 
 					if attempt < kiroMaxRetries {
 						upstreamMsg := extractKiroErrorMessage(respBody)
@@ -795,6 +997,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 				// Success or non-retryable error — stop endpoint loop
 				log.Printf("%s endpoint=%s status=%d", prefix, ep.Name, resp.StatusCode)
+				respDeadline = attachKiroInitialDeadline(resp, deadline)
 				goto endpointDone
 			}
 
@@ -820,7 +1023,10 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		// 处理段裹进 IIFE：让 defer resp.Body.Close 在自然作用域内执行，
 		// 避免响应处理提前返回时泄漏 resp.Body。
 		result, err := func() (*ForwardResult, error) {
-			defer func() { _ = resp.Body.Close() }()
+			defer func() {
+				_ = resp.Body.Close()
+				respDeadline.close()
+			}()
 
 			// Handle error response
 			if resp.StatusCode >= 400 {
@@ -882,9 +1088,20 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					cacheReadTokens,
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
-					kiroStreamOptions{},
+					kiroStreamOptionsFromContext(ctx, respDeadline),
 				)
 				if err != nil {
+					if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
+						log.Printf("%s status=initial_response_timeout phase=%s timeout=%s", prefix, timeoutErr.Phase, timeoutErr.Timeout)
+						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+							Platform:    account.Platform,
+							AccountID:   account.ID,
+							AccountName: account.Name,
+							Kind:        "initial_response_timeout",
+							Message:     kiroInitialResponseTimeoutMessage(timeoutErr.Phase, timeoutErr.Timeout),
+						})
+						return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
+					}
 					log.Printf("%s status=stream_error error=%v", prefix, err)
 					return nil, err
 				}
@@ -904,9 +1121,20 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					cacheReadTokens,
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
-					kiroStreamOptions{},
+					kiroStreamOptionsFromContext(ctx, respDeadline),
 				)
 				if err != nil {
+					if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
+						log.Printf("%s status=initial_response_timeout phase=%s timeout=%s", prefix, timeoutErr.Phase, timeoutErr.Timeout)
+						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+							Platform:    account.Platform,
+							AccountID:   account.ID,
+							AccountName: account.Name,
+							Kind:        "initial_response_timeout",
+							Message:     kiroInitialResponseTimeoutMessage(timeoutErr.Phase, timeoutErr.Timeout),
+						})
+						return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
+					}
 					log.Printf("%s status=non_stream_error error=%v", prefix, err)
 					return nil, err
 				}
@@ -1000,6 +1228,7 @@ func kiroEmptyStreamFailover(reason string) *UpstreamFailoverError {
 
 type kiroStreamOptions struct {
 	initialResponseTimeout time.Duration
+	initialAckTimeout      time.Duration
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer.
@@ -1040,6 +1269,20 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 	sawRenderableEvent := false
 	var pendingClaudeEvents []kiro.ClaudeSSEEvent
 	var initialResponseTimeoutCh <-chan time.Time
+	var initialAckTimeoutCh <-chan time.Time
+
+	writeFormattedClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
+		for _, claudeEvent := range events {
+			sseStr, err := kiro.FormatClaudeSSE(claudeEvent)
+			if err != nil {
+				continue
+			}
+			if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
 	commitStream := func() error {
 		if streamCommitted {
@@ -1079,7 +1322,23 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 
 		streamCommitted = true
 		initialResponseTimeoutCh = nil
+		initialAckTimeoutCh = nil
 		flusher.Flush()
+		return nil
+	}
+
+	commitStreamWithPending := func() error {
+		if err := commitStream(); err != nil {
+			return err
+		}
+		if len(pendingClaudeEvents) > 0 {
+			events := pendingClaudeEvents
+			pendingClaudeEvents = nil
+			if err := writeFormattedClaudeEvents(events); err != nil {
+				return err
+			}
+			flusher.Flush()
+		}
 		return nil
 	}
 
@@ -1092,22 +1351,12 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			if !sawRenderableEvent {
 				return nil
 			}
-			if err := commitStream(); err != nil {
+			if err := commitStreamWithPending(); err != nil {
 				return err
 			}
-			events = pendingClaudeEvents
-			pendingClaudeEvents = nil
+			return nil
 		}
-		for _, claudeEvent := range events {
-			sseStr, err := kiro.FormatClaudeSSE(claudeEvent)
-			if err != nil {
-				continue
-			}
-			if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
-				return err
-			}
-		}
-		return nil
+		return writeFormattedClaudeEvents(events)
 	}
 
 	var firstTokenMs *int
@@ -1157,6 +1406,12 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 		initialResponseTimer = time.NewTimer(opts.initialResponseTimeout)
 		defer initialResponseTimer.Stop()
 		initialResponseTimeoutCh = initialResponseTimer.C
+	}
+	var initialAckTimer *time.Timer
+	if opts.initialAckTimeout > 0 {
+		initialAckTimer = time.NewTimer(opts.initialAckTimeout)
+		defer initialAckTimer.Stop()
+		initialAckTimeoutCh = initialAckTimer.C
 	}
 
 	// Stream interval timeout
@@ -1309,6 +1564,17 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 				opts.initialResponseTimeout, originalModel)
 			return nil, newKiroInitialResponseTimeoutError("first_renderable_event", opts.initialResponseTimeout)
 
+		case <-initialAckTimeoutCh:
+			if streamCommitted || sawRenderableEvent {
+				initialAckTimeoutCh = nil
+				continue
+			}
+			log.Printf("Kiro stream initial ACK before first renderable event: timeout=%v model=%s",
+				opts.initialAckTimeout, originalModel)
+			if err := commitStreamWithPending(); err != nil {
+				return nil, err
+			}
+
 		case <-keepaliveTicker.C:
 			if !streamCommitted {
 				continue
@@ -1347,6 +1613,12 @@ finishStream:
 	if !sawRenderableEvent {
 		log.Printf("Kiro upstream returned empty stream before downstream commit: duration=%v parse_errors=%d message_stopped=%v",
 			time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
+		if streamCommitted {
+			sendErrorEvent("kiro_empty_stream")
+			return &kiroStreamResult{
+				usage: &ClaudeUsage{},
+			}, nil
+		}
 		return nil, kiroEmptyStreamFailover("kiro_empty_stream")
 	}
 

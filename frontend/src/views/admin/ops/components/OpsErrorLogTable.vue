@@ -9,7 +9,7 @@
     <div v-else class="flex min-h-0 flex-1 flex-col">
       <div class="min-h-0 flex-1 overflow-auto border-b border-gray-200 dark:border-dark-700">
         <table class="w-full border-separate border-spacing-0">
-          <thead class="sticky top-0 z-10 bg-gray-50 dark:bg-dark-800">
+          <thead class="sticky top-0 z-10 bg-gray-50 dark:bg-dark-800/90">
             <tr>
               <th class="border-b border-gray-200 px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:border-dark-700 dark:text-dark-400">
                 {{ t('admin.ops.errorLog.time') }}
@@ -40,7 +40,7 @@
               </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+          <tbody class="divide-y divide-gray-100 dark:divide-dark-700/60">
             <tr v-if="rows.length === 0">
               <td colspan="9" class="py-12 text-center text-sm text-gray-400 dark:text-dark-500">
                 {{ t('admin.ops.errorLog.noErrors') }}

@@ -21,6 +21,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,9 +50,12 @@ const (
 	openAIChatGPTConversationPrepareURL = "https://chatgpt.com/backend-api/f/conversation/prepare"
 	openAIChatGPTChatRequirementsURL    = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
 
-	openAIImageBackendUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-	openAIImageRequirementsDiff = "0fffff"
+	openAIImageBackendUserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	openAIImageRequirementsDiff        = "0fffff"
+	openAIImageConversationPollTimeout = 180 * time.Second
 )
+
+var openAIRealImageFileIDRe = regexp.MustCompile(`\bfile_00000000[a-f0-9]{24}\b`)
 
 type OpenAIImagesCapability string
 
@@ -1120,7 +1124,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	parentMessageID := uuid.NewString()
 	proofToken := generateOpenAIProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
 	_ = initializeOpenAIImageConversation(ctx, client, headers)
-	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parentMessageID, chatReqs.Token, proofToken)
+	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parsed.Model, parentMessageID, chatReqs.Token, proofToken)
 	if err != nil {
 		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
 	}
@@ -1382,6 +1386,7 @@ func prepareOpenAIImageConversation(
 	client *req.Client,
 	headers http.Header,
 	prompt string,
+	model string,
 	parentMessageID string,
 	chatToken string,
 	proofToken string,
@@ -1392,7 +1397,7 @@ func prepareOpenAIImageConversation(
 		"client_prepare_state":  "success",
 		"fork_from_shared_post": false,
 		"parent_message_id":     parentMessageID,
-		"model":                 "auto",
+		"model":                 openAIImageBackendModelSlug(model),
 		"timezone_offset_min":   openAITimezoneOffsetMinutes(),
 		"timezone":              openAITimezoneName(),
 		"conversation_mode":     map[string]any{"kind": "primary_assistant"},
@@ -1436,6 +1441,15 @@ func prepareOpenAIImageConversation(
 		return "", newOpenAIImageStatusError(resp, "conversation prepare failed")
 	}
 	return strings.TrimSpace(result.ConduitToken), nil
+}
+
+func openAIImageBackendModelSlug(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-image-2":
+		return "gpt-5-3"
+	default:
+		return "auto"
+	}
 }
 
 type openAIUploadedImage struct {
@@ -1603,7 +1617,7 @@ func buildOpenAIImageConversationRequest(parsed *OpenAIImagesRequest, parentMess
 		"action":                               "next",
 		"client_prepare_state":                 "sent",
 		"parent_message_id":                    parentMessageID,
-		"model":                                "auto",
+		"model":                                openAIImageBackendModelSlug(parsed.Model),
 		"timezone_offset_min":                  openAITimezoneOffsetMinutes(),
 		"timezone":                             openAITimezoneName(),
 		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
@@ -1736,6 +1750,14 @@ func openAIImagePointerMatches(body []byte) []string {
 	return dedupeStrings(matches)
 }
 
+func openAIImagePointerMatchesAllowBare(body []byte) []string {
+	matches := openAIImagePointerMatches(body)
+	for _, fileID := range openAIRealImageFileIDRe.FindAllString(string(body), -1) {
+		matches = append(matches, "file-service://"+fileID)
+	}
+	return dedupeStrings(matches)
+}
+
 func mergeOpenAIImagePointerInfos(existing []openAIImagePointerInfo, next []openAIImagePointerInfo) []openAIImagePointerInfo {
 	if len(next) == 0 {
 		return existing
@@ -1826,59 +1848,89 @@ func extractOpenAIImageToolMessages(mapping map[string]any) []openAIImageToolMes
 			continue
 		}
 		author, _ := message["author"].(map[string]any)
+		if author == nil {
+			continue
+		}
+		role, _ := author["role"].(string)
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role != "tool" && role != "assistant" {
+			continue
+		}
 		metadata, _ := message["metadata"].(map[string]any)
 		content, _ := message["content"].(map[string]any)
-		if author == nil || metadata == nil || content == nil {
+		if content == nil {
 			continue
 		}
-		if role, _ := author["role"].(string); role != "tool" {
-			continue
-		}
-		if asyncTaskType, _ := metadata["async_task_type"].(string); asyncTaskType != "image_gen" {
-			continue
-		}
-		if contentType, _ := content["content_type"].(string); contentType != "multimodal_text" {
-			continue
-		}
+
 		prompt := ""
 		if title, _ := metadata["image_gen_title"].(string); strings.TrimSpace(title) != "" {
 			prompt = strings.TrimSpace(title)
+		} else if dalle, _ := metadata["dalle"].(map[string]any); dalle != nil {
+			prompt, _ = dalle["prompt"].(string)
+			prompt = strings.TrimSpace(prompt)
 		}
+
+		var pointerInfos []openAIImagePointerInfo
+		switch role {
+		case "tool":
+			if asyncTaskType, _ := metadata["async_task_type"].(string); asyncTaskType != "image_gen" {
+				continue
+			}
+			if contentType, _ := content["content_type"].(string); contentType != "multimodal_text" {
+				continue
+			}
+			pointerInfos = extractOpenAIImageOutputPointersFromContent(content, prompt, true)
+		case "assistant":
+			pointerInfos = extractOpenAIImageOutputPointersFromContent(content, prompt, false)
+		}
+		if len(pointerInfos) == 0 {
+			continue
+		}
+
 		item := openAIImageToolMessage{MessageID: messageID}
 		if createTime, ok := message["create_time"].(float64); ok {
 			item.CreateTime = createTime
 		}
-		parts, _ := content["parts"].([]any)
-		for _, part := range parts {
-			switch value := part.(type) {
-			case map[string]any:
-				if assetPointer, _ := value["asset_pointer"].(string); strings.TrimSpace(assetPointer) != "" {
-					for _, pointer := range openAIImagePointerMatches([]byte(assetPointer)) {
-						item.PointerInfos = append(item.PointerInfos, openAIImagePointerInfo{
-							Pointer: pointer,
-							Prompt:  prompt,
-						})
-					}
-				}
-			case string:
-				for _, pointer := range openAIImagePointerMatches([]byte(value)) {
-					item.PointerInfos = append(item.PointerInfos, openAIImagePointerInfo{
-						Pointer: pointer,
-						Prompt:  prompt,
-					})
-				}
-			}
-		}
-		if len(item.PointerInfos) == 0 {
-			continue
-		}
-		item.PointerInfos = mergeOpenAIImagePointerInfos(nil, item.PointerInfos)
+		item.PointerInfos = mergeOpenAIImagePointerInfos(nil, pointerInfos)
 		out = append(out, item)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreateTime < out[j].CreateTime
 	})
 	return out
+}
+
+func extractOpenAIImageOutputPointersFromContent(content map[string]any, prompt string, allowStringParts bool) []openAIImagePointerInfo {
+	parts, _ := content["parts"].([]any)
+	if len(parts) == 0 {
+		return nil
+	}
+	var pointerInfos []openAIImagePointerInfo
+	for _, part := range parts {
+		var matches []string
+		switch value := part.(type) {
+		case map[string]any:
+			assetPointer, _ := value["asset_pointer"].(string)
+			if strings.TrimSpace(assetPointer) == "" {
+				continue
+			}
+			matches = openAIImagePointerMatchesAllowBare([]byte(assetPointer))
+		case string:
+			if !allowStringParts {
+				continue
+			}
+			matches = openAIImagePointerMatchesAllowBare([]byte(value))
+		default:
+			continue
+		}
+		for _, pointer := range matches {
+			pointerInfos = append(pointerInfos, openAIImagePointerInfo{
+				Pointer: pointer,
+				Prompt:  prompt,
+			})
+		}
+	}
+	return mergeOpenAIImagePointerInfos(nil, pointerInfos)
 }
 
 func extractOpenAIImageConversationPointers(body []byte) ([]openAIImagePointerInfo, []openAIImagePointerInfo) {
@@ -1910,7 +1962,7 @@ func pollOpenAIImageConversation(ctx context.Context, client *req.Client, header
 	if conversationID == "" {
 		return nil, nil
 	}
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(openAIImageConversationPollTimeout)
 	interval := 3 * time.Second
 	previewWait := 15 * time.Second
 	var (

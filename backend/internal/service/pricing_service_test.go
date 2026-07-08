@@ -229,6 +229,31 @@ func TestBillingServiceCalculateCost_OpenAIGPTIgnoresCacheCreationCharge(t *test
 	}
 }
 
+func TestBillingServiceCalculateCost_FallsBackCacheReadToInputPriceWhenMissing(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gemini-unknown": {
+				InputCostPerToken:  1e-06,
+				OutputCostPerToken: 2e-06,
+			},
+		},
+	})
+
+	cost, err := svc.CalculateCost("gemini-unknown", UsageTokens{
+		InputTokens:     100,
+		OutputTokens:    10,
+		CacheReadTokens: 30,
+	}, 1.0)
+	if err != nil {
+		t.Fatalf("expected pricing, got error %v", err)
+	}
+
+	wantCacheRead := float64(30) * 1e-06
+	if cost.CacheReadCost != wantCacheRead {
+		t.Fatalf("cache read cost = %v, want %v", cost.CacheReadCost, wantCacheRead)
+	}
+}
+
 func TestParsePricingData_PreservesServiceTierPriorityFields(t *testing.T) {
 	svc := &PricingService{}
 	pricingData, err := svc.parsePricingData([]byte(`{

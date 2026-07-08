@@ -265,11 +265,14 @@ const loadAvailableModels = async () => {
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {
         const preferred =
-          availableModels.value.find((m) => m.id === 'gemini-2.0-flash') ||
+          availableModels.value.find((m) => m.id === 'gemini-3.5-flash') ||
+          availableModels.value.find((m) => m.id === 'gemini-3.1-pro-preview') ||
+          availableModels.value.find((m) => m.id === 'gemini-3.1-flash-lite') ||
           availableModels.value.find((m) => m.id === 'gemini-2.5-flash') ||
           availableModels.value.find((m) => m.id === 'gemini-2.5-pro') ||
           availableModels.value.find((m) => m.id === 'gemini-3-flash-preview') ||
-          availableModels.value.find((m) => m.id === 'gemini-3-pro-preview')
+          availableModels.value.find((m) => m.id === 'gemini-3-pro-preview') ||
+          availableModels.value.find((m) => m.id === 'gemini-2.0-flash')
         selectedModelId.value = preferred?.id || availableModels.value[0].id
       } else if (props.account.platform === 'openai') {
         selectPreferredOpenAIModel()

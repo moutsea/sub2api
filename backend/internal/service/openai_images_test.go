@@ -216,6 +216,77 @@ func TestExtractOpenAIImageConversationPointersPrefersToolOutputs(t *testing.T) 
 	require.Len(t, fallbackPointers, 2)
 }
 
+func TestExtractOpenAIImageConversationPointersAcceptsToolBareImageFileID(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"mapping": map[string]any{
+			"user-msg": map[string]any{
+				"message": map[string]any{
+					"author": map[string]any{"role": "user"},
+					"content": map[string]any{
+						"content_type": "multimodal_text",
+						"parts": []any{
+							map[string]any{
+								"content_type":  "image_asset_pointer",
+								"asset_pointer": "file-service://source-image",
+							},
+						},
+					},
+				},
+			},
+			"tool-msg": map[string]any{
+				"message": map[string]any{
+					"author":      map[string]any{"role": "tool"},
+					"create_time": 124.0,
+					"metadata": map[string]any{
+						"async_task_type": "image_gen",
+						"image_gen_title": "blue cat icon",
+					},
+					"content": map[string]any{
+						"content_type": "multimodal_text",
+						"parts": []any{
+							`file_00000000abcdefabcdefabcdefabcdef`,
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	toolPointers, fallbackPointers := extractOpenAIImageConversationPointers(body)
+	require.Len(t, toolPointers, 1)
+	require.Equal(t, "file-service://file_00000000abcdefabcdefabcdefabcdef", toolPointers[0].Pointer)
+	require.Equal(t, "blue cat icon", toolPointers[0].Prompt)
+	require.Len(t, fallbackPointers, 1)
+}
+
+func TestExtractOpenAIImageConversationPointersIgnoresAssistantReferencedImageIDs(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"mapping": map[string]any{
+			"assistant-msg": map[string]any{
+				"message": map[string]any{
+					"author":      map[string]any{"role": "assistant"},
+					"create_time": 124.0,
+					"metadata": map[string]any{
+						"dalle": map[string]any{"prompt": "blue cat icon"},
+					},
+					"content": map[string]any{
+						"content_type": "text",
+						"parts": []any{
+							`{"referenced_image_ids":["file_00000000abcdefabcdefabcdefabcdef"]}`,
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	toolPointers, fallbackPointers := extractOpenAIImageConversationPointers(body)
+	require.Empty(t, toolPointers)
+	require.Empty(t, fallbackPointers)
+}
+
 func TestExcludeOpenAIUploadedPointerInfos(t *testing.T) {
 	items := []openAIImagePointerInfo{
 		{Pointer: "file-service://source-image"},
@@ -298,7 +369,7 @@ func TestReadOpenAIImageConversationStreamPreservesConversationOnError(t *testin
 }
 
 func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMimeType(t *testing.T) {
-	parsed := &OpenAIImagesRequest{Prompt: "turn the cat blue"}
+	parsed := &OpenAIImagesRequest{Model: "gpt-image-2", Prompt: "turn the cat blue"}
 	uploads := []openAIUploadedImage{
 		{
 			FileID:   "file-123",
@@ -318,8 +389,8 @@ func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMi
 	content, _ := message["content"].(map[string]any)
 	parts, _ := content["parts"].([]any)
 	require.Len(t, parts, 2)
-	require.Equal(t, "turn the cat blue", parts[0])
 
+	require.Equal(t, "turn the cat blue", parts[0])
 	imagePart, _ := parts[1].(map[string]any)
 	require.Equal(t, "image_asset_pointer", imagePart["content_type"])
 	require.Equal(t, "file-service://file-123", imagePart["asset_pointer"])
@@ -337,6 +408,7 @@ func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMi
 		require.False(t, hasCamel)
 		require.EqualValues(t, 1254, attachment["width"])
 		require.EqualValues(t, 1254, attachment["height"])
+		require.Equal(t, "gpt-5-3", req["model"])
 		return
 	}
 
@@ -346,6 +418,13 @@ func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMi
 	require.False(t, hasCamel)
 	require.EqualValues(t, 1254, attachments[0]["width"])
 	require.EqualValues(t, 1254, attachments[0]["height"])
+	require.Equal(t, "gpt-5-3", req["model"])
+}
+
+func TestOpenAIImageBackendModelSlug(t *testing.T) {
+	require.Equal(t, "gpt-5-3", openAIImageBackendModelSlug("gpt-image-2"))
+	require.Equal(t, "auto", openAIImageBackendModelSlug("gpt-image-1"))
+	require.Equal(t, "auto", openAIImageBackendModelSlug(""))
 }
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequestMultipartEditRemainsBasic(t *testing.T) {

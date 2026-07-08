@@ -173,7 +173,7 @@ func estimateCWTransformOverhead(req *ClaudeRequest) int {
 	}
 
 	// History alternation filler messages: fixHistoryAlternation inserts
-	// "Continue" (user) and "I understand." (assistant) messages to ensure
+	// "Continue" (user) and neutral assistant filler messages to ensure
 	// proper user/assistant alternation. Estimate ~6 tokens per filler.
 	// Rough heuristic: check for adjacent same-role message pairs.
 	if len(req.Messages) > 1 {

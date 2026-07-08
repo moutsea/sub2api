@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -138,6 +139,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
+	requestStartedAt := time.Now()
 
 	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
@@ -451,6 +453,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 		// 转发请求 - 根据账号平台分流
 		var result *service.ForwardResult
+		forwardCtx := c.Request.Context()
+		if shouldEnableKiroClaudeOAuthPostFailoverAck(account, reqStream, switchCount) {
+			forwardCtx = service.WithKiroInitialAckTimeout(forwardCtx, kiroClaudeOAuthPostFailoverAckTimeout)
+		}
 		switch account.Platform {
 		case service.PlatformAntigravity:
 			result, err = h.antigravityGatewayService.Forward(c.Request.Context(), c, account, body)
@@ -458,10 +464,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// Parse Claude request for web_search detection
 			claudeReq, parseErr := service.ParseClaudeRequestFromJSON(body)
 			if parseErr != nil {
-				result, err = h.kiroGatewayService.Forward(c.Request.Context(), c, account, body)
+				result, err = h.kiroGatewayService.Forward(forwardCtx, c, account, body)
 			} else {
 				// Use ForwardWithWebSearch for web_search agentic loop support
-				result, err = h.kiroGatewayService.ForwardWithWebSearch(c.Request.Context(), c, account, body, claudeReq)
+				result, err = h.kiroGatewayService.ForwardWithWebSearch(forwardCtx, c, account, body, claudeReq)
 			}
 		case service.PlatformOpenAI:
 			result, err = h.openAIGatewayService.ForwardAsClaudeMessages(c.Request.Context(), c, account, body)
@@ -477,6 +483,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverStatus = failoverErr.StatusCode
 				lastFailoverMsg = failoverErr.Message
+				if !shouldBypassKiroClaudeOAuthClientRetryForAck(account, failoverErr, reqStream) &&
+					shouldStopKiroClaudeOAuthInitialFailover(account, failoverErr, requestStartedAt) {
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionKey)
+					log.Printf("Account %d: kiro initial response failover budget exhausted after %s", account.ID, time.Since(requestStartedAt))
+					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
+					return
+				}
 				// 400 errors: stricter retry limit (likely deterministic, switching rarely helps)
 				if failoverErr.StatusCode == http.StatusBadRequest {
 					badRequestSwitchCount++
@@ -581,6 +594,14 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"object": "list",
 			"data":   openai.DefaultModels,
+		})
+		return
+	}
+
+	if platform == service.PlatformGemini {
+		c.JSON(http.StatusOK, gin.H{
+			"object": "list",
+			"data":   geminicli.DefaultModels,
 		})
 		return
 	}
@@ -705,6 +726,9 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, lastMessage string, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode, lastMessage)
+	if !streamStarted && isKiroInitialResponseTimeoutMessage(lastMessage) {
+		c.Header("Retry-After", kiroClaudeOAuthClientRetryAfterHeader)
+	}
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
@@ -724,7 +748,12 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int, lastMessage string) (i
 		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
 	case 529:
 		return http.StatusServiceUnavailable, "overloaded_error", "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
+	case 504:
+		if isKiroInitialResponseTimeoutMessage(lastMessage) {
+			return http.StatusTooManyRequests, "rate_limit_error", "Kiro upstream initial response timeout, please retry later"
+		}
+		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
+	case 500, 502, 503:
 		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "upstream_error", "Upstream request failed"

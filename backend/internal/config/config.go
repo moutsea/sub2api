@@ -848,6 +848,9 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
 
 	// Gateway
+	// 全局 transport 层等待响应头超时，所有平台共享。Kiro 另有独立的应用层软超时
+	// （kiroOAuthInitialResponseTimeout，默认 60s）赶在 Cloudflare 120s 前主动 failover，
+	// 因此这里保持较大的兜底值，避免误伤 Claude/OpenAI 等长响应头场景。
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
@@ -866,8 +869,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.idle_conn_timeout_seconds", 90) // 空闲连接超时（秒）
 	viper.SetDefault("gateway.max_upstream_clients", 5000)
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
-	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
-	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
+	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30)  // 并发槽位过期时间（支持超长请求）
+	viper.SetDefault("gateway.stream_data_interval_timeout", 180) // 流数据间隔超时，全平台共享；流式 commit 后有 keepalive 顶住代理，无需为 CF 收紧
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.max_line_size", 40*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)

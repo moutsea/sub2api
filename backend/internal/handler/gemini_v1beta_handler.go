@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -110,7 +111,7 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		googleError(c, http.StatusBadGateway, err.Error())
 		return
 	}
-	if shouldFallbackGeminiModels(res) {
+	if shouldFallbackGeminiModel(modelName, res) {
 		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
 		return
 	}
@@ -225,6 +226,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	lastFailoverStatus := 0
+	var sessionBoundAccountID int64
+	if sessionKey != "" {
+		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
+	}
+	cleanedForUnknownBinding := false
 
 	for {
 		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, modelName, failedAccountIDs, "") // Gemini 不使用会话限制
@@ -243,6 +249,19 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID)
+
+		// Gemini native thoughtSignature is tied to the upstream account. If this
+		// request fails over to another account, replace old signatures before retry.
+		if sessionBoundAccountID > 0 && sessionBoundAccountID != account.ID {
+			body = service.CleanGeminiNativeThoughtSignatures(body)
+			sessionBoundAccountID = account.ID
+		} else if sessionKey != "" && sessionBoundAccountID == 0 && !cleanedForUnknownBinding && bytes.Contains(body, []byte(`"thoughtSignature"`)) {
+			body = service.CleanGeminiNativeThoughtSignatures(body)
+			cleanedForUnknownBinding = true
+			sessionBoundAccountID = account.ID
+		} else if sessionBoundAccountID == 0 {
+			sessionBoundAccountID = account.ID
+		}
 
 		// 4) account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc
@@ -444,4 +463,14 @@ func shouldFallbackGeminiModels(res *service.UpstreamHTTPResult) bool {
 		return true
 	}
 	return false
+}
+
+func shouldFallbackGeminiModel(modelName string, res *service.UpstreamHTTPResult) bool {
+	if shouldFallbackGeminiModels(res) {
+		return true
+	}
+	if res == nil || res.StatusCode != http.StatusNotFound {
+		return false
+	}
+	return gemini.HasFallbackModel(modelName)
 }

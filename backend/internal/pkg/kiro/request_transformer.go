@@ -15,6 +15,8 @@ const (
 	MaxFunctionTools       = 50  // Max number of function tools
 	ToolDocThresholdLength = 500 // Threshold for moving description to system prompt
 	jsonSchemaDraft07      = "http://json-schema.org/draft-07/schema#"
+
+	historyAssistantFillerContent = "."
 )
 
 // normalizeJSONSchema fixes common type issues in MCP tool JSON schemas.
@@ -1160,7 +1162,7 @@ func cleanOrphanToolUses(history []HistoryEntry, currentMsg *UnifiedMessage) []H
 			entry.Assistant.ToolUses = nil
 			// Backfill empty content to avoid sending {"content":""} without tool_uses
 			if entry.Assistant.Content == "" {
-				entry.Assistant.Content = "I understand."
+				entry.Assistant.Content = historyAssistantFillerContent
 			}
 		} else {
 			entry.Assistant.ToolUses = filtered
@@ -1252,12 +1254,12 @@ func fixHistoryAlternation(ctx *TransformContext, history []HistoryEntry) []Hist
 
 		if lastRole != "" && lastRole == currentRole {
 			if currentRole == "user" {
-				// Insert "I understand." assistant message
+				// Insert a neutral assistant filler message
 				fixed = append(fixed, HistoryEntry{
 					MessageID: fmt.Sprintf("msg-%03d", ctx.NextMsgID()),
 					Type:      "assistant",
 					Assistant: &HistoryAssistantMessage{
-						Content: "I understand.",
+						Content: historyAssistantFillerContent,
 					},
 				})
 			} else if currentRole == "assistant" {
@@ -1286,7 +1288,7 @@ func fixHistoryAlternation(ctx *TransformContext, history []HistoryEntry) []Hist
 				MessageID: fmt.Sprintf("msg-%03d", ctx.NextMsgID()),
 				Type:      "assistant",
 				Assistant: &HistoryAssistantMessage{
-					Content: "I understand.",
+					Content: historyAssistantFillerContent,
 				},
 			})
 		}

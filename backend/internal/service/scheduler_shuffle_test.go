@@ -98,6 +98,84 @@ func TestShuffleWithinSortGroups_MixedGroups(t *testing.T) {
 	}
 }
 
+func TestSortAccountWithLoadCandidates_KiroCreditsWeightedRandom(t *testing.T) {
+	usageCache := NewUsageCache()
+	usageCache.StoreKiroCredits(1, &KiroCreditsInfo{AvailableCredits: 100})
+	usageCache.StoreKiroCredits(2, &KiroCreditsInfo{AvailableCredits: 1})
+	svc := &GatewayService{usageCache: usageCache}
+
+	highCreditFirst := 0
+	lowCreditFirst := 0
+	for i := 0; i < 2000; i++ {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Platform: PlatformKiro, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+			{account: &Account{ID: 2, Platform: PlatformKiro, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+		}
+		svc.sortAccountWithLoadCandidates(accounts, false)
+		switch accounts[0].account.ID {
+		case 1:
+			highCreditFirst++
+		case 2:
+			lowCreditFirst++
+		}
+	}
+	if highCreditFirst <= lowCreditFirst {
+		t.Fatalf("high-credit account should be selected more often, high=%d low=%d", highCreditFirst, lowCreditFirst)
+	}
+	if lowCreditFirst == 0 {
+		t.Fatalf("low-credit account should still have a small chance to be first, high=%d low=%d", highCreditFirst, lowCreditFirst)
+	}
+}
+
+func TestSortAccountWithLoadCandidates_PriorityAndLoadRemainHardBoundaries(t *testing.T) {
+	usageCache := NewUsageCache()
+	usageCache.StoreKiroCredits(1, &KiroCreditsInfo{AvailableCredits: 1})
+	usageCache.StoreKiroCredits(2, &KiroCreditsInfo{AvailableCredits: 1000})
+	usageCache.StoreKiroCredits(3, &KiroCreditsInfo{AvailableCredits: 1000})
+	svc := &GatewayService{usageCache: usageCache}
+
+	for i := 0; i < 200; i++ {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Platform: PlatformKiro, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: &Account{ID: 2, Platform: PlatformKiro, Priority: 2}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: &Account{ID: 3, Platform: PlatformKiro, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
+		}
+		svc.sortAccountWithLoadCandidates(accounts, false)
+		if accounts[0].account.ID != 1 {
+			t.Fatalf("priority/load should outrank credits, got first account %d", accounts[0].account.ID)
+		}
+	}
+}
+
+func TestOpenAISortAccountWithLoadCandidates_KiroCreditsWeightedRandom(t *testing.T) {
+	usageCache := NewUsageCache()
+	usageCache.StoreKiroCredits(1, &KiroCreditsInfo{AvailableCredits: 100})
+	usageCache.StoreKiroCredits(2, &KiroCreditsInfo{AvailableCredits: 1})
+	svc := &OpenAIGatewayService{usageCache: usageCache}
+
+	highCreditFirst := 0
+	lowCreditFirst := 0
+	for i := 0; i < 2000; i++ {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Platform: PlatformKiro, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+			{account: &Account{ID: 2, Platform: PlatformKiro, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+		}
+		svc.sortOpenAIAccountWithLoadCandidates(accounts)
+		switch accounts[0].account.ID {
+		case 1:
+			highCreditFirst++
+		case 2:
+			lowCreditFirst++
+		}
+	}
+	if highCreditFirst <= lowCreditFirst {
+		t.Fatalf("high-credit account should be selected more often, high=%d low=%d", highCreditFirst, lowCreditFirst)
+	}
+	if lowCreditFirst == 0 {
+		t.Fatalf("low-credit account should still have a small chance to be first, high=%d low=%d", highCreditFirst, lowCreditFirst)
+	}
+}
+
 func TestShuffleWithinPriorityAndLastUsed_SameGroupShuffles(t *testing.T) {
 	sawDifferentOrder := false
 	for i := 0; i < 200; i++ {

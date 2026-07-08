@@ -109,7 +109,7 @@ security:
 # =============================================================================
 gateway:
   # Timeout for waiting upstream response headers (seconds)
-  # 等待上游响应头超时时间（秒）
+  # 等待上游响应头超时时间（秒）。全平台共享；Kiro 另有独立 60s 应用层软超时兜底 Cloudflare
   response_header_timeout: 600
   # Max request body size in bytes (default: 100MB)
   # 请求体最大字节数（默认 100MB）

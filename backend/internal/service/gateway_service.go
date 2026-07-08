@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	mathrand "math/rand"
 	"net/http"
 	"os"
@@ -336,6 +337,23 @@ func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, 
 		return nil
 	}
 	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
+}
+
+// GetCachedSessionAccountID returns the sticky account currently bound to a session.
+func (s *GatewayService) GetCachedSessionAccountID(ctx context.Context, groupID *int64, sessionHash string) (int64, error) {
+	if sessionHash == "" || s.cache == nil {
+		return 0, nil
+	}
+	return s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+}
+
+// InvalidateStickySession removes the sticky session binding so the next
+// request with the same session hash will not be pinned to a failed account.
+func (s *GatewayService) InvalidateStickySession(ctx context.Context, groupID *int64, sessionHash string) {
+	if sessionHash == "" || s.cache == nil {
+		return
+	}
+	_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 }
 
 func (s *GatewayService) extractCacheableContent(parsed *ParsedRequest) string {
@@ -777,50 +795,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
-				// 排序：优先级 > 负载率 > [Kiro积分余额] > 重置时间（临近重置优先） > 最后使用时间
-				sort.SliceStable(routingAvailable, func(i, j int) bool {
-					a, b := routingAvailable[i], routingAvailable[j]
-					if a.account.Priority != b.account.Priority {
-						return a.account.Priority < b.account.Priority
-					}
-					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-					}
-					// Kiro 账号优先使用积分余额较多的（负载均衡）
-					if a.account.IsKiro() && b.account.IsKiro() {
-						aCredits := s.getKiroAvailableCredits(a.account.ID)
-						bCredits := s.getKiroAvailableCredits(b.account.ID)
-						// 如果两个账号都有积分信息，优先选择积分多的
-						if aCredits >= 0 && bCredits >= 0 && aCredits != bCredits {
-							return aCredits > bCredits // 积分多的优先
-						}
-					}
-					// 重置时间比较：临近重置的账号优先使用
-					aReset := s.getAccountResetTime(a.account.ID)
-					bReset := s.getAccountResetTime(b.account.ID)
-					switch {
-					case aReset != nil && bReset != nil:
-						if !aReset.Equal(*bReset) {
-							return aReset.Before(*bReset) // 更早重置的优先
-						}
-					case aReset != nil && bReset == nil:
-						return true // 有重置时间的优先
-					case aReset == nil && bReset != nil:
-						return false
-					}
-					// 最后使用时间比较
-					switch {
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-						return true
-					case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-						return false
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-						return false
-					default:
-						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-					}
-				})
-				shuffleWithinSortGroups(routingAvailable)
+				// 排序：优先级 > 负载率 > [Kiro积分加权随机] > 重置时间（临近重置优先） > 最后使用时间
+				s.sortAccountWithLoadCandidates(routingAvailable, false)
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -987,52 +963,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 
 		if len(available) > 0 {
-			sort.SliceStable(available, func(i, j int) bool {
-				a, b := available[i], available[j]
-				if a.account.Priority != b.account.Priority {
-					return a.account.Priority < b.account.Priority
-				}
-				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-				}
-				// Kiro 账号优先使用积分余额较多的（负载均衡）
-				if a.account.IsKiro() && b.account.IsKiro() {
-					aCredits := s.getKiroAvailableCredits(a.account.ID)
-					bCredits := s.getKiroAvailableCredits(b.account.ID)
-					// 如果两个账号都有积分信息，优先选择积分多的
-					if aCredits >= 0 && bCredits >= 0 && aCredits != bCredits {
-						return aCredits > bCredits // 积分多的优先
-					}
-				}
-				// 重置时间比较：临近重置的账号优先使用
-				aReset := s.getAccountResetTime(a.account.ID)
-				bReset := s.getAccountResetTime(b.account.ID)
-				switch {
-				case aReset != nil && bReset != nil:
-					if !aReset.Equal(*bReset) {
-						return aReset.Before(*bReset) // 更早重置的优先
-					}
-				case aReset != nil && bReset == nil:
-					return true // 有重置时间的优先
-				case aReset == nil && bReset != nil:
-					return false
-				}
-				// 最后使用时间比较
-				switch {
-				case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-					return true
-				case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-					return false
-				case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-					if preferOAuth && a.account.Type != b.account.Type {
-						return a.account.Type == AccountTypeOAuth
-					}
-					return false
-				default:
-					return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-				}
-			})
-			shuffleWithinSortGroups(available)
+			s.sortAccountWithLoadCandidates(available, preferOAuth)
 
 			for _, item := range available {
 				result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
@@ -1459,6 +1390,160 @@ func (s *GatewayService) sortAccountsByPriorityAndLastUsed(accounts []*Account, 
 		}
 	})
 	shuffleWithinPriorityAndLastUsed(accounts)
+}
+
+func (s *GatewayService) sortAccountWithLoadCandidates(accounts []accountWithLoad, preferOAuth bool) {
+	if len(accounts) <= 1 {
+		return
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+	})
+
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && samePriorityLoadGroup(accounts[i], accounts[j]) {
+			j++
+		}
+		s.orderEqualPriorityLoadGroup(accounts[i:j], preferOAuth)
+		i = j
+	}
+}
+
+func samePriorityLoadGroup(a, b accountWithLoad) bool {
+	if a.account.Priority != b.account.Priority {
+		return false
+	}
+	return a.loadInfo.LoadRate == b.loadInfo.LoadRate
+}
+
+func (s *GatewayService) orderEqualPriorityLoadGroup(accounts []accountWithLoad, preferOAuth bool) {
+	if len(accounts) <= 1 {
+		return
+	}
+	if s.weightedShuffleKiroCreditGroup(accounts) {
+		return
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		return s.accountResetAndLastUsedLess(accounts[i].account, accounts[j].account, preferOAuth)
+	})
+	s.shuffleWithinResetAndLastUsedGroups(accounts)
+}
+
+func (s *GatewayService) weightedShuffleKiroCreditGroup(accounts []accountWithLoad) bool {
+	if len(accounts) <= 1 {
+		return false
+	}
+	credits := make([]float64, len(accounts))
+	creditsDiffer := false
+	for i, item := range accounts {
+		if item.account == nil || !item.account.IsKiro() {
+			return false
+		}
+		credit := s.getKiroAvailableCredits(item.account.ID)
+		if credit < 0 {
+			return false
+		}
+		if i > 0 && credit != credits[0] {
+			creditsDiffer = true
+		}
+		credits[i] = credit
+	}
+	if !creditsDiffer {
+		return false
+	}
+
+	type weightedItem struct {
+		item accountWithLoad
+		key  float64
+	}
+	weighted := make([]weightedItem, len(accounts))
+	for i, item := range accounts {
+		weight := credits[i]
+		if weight < 1 {
+			weight = 1
+		}
+		u := mathrand.Float64()
+		if u <= 0 {
+			u = math.SmallestNonzeroFloat64
+		}
+		weighted[i] = weightedItem{
+			item: item,
+			key:  -math.Log(u) / weight,
+		}
+	}
+	sort.Slice(weighted, func(i, j int) bool {
+		return weighted[i].key < weighted[j].key
+	})
+	for i := range weighted {
+		accounts[i] = weighted[i].item
+	}
+	return true
+}
+
+func (s *GatewayService) accountResetAndLastUsedLess(a, b *Account, preferOAuth bool) bool {
+	aReset := s.getAccountResetTime(a.ID)
+	bReset := s.getAccountResetTime(b.ID)
+	switch {
+	case aReset != nil && bReset != nil:
+		if !aReset.Equal(*bReset) {
+			return aReset.Before(*bReset)
+		}
+	case aReset != nil && bReset == nil:
+		return true
+	case aReset == nil && bReset != nil:
+		return false
+	}
+	switch {
+	case a.LastUsedAt == nil && b.LastUsedAt != nil:
+		return true
+	case a.LastUsedAt != nil && b.LastUsedAt == nil:
+		return false
+	case a.LastUsedAt == nil && b.LastUsedAt == nil:
+		if preferOAuth && a.Type != b.Type {
+			return a.Type == AccountTypeOAuth
+		}
+		return false
+	default:
+		return a.LastUsedAt.Before(*b.LastUsedAt)
+	}
+}
+
+func (s *GatewayService) shuffleWithinResetAndLastUsedGroups(accounts []accountWithLoad) {
+	if len(accounts) <= 1 {
+		return
+	}
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && s.sameResetAndLastUsedGroup(accounts[i].account, accounts[j].account) {
+			j++
+		}
+		if j-i > 1 {
+			mathrand.Shuffle(j-i, func(a, b int) {
+				accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
+			})
+		}
+		i = j
+	}
+}
+
+func (s *GatewayService) sameResetAndLastUsedGroup(a, b *Account) bool {
+	aReset := s.getAccountResetTime(a.ID)
+	bReset := s.getAccountResetTime(b.ID)
+	switch {
+	case aReset == nil && bReset == nil:
+	case aReset == nil || bReset == nil:
+		return false
+	case !aReset.Equal(*bReset):
+		return false
+	}
+	return sameLastUsedAt(a.LastUsedAt, b.LastUsedAt)
 }
 
 // shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。

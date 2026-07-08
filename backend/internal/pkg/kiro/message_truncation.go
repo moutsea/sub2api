@@ -585,7 +585,7 @@ func DeduplicateToolUseIDsInClaudeMessages(messages []ClaudeMessage) bool {
 			modified = true
 			if len(newContent) == 0 {
 				// Backfill empty content to avoid sending message with no content blocks
-				newContent = []any{map[string]any{"type": "text", "text": "I understand."}}
+				newContent = []any{map[string]any{"type": "text", "text": historyAssistantFillerContent}}
 			}
 			messages[i].Content = newContent
 		}
@@ -693,7 +693,7 @@ func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) bool {
 			modified = true
 			if len(newContent) == 0 {
 				// Backfill empty content to avoid sending message with no content blocks
-				newContent = []any{map[string]any{"type": "text", "text": "I understand."}}
+				newContent = []any{map[string]any{"type": "text", "text": historyAssistantFillerContent}}
 			}
 			messages[i].Content = newContent
 		}

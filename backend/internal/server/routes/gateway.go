@@ -41,6 +41,10 @@ func RegisterGatewayRoutes(
 		// OpenAI Images API
 		gateway.POST("/images/generations", h.OpenAIGateway.Images)
 		gateway.POST("/images/edits", h.OpenAIGateway.Images)
+		// Image preview async jobs (used by the web UI to avoid Cloudflare 524 on slow image generation)
+		gateway.POST("/image-preview/jobs", h.OpenAIGateway.CreateImagePreviewJob)
+		gateway.GET("/image-preview/jobs/:id", h.OpenAIGateway.GetImagePreviewJob)
+		gateway.DELETE("/image-preview/jobs/:id", h.OpenAIGateway.CancelImagePreviewJob)
 	}
 
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）

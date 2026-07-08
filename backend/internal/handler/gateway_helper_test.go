@@ -3,12 +3,15 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 )
 
 // TestWrapReleaseOnDone_NoGoroutineLeak 验证 wrapReleaseOnDone 修复后不会泄露 goroutine
@@ -101,6 +104,150 @@ func TestApplyKiroOpus47GroupDowngrade_ReturnsErrorForInvalidJSON(t *testing.T) 
 	}
 	if downgraded {
 		t.Fatal("invalid JSON must not be reported as downgraded")
+	}
+}
+
+func TestShouldStopKiroOAuthInitialFailoverBudget(t *testing.T) {
+	account := &service.Account{Platform: service.PlatformKiro}
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Message:    "kiro_initial_response_timeout:first_renderable_event",
+	}
+
+	if shouldStopKiroOAuthInitialFailover(account, failoverErr, time.Now().Add(-50*time.Second)) {
+		t.Fatal("should allow another retry when enough budget remains")
+	}
+	if !shouldStopKiroOAuthInitialFailover(account, failoverErr, time.Now().Add(-70*time.Second)) {
+		t.Fatal("should stop when remaining budget is below next-attempt buffer")
+	}
+	if !shouldStopKiroOAuthInitialFailover(account, failoverErr, time.Now().Add(-110*time.Second)) {
+		t.Fatal("should stop when total budget is exhausted")
+	}
+}
+
+func TestShouldStopKiroClaudeOAuthInitialFailoverBudget(t *testing.T) {
+	account := &service.Account{Platform: service.PlatformKiro}
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Message:    "kiro_initial_response_timeout:first_renderable_event",
+	}
+
+	if shouldStopKiroClaudeOAuthInitialFailover(account, failoverErr, time.Now().Add(-42*time.Second)) {
+		t.Fatal("should allow a second Kiro OAuth attempt when enough 80s budget remains")
+	}
+	if !shouldStopKiroClaudeOAuthInitialFailover(account, failoverErr, time.Now().Add(-50*time.Second)) {
+		t.Fatal("should stop when another Kiro OAuth attempt would exceed the 80s client retry deadline")
+	}
+	if !shouldStopKiroClaudeOAuthInitialFailover(account, failoverErr, time.Now().Add(-85*time.Second)) {
+		t.Fatal("should stop when the 80s client retry deadline is exhausted")
+	}
+}
+
+func TestShouldStopKiroOAuthInitialFailoverScope(t *testing.T) {
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Message:    "kiro_initial_response_timeout:first_renderable_event",
+	}
+	startedAt := time.Now().Add(-110 * time.Second)
+
+	if shouldStopKiroOAuthInitialFailover(&service.Account{Platform: service.PlatformAnthropic}, failoverErr, startedAt) {
+		t.Fatal("non-Kiro account should not use Kiro budget")
+	}
+	if shouldStopKiroOAuthInitialFailover(&service.Account{
+		Platform: service.PlatformKiro,
+		Credentials: map[string]any{
+			"auth_type": service.KiroAuthMethodAPIKey,
+		},
+	}, failoverErr, startedAt) {
+		t.Fatal("Kiro API key account should not use OAuth budget")
+	}
+	if shouldStopKiroOAuthInitialFailover(&service.Account{Platform: service.PlatformKiro}, &service.UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Message:    "other_timeout",
+	}, startedAt) {
+		t.Fatal("non-initial-response timeout should not use Kiro budget")
+	}
+}
+
+func TestShouldEnableKiroClaudeOAuthPostFailoverAck(t *testing.T) {
+	kiroOAuth := &service.Account{Platform: service.PlatformKiro}
+	kiroAPIKey := &service.Account{
+		Platform: service.PlatformKiro,
+		Credentials: map[string]any{
+			"auth_type": service.KiroAuthMethodAPIKey,
+		},
+	}
+
+	if shouldEnableKiroClaudeOAuthPostFailoverAck(kiroOAuth, true, 0) {
+		t.Fatal("first Kiro OAuth attempt should not ACK before failover")
+	}
+	if !shouldEnableKiroClaudeOAuthPostFailoverAck(kiroOAuth, true, 1) {
+		t.Fatal("post-failover Kiro OAuth stream should enable ACK")
+	}
+	if shouldEnableKiroClaudeOAuthPostFailoverAck(kiroOAuth, false, 1) {
+		t.Fatal("non-streaming requests should not enable ACK")
+	}
+	if shouldEnableKiroClaudeOAuthPostFailoverAck(kiroAPIKey, true, 1) {
+		t.Fatal("Kiro API key accounts should not enable OAuth ACK")
+	}
+	if shouldEnableKiroClaudeOAuthPostFailoverAck(&service.Account{Platform: service.PlatformAnthropic}, true, 1) {
+		t.Fatal("non-Kiro accounts should not enable ACK")
+	}
+}
+
+func TestShouldBypassKiroClaudeOAuthClientRetryForAck(t *testing.T) {
+	kiroOAuth := &service.Account{Platform: service.PlatformKiro}
+	timeoutErr := &service.UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Message:    "kiro_initial_response_timeout:first_renderable_event",
+	}
+
+	if !shouldBypassKiroClaudeOAuthClientRetryForAck(kiroOAuth, timeoutErr, true) {
+		t.Fatal("streaming Kiro OAuth initial timeout should bypass 80s client retry cutoff")
+	}
+	if shouldBypassKiroClaudeOAuthClientRetryForAck(kiroOAuth, timeoutErr, false) {
+		t.Fatal("non-streaming Kiro OAuth initial timeout should keep client retry cutoff")
+	}
+	if shouldBypassKiroClaudeOAuthClientRetryForAck(&service.Account{Platform: service.PlatformAnthropic}, timeoutErr, true) {
+		t.Fatal("non-Kiro accounts should not bypass client retry cutoff")
+	}
+	if shouldBypassKiroClaudeOAuthClientRetryForAck(kiroOAuth, &service.UpstreamFailoverError{
+		StatusCode: http.StatusBadGateway,
+		Message:    "kiro_empty_stream",
+	}, true) {
+		t.Fatal("non-initial-timeout failover should not bypass client retry cutoff")
+	}
+}
+
+func TestGatewayFailoverExhaustedReturnsRetryableRateLimitForKiroInitialTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	handler := &GatewayHandler{}
+	handler.handleFailoverExhausted(c, http.StatusGatewayTimeout, "kiro_initial_response_timeout:first_renderable_event", false)
+
+	if got := recorder.Code; got != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != kiroClaudeOAuthClientRetryAfterHeader {
+		t.Fatalf("Retry-After = %q, want %q", got, kiroClaudeOAuthClientRetryAfterHeader)
+	}
+}
+
+func TestOpenAIGatewayFailoverExhaustedReturnsRetryableRateLimitForKiroInitialTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	handler := &OpenAIGatewayHandler{}
+	handler.handleFailoverExhausted(c, http.StatusGatewayTimeout, "kiro_initial_response_timeout:first_renderable_event", false)
+
+	if got := recorder.Code; got != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != kiroClaudeOAuthClientRetryAfterHeader {
+		t.Fatalf("Retry-After = %q, want %q", got, kiroClaudeOAuthClientRetryAfterHeader)
 	}
 }
 
