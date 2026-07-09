@@ -210,6 +210,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			accountReleaseFunc()
 		}
 		if err != nil {
+			if c.Writer.Written() {
+				log.Printf("Account %d: ForwardImages failed after response committed: %v", account.ID, err)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}

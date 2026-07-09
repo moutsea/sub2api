@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,9 @@ const (
 	imagePreviewJobTimeout = 10 * time.Minute
 	imagePreviewJobTTL     = 30 * time.Minute
 	imagePreviewJobMaxSize = 200
+
+	imagePreviewJobGenerationsEndpoint = "/v1/images/generations"
+	imagePreviewJobEditsEndpoint       = "/v1/images/edits"
 )
 
 type imagePreviewJobStatus string
@@ -201,6 +205,11 @@ func (h *OpenAIGatewayHandler) CreateImagePreviewJob(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	endpoint, ok := imagePreviewJobEndpointFromRequest(c)
+	if !ok {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unsupported image preview endpoint")
+		return
+	}
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	userRole, _ := middleware2.GetUserRoleFromContext(c)
@@ -209,7 +218,7 @@ func (h *OpenAIGatewayHandler) CreateImagePreviewJob(c *gin.Context) {
 
 	headers := c.Request.Header.Clone()
 	remoteAddr := c.Request.RemoteAddr
-	go h.runImagePreviewJob(job.ID, body, headers, remoteAddr, apiKey, subject, subscription, userRole)
+	go h.runImagePreviewJob(job.ID, endpoint, body, headers, remoteAddr, apiKey, subject, subscription, userRole)
 
 	c.JSON(http.StatusAccepted, snapshot)
 }
@@ -257,6 +266,7 @@ func (h *OpenAIGatewayHandler) authorizedImagePreviewJob(c *gin.Context) (*image
 
 func (h *OpenAIGatewayHandler) runImagePreviewJob(
 	jobID string,
+	endpoint string,
 	body []byte,
 	headers http.Header,
 	remoteAddr string,
@@ -293,9 +303,15 @@ func (h *OpenAIGatewayHandler) runImagePreviewJob(
 
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body)).WithContext(ctx)
+	endpoint, ok := normalizeImagePreviewJobEndpoint(endpoint)
+	if !ok {
+		endpoint = imagePreviewJobGenerationsEndpoint
+	}
+	req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body)).WithContext(ctx)
 	req.Header = headers.Clone()
-	req.Header.Set("Content-Type", "application/json")
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.RemoteAddr = remoteAddr
 	if apiKey != nil && apiKey.Group != nil {
 		req = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, apiKey.Group))
@@ -309,6 +325,7 @@ func (h *OpenAIGatewayHandler) runImagePreviewJob(
 	if subscription != nil {
 		ginCtx.Set(string(middleware2.ContextKeySubscription), subscription)
 	}
+	ginCtx.Set(service.OpenAIImagesDisableJSONHeartbeatContextKey, true)
 
 	h.Images(ginCtx)
 
@@ -372,6 +389,32 @@ func (h *OpenAIGatewayHandler) runImagePreviewJob(
 			job.Error = http.StatusText(statusCode)
 		}
 	})
+}
+
+func normalizeImagePreviewJobEndpoint(endpoint string) (string, bool) {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	switch endpoint {
+	case "", "generations", "/images/generations", imagePreviewJobGenerationsEndpoint:
+		return imagePreviewJobGenerationsEndpoint, true
+	case "edits", "/images/edits", imagePreviewJobEditsEndpoint:
+		return imagePreviewJobEditsEndpoint, true
+	default:
+		return "", false
+	}
+}
+
+func imagePreviewJobEndpointFromRequest(c *gin.Context) (string, bool) {
+	endpoint := ""
+	if c != nil {
+		endpoint = c.Query("endpoint")
+		if endpoint == "" {
+			endpoint = c.GetHeader("X-Image-Preview-Endpoint")
+		}
+		if endpoint == "" && strings.Contains(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+			endpoint = imagePreviewJobEditsEndpoint
+		}
+	}
+	return normalizeImagePreviewJobEndpoint(endpoint)
 }
 
 func extractImagePreviewJobError(body []byte) string {

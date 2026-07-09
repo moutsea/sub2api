@@ -30,29 +30,6 @@ const (
 	kiroRetryMaxDelay  = 16 * time.Second
 )
 
-type kiroInitialAckTimeoutContextKey struct{}
-
-// WithKiroInitialAckTimeout allows callers to commit a Claude SSE response before
-// the first renderable Kiro event. It is intended for post-account-failover
-// requests where returning another pre-commit timeout would risk Cloudflare 524.
-func WithKiroInitialAckTimeout(ctx context.Context, timeout time.Duration) context.Context {
-	if ctx == nil || timeout <= 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, kiroInitialAckTimeoutContextKey{}, timeout)
-}
-
-func kiroInitialAckTimeoutFromContext(ctx context.Context) time.Duration {
-	if ctx == nil {
-		return 0
-	}
-	timeout, _ := ctx.Value(kiroInitialAckTimeoutContextKey{}).(time.Duration)
-	if timeout < 0 {
-		return 0
-	}
-	return timeout
-}
-
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
 type kiroEndpointConfig struct {
 	URL       string // Full endpoint URL
@@ -295,12 +272,6 @@ func (d *kiroInitialDeadline) streamOptions() kiroStreamOptions {
 		return kiroStreamOptions{}
 	}
 	return kiroStreamOptions{initialResponseTimeout: d.remaining()}
-}
-
-func kiroStreamOptionsFromContext(ctx context.Context, deadline *kiroInitialDeadline) kiroStreamOptions {
-	opts := deadline.streamOptions()
-	opts.initialAckTimeout = kiroInitialAckTimeoutFromContext(ctx)
-	return opts
 }
 
 func attachKiroInitialDeadline(resp *http.Response, deadline *kiroInitialDeadline) *kiroInitialDeadline {
@@ -1088,7 +1059,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					cacheReadTokens,
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
-					kiroStreamOptionsFromContext(ctx, respDeadline),
+					respDeadline.streamOptions(),
 				)
 				if err != nil {
 					if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
@@ -1121,7 +1092,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					cacheReadTokens,
 					cacheEstimation.MeetsCacheThreshold,
 					thinkingEnabled,
-					kiroStreamOptionsFromContext(ctx, respDeadline),
+					respDeadline.streamOptions(),
 				)
 				if err != nil {
 					if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
@@ -1228,7 +1199,6 @@ func kiroEmptyStreamFailover(reason string) *UpstreamFailoverError {
 
 type kiroStreamOptions struct {
 	initialResponseTimeout time.Duration
-	initialAckTimeout      time.Duration
 }
 
 // handleStreamingResponse handles streaming response from CodeWhisperer.
@@ -1267,9 +1237,6 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 
 	streamCommitted := false
 	sawRenderableEvent := false
-	var pendingClaudeEvents []kiro.ClaudeSSEEvent
-	var initialResponseTimeoutCh <-chan time.Time
-	var initialAckTimeoutCh <-chan time.Time
 
 	writeFormattedClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
 		for _, claudeEvent := range events {
@@ -1321,42 +1288,35 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 		}
 
 		streamCommitted = true
-		initialResponseTimeoutCh = nil
-		initialAckTimeoutCh = nil
 		flusher.Flush()
 		return nil
 	}
 
-	commitStreamWithPending := func() error {
-		if err := commitStream(); err != nil {
-			return err
-		}
-		if len(pendingClaudeEvents) > 0 {
-			events := pendingClaudeEvents
-			pendingClaudeEvents = nil
-			if err := writeFormattedClaudeEvents(events); err != nil {
-				return err
-			}
-			flusher.Flush()
-		}
-		return nil
-	}
-
+	// Once upstream headers arrive we immediately commit the SSE envelope
+	// (message_start + web-search blocks) so the client starts receiving the
+	// stream before Cloudflare's 120s window — see the commitStream call below.
+	// After this point streamCommitted is always true, so downstream events are
+	// written straight through.
 	writeClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
 		if len(events) == 0 {
 			return nil
 		}
-		if !streamCommitted {
-			pendingClaudeEvents = append(pendingClaudeEvents, events...)
-			if !sawRenderableEvent {
-				return nil
-			}
-			if err := commitStreamWithPending(); err != nil {
-				return err
-			}
-			return nil
-		}
 		return writeFormattedClaudeEvents(events)
+	}
+
+	// Commit the SSE envelope as soon as upstream headers are available, rather
+	// than deferring until the first renderable event. This trades away
+	// post-header account failover — once the envelope is committed we can only
+	// surface upstream errors/empty streams as an SSE error event, not retry on
+	// another account — in exchange for beating Cloudflare's 120s cutoff on slow
+	// first tokens. Pre-commit failover still applies before this point.
+	select {
+	case <-c.Request.Context().Done():
+		return nil, c.Request.Context().Err()
+	default:
+	}
+	if err := commitStream(); err != nil {
+		return nil, err
 	}
 
 	var firstTokenMs *int
@@ -1400,19 +1360,6 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			}
 		}
 	}()
-
-	var initialResponseTimer *time.Timer
-	if opts.initialResponseTimeout > 0 {
-		initialResponseTimer = time.NewTimer(opts.initialResponseTimeout)
-		defer initialResponseTimer.Stop()
-		initialResponseTimeoutCh = initialResponseTimer.C
-	}
-	var initialAckTimer *time.Timer
-	if opts.initialAckTimeout > 0 {
-		initialAckTimer = time.NewTimer(opts.initialAckTimeout)
-		defer initialAckTimer.Stop()
-		initialAckTimeoutCh = initialAckTimer.C
-	}
 
 	// Stream interval timeout
 	streamInterval := time.Duration(0)
@@ -1523,12 +1470,13 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 					}
 				}
 
-				if event.Type == kiro.EventError && !streamCommitted {
+				if event.Type == kiro.EventError {
 					msg := sanitizeUpstreamErrorMessage(event.ErrorMessage)
 					if msg == "" {
 						msg = "kiro_stream_error"
 					}
-					return nil, kiroEmptyStreamFailover(msg)
+					sendErrorEvent(msg)
+					goto finishStream
 				}
 
 				// Convert to Claude SSE events
@@ -1554,26 +1502,6 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			}
 			sendErrorEvent("stream_timeout")
 			goto finishStream
-
-		case <-initialResponseTimeoutCh:
-			if streamCommitted || sawRenderableEvent {
-				initialResponseTimeoutCh = nil
-				continue
-			}
-			log.Printf("Kiro stream initial response timeout before downstream commit: timeout=%v model=%s",
-				opts.initialResponseTimeout, originalModel)
-			return nil, newKiroInitialResponseTimeoutError("first_renderable_event", opts.initialResponseTimeout)
-
-		case <-initialAckTimeoutCh:
-			if streamCommitted || sawRenderableEvent {
-				initialAckTimeoutCh = nil
-				continue
-			}
-			log.Printf("Kiro stream initial ACK before first renderable event: timeout=%v model=%s",
-				opts.initialAckTimeout, originalModel)
-			if err := commitStreamWithPending(); err != nil {
-				return nil, err
-			}
 
 		case <-keepaliveTicker.C:
 			if !streamCommitted {
@@ -1611,8 +1539,8 @@ finishStream:
 	}
 
 	if !sawRenderableEvent {
-		log.Printf("Kiro upstream returned empty stream before downstream commit: duration=%v parse_errors=%d message_stopped=%v",
-			time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
+		log.Printf("Kiro upstream returned empty stream: duration=%v parse_errors=%d message_stopped=%v stream_committed=%v",
+			time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped(), streamCommitted)
 		if streamCommitted {
 			sendErrorEvent("kiro_empty_stream")
 			return &kiroStreamResult{

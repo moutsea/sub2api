@@ -169,32 +169,6 @@ func TestShouldStopKiroOAuthInitialFailoverScope(t *testing.T) {
 	}
 }
 
-func TestShouldEnableKiroClaudeOAuthPostFailoverAck(t *testing.T) {
-	kiroOAuth := &service.Account{Platform: service.PlatformKiro}
-	kiroAPIKey := &service.Account{
-		Platform: service.PlatformKiro,
-		Credentials: map[string]any{
-			"auth_type": service.KiroAuthMethodAPIKey,
-		},
-	}
-
-	if shouldEnableKiroClaudeOAuthPostFailoverAck(kiroOAuth, true, 0) {
-		t.Fatal("first Kiro OAuth attempt should not ACK before failover")
-	}
-	if !shouldEnableKiroClaudeOAuthPostFailoverAck(kiroOAuth, true, 1) {
-		t.Fatal("post-failover Kiro OAuth stream should enable ACK")
-	}
-	if shouldEnableKiroClaudeOAuthPostFailoverAck(kiroOAuth, false, 1) {
-		t.Fatal("non-streaming requests should not enable ACK")
-	}
-	if shouldEnableKiroClaudeOAuthPostFailoverAck(kiroAPIKey, true, 1) {
-		t.Fatal("Kiro API key accounts should not enable OAuth ACK")
-	}
-	if shouldEnableKiroClaudeOAuthPostFailoverAck(&service.Account{Platform: service.PlatformAnthropic}, true, 1) {
-		t.Fatal("non-Kiro accounts should not enable ACK")
-	}
-}
-
 func TestShouldBypassKiroClaudeOAuthClientRetryForAck(t *testing.T) {
 	kiroOAuth := &service.Account{Platform: service.PlatformKiro}
 	timeoutErr := &service.UpstreamFailoverError{

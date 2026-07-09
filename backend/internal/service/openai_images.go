@@ -669,6 +669,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	var heartbeat *openAIImagesJSONHeartbeat
+	if !parsed.Stream {
+		heartbeat = startOpenAIImagesJSONHeartbeat(c)
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -680,23 +684,42 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			Kind:        "request_error",
 			Message:     safeErr,
 		})
+		forwardErr := fmt.Errorf("upstream request failed: %s", safeErr)
+		committed := heartbeat != nil && heartbeat.stop()
+		if !committed && c != nil && c.Writer != nil && c.Writer.Written() {
+			committed = true
+		}
+		if committed {
+			writeOpenAIImagesErrorBody(c, "upstream_error", "Upstream request failed")
+			return nil, forwardErr
+		}
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
 				"message": "Upstream request failed",
 			},
 		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, forwardErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
+		committed := false
+		if heartbeat != nil {
+			committed = heartbeat.stop()
+		}
+		if !committed && c != nil && c.Writer != nil && c.Writer.Written() {
+			committed = true
+		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if committed {
+			return nil, s.handleCommittedOpenAIImagesUpstreamError(ctx, c, account, resp, respBody, upstreamMsg)
+		}
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -732,7 +755,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		}
 		firstToken = ttft
 	} else {
-		nonStreamUsage, nonStreamCount, err := s.handleOpenAIImagesNonStreamingResponse(resp, c, parsed.Upscale)
+		nonStreamUsage, nonStreamCount, err := s.handleOpenAIImagesNonStreamingResponse(resp, c, parsed.Upscale, heartbeat)
 		if err != nil {
 			return nil, err
 		}
@@ -899,10 +922,19 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 	return dst
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, upscaleMode string) (OpenAIUsage, int, error) {
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
+	resp *http.Response,
+	c *gin.Context,
+	upscaleMode string,
+	heartbeat *openAIImagesJSONHeartbeat,
+) (OpenAIUsage, int, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 40<<20)) // 40 MB (may contain multiple base64 images)
 	if err != nil {
-		return OpenAIUsage{}, 0, err
+		return OpenAIUsage{}, 0, finishOpenAIImagesError(c, heartbeat, err, "upstream_error", "Upstream response read failed")
+	}
+	if heartbeat != nil {
+		heartbeat.stop()
+		heartbeat = nil
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
 
@@ -914,10 +946,102 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	if resp.Header.Get("Content-Type") != "" && (s.cfg == nil || !s.cfg.Security.ResponseHeaders.Enabled) {
 		contentType = resp.Header.Get("Content-Type")
 	}
-	c.Data(resp.StatusCode, contentType, body)
+	if err := writeOpenAIImagesJSONResponse(c, heartbeat, resp.StatusCode, contentType, body); err != nil {
+		return OpenAIUsage{}, 0, err
+	}
 
 	usage, _ := extractOpenAIUsageFromJSONBytes(body)
 	return usage, extractOpenAIImageCountFromJSONBytes(body), nil
+}
+
+func (s *OpenAIGatewayService) handleCommittedOpenAIImagesUpstreamError(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	resp *http.Response,
+	body []byte,
+	upstreamMsg string,
+) error {
+	if resp == nil {
+		writeOpenAIImagesErrorBody(c, "upstream_error", "Upstream request failed")
+		return fmt.Errorf("upstream error after response committed")
+	}
+
+	var accountID int64
+	accountName := ""
+	accountPlatform := PlatformOpenAI
+	accountType := AccountTypeAPIKey
+	if account != nil {
+		accountID = account.ID
+		accountName = account.Name
+		accountPlatform = account.Platform
+		accountType = account.Type
+	}
+
+	upstreamDetail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		upstreamDetail = truncateString(string(body), maxBytes)
+		log.Printf(
+			"OpenAI images upstream error %d after response committed (account=%d platform=%s type=%s): %s",
+			resp.StatusCode,
+			accountID,
+			accountPlatform,
+			accountType,
+			truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+		)
+	}
+	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+
+	kind := "http_error"
+	if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		kind = "failover"
+		if s.rateLimitService != nil && account != nil {
+			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+		}
+	} else if account != nil && account.ShouldHandleErrorCode(resp.StatusCode) && s.rateLimitService != nil {
+		if s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body) {
+			kind = "failover"
+		}
+	}
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           accountPlatform,
+		AccountID:          accountID,
+		AccountName:        accountName,
+		UpstreamStatusCode: resp.StatusCode,
+		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		Kind:               kind,
+		Message:            upstreamMsg,
+		Detail:             upstreamDetail,
+	})
+
+	errType, errMsg := openAIImagesErrorDetailsForStatus(resp.StatusCode, account)
+	writeOpenAIImagesErrorBody(c, errType, errMsg)
+	if upstreamMsg == "" {
+		return fmt.Errorf("upstream error: %d after response committed", resp.StatusCode)
+	}
+	return fmt.Errorf("upstream error: %d after response committed message=%s", resp.StatusCode, upstreamMsg)
+}
+
+func openAIImagesErrorDetailsForStatus(statusCode int, account *Account) (string, string) {
+	if account != nil && !account.ShouldHandleErrorCode(statusCode) {
+		return "upstream_error", "Upstream gateway error"
+	}
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return "upstream_error", "Upstream authentication failed, please contact administrator"
+	case http.StatusPaymentRequired:
+		return "upstream_error", "Upstream payment required: insufficient balance or billing issue"
+	case http.StatusForbidden:
+		return "upstream_error", "Upstream access forbidden, please contact administrator"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error", "Upstream rate limit exceeded, please retry later"
+	default:
+		return "upstream_error", "Upstream request failed"
+	}
 }
 
 func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
@@ -1100,16 +1224,18 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	}
 	client := newOpenAIBackendAPIClient(resolveOpenAIProxyURL(account))
 	headers := s.buildOpenAIBackendAPIHeaders(account, token)
+	heartbeat := startOpenAIImagesJSONHeartbeat(c)
 	if bootstrapErr := bootstrapOpenAIBackendAPI(ctx, client, headers); bootstrapErr != nil {
 		log.Printf("[OpenAI Images] bootstrap backend api failed: %v", bootstrapErr)
 	}
 
 	chatReqs, err := fetchOpenAIChatRequirements(ctx, client, headers)
 	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
 	if chatReqs.Arkose.Required {
-		return nil, s.wrapOpenAIImageBackendError(
+		wrappedErr := s.wrapOpenAIImageBackendError(
 			ctx,
 			c,
 			account,
@@ -1119,6 +1245,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				openAIChatGPTChatRequirementsURL,
 			),
 		)
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
 
 	parentMessageID := uuid.NewString()
@@ -1126,12 +1253,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	_ = initializeOpenAIImageConversation(ctx, client, headers)
 	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parsed.Model, parentMessageID, chatReqs.Token, proofToken)
 	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
 
 	uploads, err := uploadOpenAIImageFiles(ctx, client, headers, parsed.Uploads)
 	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
 
 	convReq := buildOpenAIImageConversationRequest(parsed, parentMessageID, uploads)
@@ -1157,7 +1286,8 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		SetBodyJsonMarshal(convReq).
 		Post(openAIChatGPTConversationURL)
 	if err != nil {
-		return nil, fmt.Errorf("openai image conversation request failed: %w", err)
+		wrappedErr := fmt.Errorf("openai image conversation request failed: %w", err)
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", "OpenAI image conversation request failed")
 	}
 	defer func() {
 		if resp != nil && resp.Body != nil {
@@ -1165,12 +1295,13 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		}
 	}()
 	if resp.StatusCode >= 400 {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, handleOpenAIImageBackendError(resp))
+		wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, handleOpenAIImageBackendError(resp))
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
 
 	conversationID, pointerInfos, usage, firstTokenMs, err := readOpenAIImageConversationStream(resp, startTime)
 	if err != nil && conversationID == "" {
-		return nil, err
+		return nil, finishOpenAIImagesError(c, heartbeat, err, "upstream_error", err.Error())
 	}
 	if err != nil {
 		log.Printf("[OpenAI Images] conversation stream interrupted after conversation_id=%s: %v; falling back to polling", conversationID, err)
@@ -1180,7 +1311,8 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if conversationID != "" && (err != nil || !hasOpenAIFileServicePointerInfos(pointerInfos)) {
 		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID, requireGeneratedToolPointers)
 		if pollErr != nil {
-			return nil, s.wrapOpenAIImageBackendError(ctx, c, account, pollErr)
+			wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, pollErr)
+			return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 		}
 		if requireGeneratedToolPointers {
 			pointerInfos = polledPointers
@@ -1192,21 +1324,26 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	pointerInfos = preferOpenAIFileServicePointerInfos(pointerInfos)
 	if len(pointerInfos) == 0 {
 		if requireGeneratedToolPointers {
-			return nil, fmt.Errorf("openai image generation did not produce a new image")
+			err := fmt.Errorf("openai image generation did not produce a new image")
+			return nil, finishOpenAIImagesError(c, heartbeat, err, "upstream_error", err.Error())
 		}
-		return nil, fmt.Errorf("openai image conversation returned no downloadable images")
+		err := fmt.Errorf("openai image conversation returned no downloadable images")
+		return nil, finishOpenAIImagesError(c, heartbeat, err, "upstream_error", err.Error())
 	}
 
 	responseBody, imageCount, err := buildOpenAIImageResponse(ctx, client, headers, conversationID, pointerInfos, uploads)
 	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
 
 	if parsed.Upscale != "" {
 		responseBody = applyUpscaleToB64Response(responseBody, parsed.Upscale)
 	}
 
-	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
+	if err := writeOpenAIImagesJSONResponse(c, heartbeat, http.StatusOK, openAIImagesJSONContentType, responseBody); err != nil {
+		return nil, err
+	}
 	return &OpenAIForwardResult{
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        usage,

@@ -41,6 +41,16 @@ export interface EditOpenAIImageOptions {
   signal?: AbortSignal
 }
 
+type OpenAIImageEndpoint = '/v1/images/generations' | '/v1/images/edits'
+
+interface CreatePreviewJobRequestOptions {
+  apiKey: string
+  endpoint: OpenAIImageEndpoint
+  body: BodyInit
+  headers?: Record<string, string>
+  signal?: AbortSignal
+}
+
 function extractImageErrorMessage(body: any): string {
   if (!body) {
     return 'Image generation failed'
@@ -55,25 +65,6 @@ function extractImageErrorMessage(body: any): string {
     return body.detail.trim()
   }
   return 'Image generation failed'
-}
-
-async function parseImageResponse(response: Response): Promise<OpenAIImageGenerationResponse> {
-  const rawText = await response.text()
-  let parsed: any = null
-
-  if (rawText) {
-    try {
-      parsed = JSON.parse(rawText)
-    } catch {
-      parsed = rawText
-    }
-  }
-
-  if (!response.ok) {
-    throw new Error(extractImageErrorMessage(parsed))
-  }
-
-  return (parsed || { data: [] }) as OpenAIImageGenerationResponse
 }
 
 async function parseImagePreviewJobResponse(response: Response): Promise<ImagePreviewJobResponse> {
@@ -115,31 +106,33 @@ function waitForJobPoll(intervalMs: number, signal?: AbortSignal): Promise<void>
 }
 
 export async function generate(options: GenerateOpenAIImageOptions): Promise<OpenAIImageGenerationResponse> {
-  const response = await fetch('/v1/images/generations', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${options.apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(options.payload),
-    signal: options.signal
-  })
-
-  return parseImageResponse(response)
+  return generatePreview(options)
 }
 
-export async function createPreviewJob(options: GenerateOpenAIImageOptions): Promise<ImagePreviewJobResponse> {
-  const response = await fetch('/v1/image-preview/jobs', {
+async function createPreviewJobRequest(options: CreatePreviewJobRequestOptions): Promise<ImagePreviewJobResponse> {
+  const response = await fetch(`/v1/image-preview/jobs?endpoint=${encodeURIComponent(options.endpoint)}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${options.apiKey}`,
-      'Content-Type': 'application/json'
+      ...(options.headers || {})
     },
-    body: JSON.stringify(options.payload),
+    body: options.body,
     signal: options.signal
   })
 
   return parseImagePreviewJobResponse(response)
+}
+
+export async function createPreviewJob(options: GenerateOpenAIImageOptions): Promise<ImagePreviewJobResponse> {
+  return createPreviewJobRequest({
+    apiKey: options.apiKey,
+    endpoint: '/v1/images/generations',
+    body: JSON.stringify(options.payload),
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    signal: options.signal
+  })
 }
 
 export async function getPreviewJob(
@@ -173,19 +166,23 @@ export async function cancelPreviewJob(apiKey: string, jobId: string): Promise<I
   }
 }
 
-export async function generatePreview(options: GenerateOpenAIImageOptions): Promise<OpenAIImageGenerationResponse> {
+async function waitForPreviewJobResult(
+  apiKey: string,
+  signal: AbortSignal | undefined,
+  createJob: () => Promise<ImagePreviewJobResponse>
+): Promise<OpenAIImageGenerationResponse> {
   let jobId = ''
   let cancelRequested = false
   const cancelJob = () => {
     cancelRequested = true
     if (jobId) {
-      void cancelPreviewJob(options.apiKey, jobId)
+      void cancelPreviewJob(apiKey, jobId)
     }
   }
-  options.signal?.addEventListener('abort', cancelJob, { once: true })
+  signal?.addEventListener('abort', cancelJob, { once: true })
 
   try {
-    let job = await createPreviewJob(options)
+    let job = await createJob()
     jobId = job.id
 
     while (true) {
@@ -195,15 +192,19 @@ export async function generatePreview(options: GenerateOpenAIImageOptions): Prom
       if (job.status === 'failed' || job.status === 'canceled') {
         throw new Error(job.error || 'Image generation failed')
       }
-      await waitForJobPoll(3000, options.signal)
-      job = await getPreviewJob(options.apiKey, jobId, options.signal)
+      await waitForJobPoll(3000, signal)
+      job = await getPreviewJob(apiKey, jobId, signal)
     }
   } finally {
-    options.signal?.removeEventListener('abort', cancelJob)
+    signal?.removeEventListener('abort', cancelJob)
     if (cancelRequested && jobId) {
-      void cancelPreviewJob(options.apiKey, jobId)
+      void cancelPreviewJob(apiKey, jobId)
     }
   }
+}
+
+export async function generatePreview(options: GenerateOpenAIImageOptions): Promise<OpenAIImageGenerationResponse> {
+  return waitForPreviewJobResult(options.apiKey, options.signal, () => createPreviewJob(options))
 }
 
 export async function edit(options: EditOpenAIImageOptions): Promise<OpenAIImageGenerationResponse> {
@@ -216,16 +217,14 @@ export async function edit(options: EditOpenAIImageOptions): Promise<OpenAIImage
   })
   formData.append('image', options.image)
 
-  const response = await fetch('/v1/images/edits', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${options.apiKey}`
-    },
-    body: formData,
-    signal: options.signal
-  })
-
-  return parseImageResponse(response)
+  return waitForPreviewJobResult(options.apiKey, options.signal, () =>
+    createPreviewJobRequest({
+      apiKey: options.apiKey,
+      endpoint: '/v1/images/edits',
+      body: formData,
+      signal: options.signal
+    })
+  )
 }
 
 export const openAIImagesAPI = {

@@ -26,15 +26,10 @@ const (
 
 	// Non-streaming Claude Messages cannot use SSE ACK, so return a retryable
 	// client error before Cloudflare's 120s window. Streaming Kiro OAuth requests
-	// use post-failover ACK instead of this 80s client-retry cutoff.
+	// commit their SSE envelope in the service layer after upstream headers.
 	kiroClaudeOAuthClientRetryDeadline    = 80 * time.Second
 	kiroClaudeOAuthNextAttemptMinBudget   = 35 * time.Second
 	kiroClaudeOAuthClientRetryAfterHeader = "3"
-
-	// After one account has already timed out and we have switched to another
-	// Kiro OAuth account, commit a Claude SSE ACK before Cloudflare's 120s
-	// window instead of returning another pre-commit timeout.
-	kiroClaudeOAuthPostFailoverAckTimeout = 40 * time.Second
 )
 
 func isKiroInitialResponseTimeoutMessage(message string) bool {
@@ -65,10 +60,6 @@ func shouldStopKiroOAuthInitialFailoverWithBudget(account *service.Account, err 
 	elapsed := time.Since(startedAt)
 	return elapsed >= totalBudget ||
 		totalBudget-elapsed < nextAttemptMinBudget
-}
-
-func shouldEnableKiroClaudeOAuthPostFailoverAck(account *service.Account, isStream bool, switchCount int) bool {
-	return isStream && switchCount > 0 && account != nil && account.IsKiro() && !account.IsKiroApiKey()
 }
 
 func shouldBypassKiroClaudeOAuthClientRetryForAck(account *service.Account, err *service.UpstreamFailoverError, isStream bool) bool {

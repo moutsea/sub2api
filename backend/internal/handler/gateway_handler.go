@@ -453,10 +453,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 		// 转发请求 - 根据账号平台分流
 		var result *service.ForwardResult
-		forwardCtx := c.Request.Context()
-		if shouldEnableKiroClaudeOAuthPostFailoverAck(account, reqStream, switchCount) {
-			forwardCtx = service.WithKiroInitialAckTimeout(forwardCtx, kiroClaudeOAuthPostFailoverAckTimeout)
-		}
 		switch account.Platform {
 		case service.PlatformAntigravity:
 			result, err = h.antigravityGatewayService.Forward(c.Request.Context(), c, account, body)
@@ -464,10 +460,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// Parse Claude request for web_search detection
 			claudeReq, parseErr := service.ParseClaudeRequestFromJSON(body)
 			if parseErr != nil {
-				result, err = h.kiroGatewayService.Forward(forwardCtx, c, account, body)
+				result, err = h.kiroGatewayService.Forward(c.Request.Context(), c, account, body)
 			} else {
 				// Use ForwardWithWebSearch for web_search agentic loop support
-				result, err = h.kiroGatewayService.ForwardWithWebSearch(forwardCtx, c, account, body, claudeReq)
+				result, err = h.kiroGatewayService.ForwardWithWebSearch(c.Request.Context(), c, account, body, claudeReq)
 			}
 		case service.PlatformOpenAI:
 			result, err = h.openAIGatewayService.ForwardAsClaudeMessages(c.Request.Context(), c, account, body)

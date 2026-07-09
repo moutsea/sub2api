@@ -848,9 +848,9 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
 
 	// Gateway
-	// 全局 transport 层等待响应头超时，所有平台共享。Kiro 另有独立的应用层软超时
-	// （kiroOAuthInitialResponseTimeout，默认 60s）赶在 Cloudflare 120s 前主动 failover，
-	// 因此这里保持较大的兜底值，避免误伤 Claude/OpenAI 等长响应头场景。
+	// 全局 transport 层等待响应头超时，所有平台共享。Kiro Claude 流式在拿到
+	// 上游响应头后会立即提交 SSE 初始事件，因此这里保持较大的兜底值，
+	// 避免误伤 Claude/OpenAI 等长响应头场景。
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)

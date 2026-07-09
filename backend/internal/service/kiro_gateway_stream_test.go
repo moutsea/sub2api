@@ -16,9 +16,63 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func newKiroStreamTestContext() (*gin.Context, *httptest.ResponseRecorder) {
+type synchronizedResponseRecorder struct {
+	*httptest.ResponseRecorder
+	mu             sync.Mutex
+	firstWriteOnce sync.Once
+	firstWriteCh   chan struct{}
+}
+
+func newSynchronizedResponseRecorder() *synchronizedResponseRecorder {
+	return &synchronizedResponseRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		firstWriteCh:     make(chan struct{}),
+	}
+}
+
+func (r *synchronizedResponseRecorder) Write(data []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n, err := r.ResponseRecorder.Write(data)
+	if n > 0 {
+		r.firstWriteOnce.Do(func() {
+			close(r.firstWriteCh)
+		})
+	}
+	return n, err
+}
+
+func (r *synchronizedResponseRecorder) WriteHeader(statusCode int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ResponseRecorder.WriteHeader(statusCode)
+}
+
+func (r *synchronizedResponseRecorder) Flush() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ResponseRecorder.Flush()
+}
+
+func (r *synchronizedResponseRecorder) WaitForWrite(timeout time.Duration) bool {
+	select {
+	case <-r.firstWriteCh:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func (r *synchronizedResponseRecorder) BodyString() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Body.String()
+}
+
+func newKiroStreamTestContext() (*gin.Context, *synchronizedResponseRecorder) {
 	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
+	rec := newSynchronizedResponseRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	return c, rec
@@ -135,7 +189,7 @@ func TestKiroInitialResponseFailoverMessageIncludesTimeout(t *testing.T) {
 	}
 }
 
-func TestKiroStreamingEmptyBodyTriggersFailoverBeforeCommit(t *testing.T) {
+func TestKiroStreamingEmptyBodyCommitsInitialEnvelope(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
 
@@ -152,55 +206,21 @@ func TestKiroStreamingEmptyBodyTriggersFailoverBeforeCommit(t *testing.T) {
 		false,
 	)
 
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
 	}
-	var failoverErr *UpstreamFailoverError
-	if !errors.As(err, &failoverErr) {
-		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
 	}
-	if failoverErr.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", failoverErr.StatusCode, http.StatusBadGateway)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
-	}
-}
-
-func TestKiroStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
-	c, rec := newKiroStreamTestContext()
-	svc := &KiroGatewayService{}
-	body := newBlockingReadCloser()
-	defer body.Close()
-
-	result, err := svc.handleStreamingResponseWithOptions(
-		c,
-		newBlockingKiroStreamHTTPResponse(body),
-		time.Now(),
-		"claude-opus-4-7",
-		10,
-		nil,
-		0,
-		0,
-		false,
-		false,
-		kiroStreamOptions{initialResponseTimeout: 10 * time.Millisecond},
-	)
-	_ = body.Close()
-
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
-	}
-	var timeoutErr *kiroInitialResponseTimeoutError
-	if !errors.As(err, &timeoutErr) {
-		t.Fatalf("err = %v, want kiroInitialResponseTimeoutError", err)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("response body = %q, want empty before timeout", rec.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response body missing %q: %s", want, body)
+		}
 	}
 }
 
-func TestKiroStreamingInitialAckBeforeFirstRenderableEvent(t *testing.T) {
+func TestKiroStreamingCommitsInitialEnvelopeBeforeFirstRenderableEvent(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
 	body := newGatedReadCloser(`{"content":"hello"}{"stop":true}`)
@@ -223,33 +243,25 @@ func TestKiroStreamingInitialAckBeforeFirstRenderableEvent(t *testing.T) {
 			0,
 			false,
 			false,
-			kiroStreamOptions{
-				initialResponseTimeout: 500 * time.Millisecond,
-				initialAckTimeout:      10 * time.Millisecond,
-			},
+			kiroStreamOptions{},
 		)
 		done <- streamResult{result: result, err: err}
 	}()
 
-	deadline := time.After(200 * time.Millisecond)
-	for rec.Body.Len() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("expected initial ACK to be written before first renderable event")
-		default:
-			time.Sleep(5 * time.Millisecond)
-		}
+	// The envelope (message_start) is committed as soon as upstream headers are
+	// available — before the gated body releases its first renderable token.
+	if !rec.WaitForWrite(200 * time.Millisecond) {
+		t.Fatal("expected initial SSE envelope before first renderable event")
 	}
-	ackBody := rec.Body.String()
-	if !strings.Contains(ackBody, "message_start") {
-		t.Fatalf("ACK body = %q, want message_start", ackBody)
+	initialBody := rec.BodyString()
+	if !strings.Contains(initialBody, "message_start") {
+		t.Fatalf("initial body = %q, want message_start", initialBody)
 	}
-	if strings.Contains(ackBody, "hello") {
-		t.Fatalf("ACK body = %q, should not contain delayed token", ackBody)
+	if strings.Contains(initialBody, "hello") {
+		t.Fatalf("initial body = %q, should not contain delayed token", initialBody)
 	}
 
 	body.Release()
-
 	select {
 	case got := <-done:
 		if got.err != nil {
@@ -261,8 +273,8 @@ func TestKiroStreamingInitialAckBeforeFirstRenderableEvent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stream did not finish after releasing delayed body")
 	}
-	if !strings.Contains(rec.Body.String(), "hello") {
-		t.Fatalf("response body = %q, want delayed token", rec.Body.String())
+	if !strings.Contains(rec.BodyString(), "hello") {
+		t.Fatalf("response body = %q, want delayed token after release", rec.BodyString())
 	}
 }
 
@@ -299,7 +311,7 @@ func TestKiroNonStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
 	}
 }
 
-func TestKiroStreamingUsageOnlyTriggersFailoverBeforeCommit(t *testing.T) {
+func TestKiroStreamingUsageOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
 
@@ -316,22 +328,21 @@ func TestKiroStreamingUsageOnlyTriggersFailoverBeforeCommit(t *testing.T) {
 		false,
 	)
 
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
 	}
-	var failoverErr *UpstreamFailoverError
-	if !errors.As(err, &failoverErr) {
-		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
 	}
-	if failoverErr.Message != "kiro_empty_stream" {
-		t.Fatalf("message = %q, want kiro_empty_stream", failoverErr.Message)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response body missing %q: %s", want, body)
+		}
 	}
 }
 
-func TestKiroStreamingStopOnlyTriggersFailoverBeforeCommit(t *testing.T) {
+func TestKiroStreamingStopOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
 
@@ -348,22 +359,21 @@ func TestKiroStreamingStopOnlyTriggersFailoverBeforeCommit(t *testing.T) {
 		false,
 	)
 
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
 	}
-	var failoverErr *UpstreamFailoverError
-	if !errors.As(err, &failoverErr) {
-		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
 	}
-	if failoverErr.Message != "kiro_empty_stream" {
-		t.Fatalf("message = %q, want kiro_empty_stream", failoverErr.Message)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response body missing %q: %s", want, body)
+		}
 	}
 }
 
-func TestKiroStreamingErrorBeforeContentTriggersFailoverBeforeCommit(t *testing.T) {
+func TestKiroStreamingErrorBeforeContentReturnsSSEErrorAfterCommit(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
 
@@ -380,18 +390,17 @@ func TestKiroStreamingErrorBeforeContentTriggersFailoverBeforeCommit(t *testing.
 		false,
 	)
 
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
 	}
-	var failoverErr *UpstreamFailoverError
-	if !errors.As(err, &failoverErr) {
-		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
 	}
-	if failoverErr.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", failoverErr.StatusCode, http.StatusBadGateway)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response body missing %q: %s", want, body)
+		}
 	}
 }
 

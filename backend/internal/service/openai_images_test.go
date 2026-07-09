@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -366,6 +367,169 @@ func TestReadOpenAIImageConversationStreamPreservesConversationOnError(t *testin
 	require.Len(t, pointers, 1)
 	require.Equal(t, "file-service://edited-image", pointers[0].Pointer)
 	require.Equal(t, "blue cat", pointers[0].Prompt)
+}
+
+func TestOpenAIImagesJSONHeartbeatDoesNotCommitBeforeDelay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	heartbeat := uncommittedOpenAIImagesHeartbeatForTest()
+	err := writeOpenAIImagesJSONResponse(c, heartbeat, http.StatusOK, openAIImagesJSONContentType, []byte(`{"ok":true}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"ok":true}`, rec.Body.String())
+	require.Equal(t, `{"ok":true}`, rec.Body.String())
+}
+
+func TestOpenAIImagesJSONHeartbeatCanBeDisabledForAsyncJobs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set(OpenAIImagesDisableJSONHeartbeatContextKey, true)
+
+	heartbeat := startOpenAIImagesJSONHeartbeatWithTiming(c, http.StatusOK, 0, time.Millisecond)
+	err := writeOpenAIImagesJSONResponse(c, heartbeat, http.StatusBadGateway, openAIImagesJSONContentType, []byte(`{"error":{"message":"failed"}}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, `{"error":{"message":"failed"}}`, rec.Body.String())
+}
+
+func TestOpenAIImagesJSONHeartbeatKeepsFinalJSONValid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	heartbeat := committedOpenAIImagesHeartbeatForTest(t, c)
+	err := writeOpenAIImagesJSONResponse(c, heartbeat, http.StatusOK, openAIImagesJSONContentType, []byte(`{"ok":true}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "\n")
+	require.JSONEq(t, `{"ok":true}`, rec.Body.String())
+}
+
+func TestOpenAIImagesJSONHeartbeatWritesErrorBodyAfterCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	heartbeat := committedOpenAIImagesHeartbeatForTest(t, c)
+	err := finishOpenAIImagesError(c, heartbeat, errors.New("upstream failed"), "upstream_error", "Upstream failed")
+	require.EqualError(t, err, "upstream failed")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"error":{"type":"upstream_error","message":"Upstream failed"}}`, rec.Body.String())
+}
+
+func TestOpenAIImagesJSONHeartbeatWritesFailoverErrorBodyAfterCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	heartbeat := committedOpenAIImagesHeartbeatForTest(t, c)
+	err := finishOpenAIImagesError(
+		c,
+		heartbeat,
+		&UpstreamFailoverError{StatusCode: http.StatusTooManyRequests, Message: "rate limited"},
+		"rate_limit_error",
+		"Upstream rate limit exceeded, please retry later",
+	)
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"error":{"type":"rate_limit_error","message":"Upstream rate limit exceeded, please retry later"}}`, rec.Body.String())
+}
+
+func TestCommittedOpenAIImagesUpstreamErrorWritesRawErrorBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		statusCode  int
+		body        string
+		wantPayload string
+	}{
+		{
+			name:       "non failover upstream error",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"bad request"}}`,
+			wantPayload: `{
+				"error": {
+					"type": "upstream_error",
+					"message": "Upstream request failed"
+				}
+			}`,
+		},
+		{
+			name:       "failover upstream error does not return sentinel after commit",
+			statusCode: http.StatusTooManyRequests,
+			body:       `{"error":{"message":"rate limited"}}`,
+			wantPayload: `{
+				"error": {
+					"type": "rate_limit_error",
+					"message": "Upstream rate limit exceeded, please retry later"
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+			committedOpenAIImagesHeartbeatForTest(t, c)
+
+			resp := &http.Response{
+				StatusCode: tt.statusCode,
+				Header:     http.Header{"X-Request-Id": []string{"req_test"}},
+			}
+			svc := &OpenAIGatewayService{}
+			err := svc.handleCommittedOpenAIImagesUpstreamError(
+				context.Background(),
+				c,
+				&Account{ID: 123, Name: "openai", Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+				resp,
+				[]byte(tt.body),
+				"upstream says no",
+			)
+			require.Error(t, err)
+			var failoverErr *UpstreamFailoverError
+			require.False(t, errors.As(err, &failoverErr))
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.JSONEq(t, tt.wantPayload, rec.Body.String())
+		})
+	}
+}
+
+func uncommittedOpenAIImagesHeartbeatForTest() *openAIImagesJSONHeartbeat {
+	doneCh := make(chan struct{})
+	close(doneCh)
+	return &openAIImagesJSONHeartbeat{
+		stopCh: make(chan struct{}),
+		doneCh: doneCh,
+	}
+}
+
+func committedOpenAIImagesHeartbeatForTest(t *testing.T, c *gin.Context) *openAIImagesJSONHeartbeat {
+	t.Helper()
+	flusher, ok := c.Writer.(http.Flusher)
+	require.True(t, ok)
+	doneCh := make(chan struct{})
+	close(doneCh)
+	heartbeat := &openAIImagesJSONHeartbeat{
+		writer:  c.Writer,
+		flusher: flusher,
+		status:  http.StatusOK,
+		stopCh:  make(chan struct{}),
+		doneCh:  doneCh,
+	}
+	require.True(t, heartbeat.writeWhitespace())
+	return heartbeat
 }
 
 func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMimeType(t *testing.T) {
