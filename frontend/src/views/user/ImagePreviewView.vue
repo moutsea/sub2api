@@ -941,6 +941,19 @@ function persistDraftState() {
   writeJSONStorage(PREVIEW_DRAFT_STORAGE_KEY, state)
 }
 
+function clearUnresumablePendingState(draft: PersistedDraftState): boolean {
+  if (!draft.pending || activeController) {
+    return false
+  }
+  draft.pending = false
+  draft.currentRequestId = null
+  if (!draft.errorMessage) {
+    draft.errorMessage = t('imagePreview.previousRequestInterrupted')
+  }
+  writeJSONStorage(PREVIEW_DRAFT_STORAGE_KEY, draft)
+  return true
+}
+
 function persistResultState() {
   if (!result.value) {
     removeStorageKey(PREVIEW_RESULT_STORAGE_KEY)
@@ -965,6 +978,7 @@ function persistResultState() {
 async function restorePreviewState() {
   const draft = readJSONStorage<PersistedDraftState>(PREVIEW_DRAFT_STORAGE_KEY)
   if (draft) {
+    clearUnresumablePendingState(draft)
     mode.value = normalizeAvailableMode(draft.mode)
     form.model = draft.model || DEFAULT_MODEL
     form.size = draft.size || DEFAULT_SIZE
@@ -1009,6 +1023,7 @@ async function restorePreviewState() {
 async function syncFromStorage() {
   const draft = readJSONStorage<PersistedDraftState>(PREVIEW_DRAFT_STORAGE_KEY)
   if (draft) {
+    clearUnresumablePendingState(draft)
     mode.value = normalizeAvailableMode(draft.mode || mode.value)
     currentRequestId.value = draft.currentRequestId ?? null
     generating.value = Boolean(draft.pending)

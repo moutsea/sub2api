@@ -207,6 +207,8 @@ func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
 			}
 		}
 	}
+	req.ReferenceImages = append(req.ReferenceImages, extractOpenAIImageJSONReferenceInputs(body)...)
+	req.ReferenceImages = dedupeStrings(req.ReferenceImages)
 	req.HasMask = gjson.GetBytes(body, "mask").Exists()
 	for _, path := range []string{
 		"background",
@@ -221,6 +223,54 @@ func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
 		}
 	}
 	return nil
+}
+
+func extractOpenAIImageJSONReferenceInputs(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	var out []string
+	for _, key := range []string{"reference_images", "images", "image", "image_url"} {
+		if raw, exists := payload[key]; exists {
+			out = collectOpenAIImageReferenceInputs(out, raw)
+		}
+	}
+	return dedupeStrings(out)
+}
+
+func collectOpenAIImageReferenceInputs(out []string, raw any) []string {
+	switch value := raw.(type) {
+	case string:
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	case []any:
+		for _, item := range value {
+			out = collectOpenAIImageReferenceInputs(out, item)
+		}
+	case map[string]any:
+		if inline := firstNonEmptyString(value["b64_json"], value["base64"]); inline != "" {
+			mimeType := firstNonEmptyString(value["mime_type"], value["mimeType"], value["content_type"])
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+			out = append(out, "data:"+mimeType+";base64,"+inline)
+			return out
+		}
+		imageURL := value["image_url"]
+		if imageURL == nil {
+			imageURL = value["url"]
+		}
+		if imageURL != nil {
+			out = collectOpenAIImageReferenceInputs(out, imageURL)
+		}
+	}
+	return out
 }
 
 func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *OpenAIImagesRequest) error {
@@ -1251,7 +1301,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	parentMessageID := uuid.NewString()
 	proofToken := generateOpenAIProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
 	_ = initializeOpenAIImageConversation(ctx, client, headers)
-	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parsed.Model, parentMessageID, chatReqs.Token, proofToken)
+	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parentMessageID, chatReqs.Token, proofToken)
 	if err != nil {
 		wrappedErr := s.wrapOpenAIImageBackendError(ctx, c, account, err)
 		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
@@ -1523,7 +1573,6 @@ func prepareOpenAIImageConversation(
 	client *req.Client,
 	headers http.Header,
 	prompt string,
-	model string,
 	parentMessageID string,
 	chatToken string,
 	proofToken string,
@@ -1534,7 +1583,7 @@ func prepareOpenAIImageConversation(
 		"client_prepare_state":  "success",
 		"fork_from_shared_post": false,
 		"parent_message_id":     parentMessageID,
-		"model":                 openAIImageBackendModelSlug(model),
+		"model":                 "auto",
 		"timezone_offset_min":   openAITimezoneOffsetMinutes(),
 		"timezone":              openAITimezoneName(),
 		"conversation_mode":     map[string]any{"kind": "primary_assistant"},
@@ -1578,15 +1627,6 @@ func prepareOpenAIImageConversation(
 		return "", newOpenAIImageStatusError(resp, "conversation prepare failed")
 	}
 	return strings.TrimSpace(result.ConduitToken), nil
-}
-
-func openAIImageBackendModelSlug(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "gpt-image-2":
-		return "gpt-5-3"
-	default:
-		return "auto"
-	}
 }
 
 type openAIUploadedImage struct {
@@ -1754,7 +1794,7 @@ func buildOpenAIImageConversationRequest(parsed *OpenAIImagesRequest, parentMess
 		"action":                               "next",
 		"client_prepare_state":                 "sent",
 		"parent_message_id":                    parentMessageID,
-		"model":                                openAIImageBackendModelSlug(parsed.Model),
+		"model":                                "auto",
 		"timezone_offset_min":                  openAITimezoneOffsetMinutes(),
 		"timezone":                             openAITimezoneName(),
 		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
@@ -1820,6 +1860,9 @@ func readOpenAIImageConversationStream(resp *req.Response, startTime time.Time) 
 				}
 				mergeOpenAIUsage(&usage, dataBytes)
 				pointers = mergeOpenAIImagePointerInfos(pointers, collectOpenAIImagePointers(dataBytes))
+				if conversationID != "" && len(pointers) > 0 {
+					return conversationID, pointers, usage, firstTokenMs, nil
+				}
 			}
 		}
 		if err == io.EOF {
@@ -2007,18 +2050,19 @@ func extractOpenAIImageToolMessages(mapping map[string]any) []openAIImageToolMes
 			prompt = strings.TrimSpace(prompt)
 		}
 
-		var pointerInfos []openAIImagePointerInfo
-		switch role {
-		case "tool":
-			if asyncTaskType, _ := metadata["async_task_type"].(string); asyncTaskType != "image_gen" {
-				continue
-			}
-			if contentType, _ := content["content_type"].(string); contentType != "multimodal_text" {
-				continue
-			}
-			pointerInfos = extractOpenAIImageOutputPointersFromContent(content, prompt, true)
-		case "assistant":
-			pointerInfos = extractOpenAIImageOutputPointersFromContent(content, prompt, false)
+		asyncTaskType, _ := metadata["async_task_type"].(string)
+		isImageGen := strings.TrimSpace(asyncTaskType) == "image_gen"
+		hasAssetPointer := hasOpenAIImageAssetPointer(content) || hasOpenAIImageAssetPointer(metadata)
+		if role == "assistant" && !isImageGen && !hasAssetPointer {
+			continue
+		}
+
+		pointerInfos := extractOpenAIImageOutputPointersFromValue(map[string]any{
+			"content":  content,
+			"metadata": metadata,
+		}, prompt)
+		if !isImageGen && !hasAssetPointer && len(pointerInfos) == 0 {
+			continue
 		}
 		if len(pointerInfos) == 0 {
 			continue
@@ -2037,28 +2081,49 @@ func extractOpenAIImageToolMessages(mapping map[string]any) []openAIImageToolMes
 	return out
 }
 
-func extractOpenAIImageOutputPointersFromContent(content map[string]any, prompt string, allowStringParts bool) []openAIImagePointerInfo {
-	parts, _ := content["parts"].([]any)
-	if len(parts) == 0 {
-		return nil
+func hasOpenAIImageAssetPointer(value any) bool {
+	switch item := value.(type) {
+	case map[string]any:
+		if contentType, _ := item["content_type"].(string); contentType == "image_asset_pointer" {
+			return true
+		}
+		if assetPointer, _ := item["asset_pointer"].(string); strings.HasPrefix(strings.TrimSpace(assetPointer), "file-service://") || strings.HasPrefix(strings.TrimSpace(assetPointer), "sediment://") {
+			return true
+		}
+		for _, child := range item {
+			if hasOpenAIImageAssetPointer(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if hasOpenAIImageAssetPointer(child) {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+func extractOpenAIImageOutputPointersFromValue(value any, prompt string) []openAIImagePointerInfo {
 	var pointerInfos []openAIImagePointerInfo
-	for _, part := range parts {
+	var walk func(any)
+	walk = func(node any) {
 		var matches []string
-		switch value := part.(type) {
-		case map[string]any:
-			assetPointer, _ := value["asset_pointer"].(string)
-			if strings.TrimSpace(assetPointer) == "" {
-				continue
-			}
-			matches = openAIImagePointerMatchesAllowBare([]byte(assetPointer))
+		switch item := node.(type) {
 		case string:
-			if !allowStringParts {
-				continue
+			matches = openAIImagePointerMatchesAllowBare([]byte(item))
+		case map[string]any:
+			if assetPointer, _ := item["asset_pointer"].(string); strings.TrimSpace(assetPointer) != "" {
+				matches = append(matches, openAIImagePointerMatchesAllowBare([]byte(assetPointer))...)
 			}
-			matches = openAIImagePointerMatchesAllowBare([]byte(value))
-		default:
-			continue
+			for _, child := range item {
+				walk(child)
+			}
+		case []any:
+			for _, child := range item {
+				walk(child)
+			}
 		}
 		for _, pointer := range matches {
 			pointerInfos = append(pointerInfos, openAIImagePointerInfo{
@@ -2067,6 +2132,7 @@ func extractOpenAIImageOutputPointersFromContent(content map[string]any, prompt 
 			})
 		}
 	}
+	walk(value)
 	return mergeOpenAIImagePointerInfos(nil, pointerInfos)
 }
 

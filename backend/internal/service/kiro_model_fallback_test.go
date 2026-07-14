@@ -79,12 +79,18 @@ func TestKiroOAuthModelsOnlyApplyToNonApiKeyAccounts(t *testing.T) {
 
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "deepseek-3.2"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "glm-5"))
+	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-sol"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-terra"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-luna"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus48))
 	require.False(t, IsKiroModelSupportedByAccount(apiKeyAccount, "deepseek-3.2"))
+	require.False(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "claude-sonnet-4-5"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, KiroModelOpus48))
 	require.True(t, isKiroOAuthOnlyModel("qwen3-coder-next"))
+	require.True(t, isKiroOAuthOnlyModel("gpt-5.6-sol"))
 	require.False(t, isKiroOAuthOnlyModel("claude-sonnet-4-5"))
 	require.False(t, isKiroOAuthOnlyModel(KiroModelOpus48))
 

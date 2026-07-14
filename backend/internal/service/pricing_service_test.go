@@ -20,8 +20,13 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 		output float64
 	}{
 		{model: "gpt-5.3", input: 1.75e-06, output: 14e-06},
+		{model: "gpt-5.6", input: 5e-06, output: 30e-06},
+		{model: "gpt-5.6-sol", input: 5e-06, output: 30e-06},
+		{model: "gpt-5.6-terra", input: 2.5e-06, output: 15e-06},
+		{model: "gpt-5.6-luna", input: 1e-06, output: 6e-06},
 		{model: "gpt-5.4", input: 2.5e-06, output: 15e-06},
 		{model: "gpt-5.5", input: 5e-06, output: 30e-06},
+		{model: "gpt-5.6-sol-20260709", input: 5e-06, output: 30e-06},
 		{model: "gpt-5.4-20260424", input: 2.5e-06, output: 15e-06},
 		{model: "gpt-5.5-20260424", input: 5e-06, output: 30e-06},
 	}

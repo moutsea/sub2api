@@ -79,6 +79,37 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSONReferenceRequiresOAuthA
 	require.Equal(t, 1, parsed.Uploads[0].Height)
 }
 
+func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSONImageURLRequiresOAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body, err := json.Marshal(map[string]any{
+		"model":  "gpt-image-2",
+		"prompt": "turn the cat blue",
+		"image_url": map[string]any{
+			"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5qS9sAAAAASUVORK5CYII=",
+		},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	require.Equal(t, openAIImagesEditsEndpoint, parsed.Endpoint)
+	require.Equal(t, OpenAIImagesCapabilityOAuth, parsed.RequiredCapability)
+	require.Len(t, parsed.Uploads, 1)
+	require.Equal(t, "image/png", parsed.Uploads[0].ContentType)
+	require.Equal(t, "reference_0.png", parsed.Uploads[0].FileName)
+	require.Equal(t, 1, parsed.Uploads[0].Width)
+	require.Equal(t, 1, parsed.Uploads[0].Height)
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSONInvalidReferenceErrors(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body, err := json.Marshal(map[string]any{
@@ -261,6 +292,37 @@ func TestExtractOpenAIImageConversationPointersAcceptsToolBareImageFileID(t *tes
 	require.Len(t, fallbackPointers, 1)
 }
 
+func TestExtractOpenAIImageConversationPointersAcceptsAssistantImageGenMetadataAttachment(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"mapping": map[string]any{
+			"assistant-msg": map[string]any{
+				"message": map[string]any{
+					"author":      map[string]any{"role": "assistant"},
+					"create_time": 124.0,
+					"metadata": map[string]any{
+						"async_task_type": "image_gen",
+						"image_gen_title": "blue cat icon",
+						"attachments": []any{
+							map[string]any{"id": "file_00000000abcdefabcdefabcdefabcdef"},
+						},
+					},
+					"content": map[string]any{
+						"content_type": "text",
+						"parts":        []any{"Done."},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	toolPointers, fallbackPointers := extractOpenAIImageConversationPointers(body)
+	require.Len(t, toolPointers, 1)
+	require.Equal(t, "file-service://file_00000000abcdefabcdefabcdefabcdef", toolPointers[0].Pointer)
+	require.Equal(t, "blue cat icon", toolPointers[0].Prompt)
+	require.Empty(t, fallbackPointers)
+}
+
 func TestExtractOpenAIImageConversationPointersIgnoresAssistantReferencedImageIDs(t *testing.T) {
 	body, err := json.Marshal(map[string]any{
 		"mapping": map[string]any{
@@ -345,8 +407,31 @@ func (r *errAfterDataReadCloser) Close() error {
 	return nil
 }
 
-func TestReadOpenAIImageConversationStreamPreservesConversationOnError(t *testing.T) {
+func TestReadOpenAIImageConversationStreamReturnsAfterConversationAndPointer(t *testing.T) {
 	payload := "data: {\"conversation_id\":\"conv-123\",\"asset_pointer\":\"file-service://edited-image\",\"revised_prompt\":\"blue cat\"}\n"
+	resp := &req.Response{
+		Response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body: &errAfterDataReadCloser{
+				reader: bytes.NewReader([]byte(payload)),
+				err:    errors.New("stream interrupted"),
+			},
+		},
+	}
+
+	conversationID, pointers, usage, firstTokenMs, err := readOpenAIImageConversationStream(resp, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, "conv-123", conversationID)
+	require.Equal(t, OpenAIUsage{}, usage)
+	require.NotNil(t, firstTokenMs)
+	require.Len(t, pointers, 1)
+	require.Equal(t, "file-service://edited-image", pointers[0].Pointer)
+	require.Equal(t, "blue cat", pointers[0].Prompt)
+}
+
+func TestReadOpenAIImageConversationStreamPreservesConversationOnErrorWithoutPointer(t *testing.T) {
+	payload := "data: {\"conversation_id\":\"conv-123\",\"message\":{\"content\":{\"parts\":[\"working\"]}}}\n"
 	resp := &req.Response{
 		Response: &http.Response{
 			StatusCode: http.StatusOK,
@@ -362,11 +447,9 @@ func TestReadOpenAIImageConversationStreamPreservesConversationOnError(t *testin
 	require.Error(t, err)
 	require.Equal(t, "stream interrupted", err.Error())
 	require.Equal(t, "conv-123", conversationID)
+	require.Empty(t, pointers)
 	require.Equal(t, OpenAIUsage{}, usage)
 	require.NotNil(t, firstTokenMs)
-	require.Len(t, pointers, 1)
-	require.Equal(t, "file-service://edited-image", pointers[0].Pointer)
-	require.Equal(t, "blue cat", pointers[0].Prompt)
 }
 
 func TestOpenAIImagesJSONHeartbeatDoesNotCommitBeforeDelay(t *testing.T) {
@@ -572,7 +655,7 @@ func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMi
 		require.False(t, hasCamel)
 		require.EqualValues(t, 1254, attachment["width"])
 		require.EqualValues(t, 1254, attachment["height"])
-		require.Equal(t, "gpt-5-3", req["model"])
+		require.Equal(t, "auto", req["model"])
 		return
 	}
 
@@ -582,13 +665,7 @@ func TestBuildOpenAIImageConversationRequestForEditUsesPromptFirstAndSnakeCaseMi
 	require.False(t, hasCamel)
 	require.EqualValues(t, 1254, attachments[0]["width"])
 	require.EqualValues(t, 1254, attachments[0]["height"])
-	require.Equal(t, "gpt-5-3", req["model"])
-}
-
-func TestOpenAIImageBackendModelSlug(t *testing.T) {
-	require.Equal(t, "gpt-5-3", openAIImageBackendModelSlug("gpt-image-2"))
-	require.Equal(t, "auto", openAIImageBackendModelSlug("gpt-image-1"))
-	require.Equal(t, "auto", openAIImageBackendModelSlug(""))
+	require.Equal(t, "auto", req["model"])
 }
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequestMultipartEditRemainsBasic(t *testing.T) {

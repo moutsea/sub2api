@@ -1048,6 +1048,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, statelessErr
 		}
 	}
+	if normalizeOpenAIResponsesFunctionCallOutputImageURLs(reqBody) {
+		bodyModified = true
+		log.Printf("[OpenAI] Normalized invalid /responses function_call_output image_url payload")
+	}
 
 	// Handle max_output_tokens based on platform and account type
 	if !isCodexCLI {
@@ -2142,7 +2146,13 @@ func openAIResponseModelMatches(actualModel, expectedModel string) bool {
 	if actualModel == expectedModel {
 		return true
 	}
-	return normalizeOpenAIResponseModel(actualModel) == expectedModel
+	normalizedActual := normalizeOpenAIResponseModel(actualModel)
+	normalizedExpected := normalizeOpenAIResponseModel(expectedModel)
+	if normalizedActual == expectedModel || (normalizedExpected != "" && normalizedActual == normalizedExpected) {
+		return true
+	}
+	return (normalizedActual == "gpt-5.6-sol" && expectedModel == "gpt-5.6") ||
+		(normalizedActual == "gpt-5.6" && expectedModel == "gpt-5.6-sol")
 }
 
 func normalizeOpenAIResponseModel(model string) string {
@@ -2151,6 +2161,14 @@ func normalizeOpenAIResponseModel(model string) string {
 		return ""
 	}
 	switch {
+	case hasOpenAIModelPrefix(model, "gpt-5.6-sol"):
+		return "gpt-5.6-sol"
+	case hasOpenAIModelPrefix(model, "gpt-5.6-terra"):
+		return "gpt-5.6-terra"
+	case hasOpenAIModelPrefix(model, "gpt-5.6-luna"):
+		return "gpt-5.6-luna"
+	case hasOpenAIModelPrefix(model, "gpt-5.6"):
+		return "gpt-5.6"
 	case hasOpenAIModelPrefix(model, "gpt-5.5"):
 		return "gpt-5.5"
 	case hasOpenAIModelPrefix(model, "gpt-5.4-mini"):

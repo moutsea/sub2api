@@ -217,6 +217,73 @@ func TestOpenAIResponsesImageToolNormalizesLegacyFormatFields(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesFunctionCallOutputInvalidImageURLIsSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{
+		"model":"gpt-5.4",
+		"input":[{
+			"type":"function_call_output",
+			"call_id":"call_1",
+			"output":[
+				{"type":"image","image_url":"/var/folders/local/generated.png"},
+				{"type":"text","text":"generated image"}
+			]
+		}],
+		"stream":false
+	}`)
+	upstream := &codexImageBridgeUpstream{
+		body: `{"id":"resp_text","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`,
+	}
+	svc := newCodexImageBridgeTestService(upstream, false)
+	c, _ := newCodexImageBridgeTestContext(body, "some-client/1.0")
+
+	_, err := svc.Forward(context.Background(), c, newCodexImageBridgeTestAccount(nil), body)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	output := gjson.GetBytes(upstream.lastBody, "input.0.output")
+	if output.Type != gjson.String {
+		t.Fatalf("output type = %s, want string; body=%s", output.Type.String(), string(upstream.lastBody))
+	}
+	if strings.Contains(string(upstream.lastBody), "/var/folders/local/generated.png") {
+		t.Fatalf("invalid local image_url was forwarded: %s", string(upstream.lastBody))
+	}
+	if !strings.Contains(output.String(), "image output omitted") {
+		t.Fatalf("sanitized output missing image omission note: %q", output.String())
+	}
+	if !strings.Contains(output.String(), "generated image") {
+		t.Fatalf("sanitized output lost text content: %q", output.String())
+	}
+}
+
+func TestOpenAIResponsesFunctionCallOutputValidImageURLIsPreserved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{
+		"model":"gpt-5.4",
+		"input":[{
+			"type":"function_call_output",
+			"call_id":"call_1",
+			"output":[{"type":"image","image_url":"https://example.com/generated.png"}]
+		}],
+		"stream":false
+	}`)
+	upstream := &codexImageBridgeUpstream{
+		body: `{"id":"resp_text","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`,
+	}
+	svc := newCodexImageBridgeTestService(upstream, false)
+	c, _ := newCodexImageBridgeTestContext(body, "some-client/1.0")
+
+	_, err := svc.Forward(context.Background(), c, newCodexImageBridgeTestAccount(nil), body)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	if got := gjson.GetBytes(upstream.lastBody, "input.0.output.0.image_url").String(); got != "https://example.com/generated.png" {
+		t.Fatalf("image_url = %q, want preserved; body=%s", got, string(upstream.lastBody))
+	}
+}
+
 func TestParseSSEUsageFromBodyCountsImagesAndImageTokens(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	body := "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ig_1\",\"type\":\"image_generation_call\",\"result\":\"final-a\",\"size\":\"1024x1024\"}}\n\n" +

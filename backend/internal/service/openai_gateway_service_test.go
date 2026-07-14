@@ -798,6 +798,37 @@ func TestOpenAIResponseModelMatches_NormalizesGPT55Snapshot(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponseModelMatches_NormalizesGPT56Models(t *testing.T) {
+	tests := []struct {
+		actual string
+		want   string
+	}{
+		{actual: "gpt-5.6", want: "gpt-5.6"},
+		{actual: "gpt-5.6-sol", want: "gpt-5.6"},
+		{actual: "gpt-5.6", want: "gpt-5.6-sol"},
+		{actual: "gpt-5.6-sol-2026-07-09", want: "gpt-5.6-sol"},
+		{actual: "gpt-5.6-terra-2026-07-09", want: "gpt-5.6-terra"},
+		{actual: "gpt-5.6-luna-2026-07-09", want: "gpt-5.6-luna"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.actual, func(t *testing.T) {
+			if !openAIResponseModelMatches(tt.actual, tt.want) {
+				t.Fatalf("expected %q to match %q", tt.actual, tt.want)
+			}
+			if tt.actual == "gpt-5.6-sol" && tt.want == "gpt-5.6" {
+				return
+			}
+			if tt.actual == "gpt-5.6" && tt.want == "gpt-5.6-sol" {
+				return
+			}
+			if normalized := normalizeOpenAIResponseModel(tt.actual); normalized != tt.want {
+				t.Fatalf("normalized model = %q, want %q", normalized, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenAIResponseModelMatches_NormalizesCurrentOfficialCodexModels(t *testing.T) {
 	tests := []struct {
 		actual string

@@ -59,12 +59,13 @@ const (
 )
 
 // Is1MContext returns true if the model supports 1M context window.
-// Currently claude-sonnet-5, claude-opus-4.8, claude-opus-4.7, claude-opus-4.6,
-// and claude-sonnet-4.6 natively support 1M.
+// Currently GPT-5.6, claude-sonnet-5, claude-opus-4.8, claude-opus-4.7,
+// claude-opus-4.6, and claude-sonnet-4.6 natively support 1M.
 // Accepts both input formats: dashes (claude-opus-4-8) and dots (claude-opus-4.8).
 func Is1MContext(model string) bool {
-	m := strings.ToLower(model)
-	return strings.Contains(m, "sonnet-5") ||
+	m := strings.TrimSpace(strings.ToLower(model))
+	return m == "gpt-5.6-sol" || m == "gpt-5.6-terra" || m == "gpt-5.6-luna" ||
+		strings.Contains(m, "sonnet-5") ||
 		strings.Contains(m, "opus-4-8") || strings.Contains(m, "opus-4.8") ||
 		strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") ||
 		strings.Contains(m, "opus-4-6") || strings.Contains(m, "opus-4.6") ||
@@ -72,7 +73,7 @@ func Is1MContext(model string) bool {
 }
 
 // GetContextWindowLimit returns the context window limit for the given model.
-// 4.6+ series → 1M; DeepSeek → 128K; Qwen3 Coder Next → 256K; all others → 200K.
+// GPT-5.6 and Claude 4.6+ series → 1M; DeepSeek → 128K; Qwen3 Coder Next → 256K; all others → 200K.
 func GetContextWindowLimit(model string) int {
 	if Is1MContext(model) {
 		return KiroContextWindowLimit1M

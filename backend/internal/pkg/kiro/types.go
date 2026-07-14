@@ -30,6 +30,9 @@ var ModelMap = map[string]string{
 	"qwen3-coder":           "qwen3-coder-next",
 	"qwen3-coder-480b":      "qwen3-coder-next",
 	"qwen3-coder-480b-a35b": "qwen3-coder-next",
+	"gpt-5.6-sol":           "gpt-5.6-sol",
+	"gpt-5.6-terra":         "gpt-5.6-terra",
+	"gpt-5.6-luna":          "gpt-5.6-luna",
 
 	// Sonnet 5 series
 	"claude-sonnet-5":   "claude-sonnet-5",
@@ -93,6 +96,9 @@ type Model struct {
 // DefaultModels is the curated Kiro OAuth/runtime model list.
 var DefaultModels = []Model{
 	{ID: "auto", Type: "model", DisplayName: "Auto", CreatedAt: "2026-03-31T00:00:00Z"},
+	{ID: "gpt-5.6-sol", Type: "model", DisplayName: "GPT-5.6 Sol", CreatedAt: "2026-07-09T00:00:00Z"},
+	{ID: "gpt-5.6-terra", Type: "model", DisplayName: "GPT-5.6 Terra", CreatedAt: "2026-07-09T00:00:00Z"},
+	{ID: "gpt-5.6-luna", Type: "model", DisplayName: "GPT-5.6 Luna", CreatedAt: "2026-07-09T00:00:00Z"},
 	{ID: "claude-sonnet-5", Type: "model", DisplayName: "Claude Sonnet 5", CreatedAt: "2026-07-01T00:00:00Z"},
 	{ID: "claude-opus-4-8", Type: "model", DisplayName: "Claude Opus 4.8", CreatedAt: "2026-05-29T00:00:00Z"},
 	{ID: "claude-opus-4-7", Type: "model", DisplayName: "Claude Opus 4.7", CreatedAt: "2026-04-17T00:00:00Z"},

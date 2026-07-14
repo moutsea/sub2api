@@ -25,6 +25,30 @@ var codexCLIInstructions string
 
 var codexModelMap = map[string]string{
 	"codex-auto-review":          "codex-auto-review",
+	"gpt-5.6":                    "gpt-5.6",
+	"gpt-5.6-none":               "gpt-5.6",
+	"gpt-5.6-low":                "gpt-5.6",
+	"gpt-5.6-medium":             "gpt-5.6",
+	"gpt-5.6-high":               "gpt-5.6",
+	"gpt-5.6-xhigh":              "gpt-5.6",
+	"gpt-5.6-sol":                "gpt-5.6-sol",
+	"gpt-5.6-sol-none":           "gpt-5.6-sol",
+	"gpt-5.6-sol-low":            "gpt-5.6-sol",
+	"gpt-5.6-sol-medium":         "gpt-5.6-sol",
+	"gpt-5.6-sol-high":           "gpt-5.6-sol",
+	"gpt-5.6-sol-xhigh":          "gpt-5.6-sol",
+	"gpt-5.6-terra":              "gpt-5.6-terra",
+	"gpt-5.6-terra-none":         "gpt-5.6-terra",
+	"gpt-5.6-terra-low":          "gpt-5.6-terra",
+	"gpt-5.6-terra-medium":       "gpt-5.6-terra",
+	"gpt-5.6-terra-high":         "gpt-5.6-terra",
+	"gpt-5.6-terra-xhigh":        "gpt-5.6-terra",
+	"gpt-5.6-luna":               "gpt-5.6-luna",
+	"gpt-5.6-luna-none":          "gpt-5.6-luna",
+	"gpt-5.6-luna-low":           "gpt-5.6-luna",
+	"gpt-5.6-luna-medium":        "gpt-5.6-luna",
+	"gpt-5.6-luna-high":          "gpt-5.6-luna",
+	"gpt-5.6-luna-xhigh":         "gpt-5.6-luna",
 	"gpt-5.5":                    "gpt-5.5",
 	"gpt-5.5-none":               "gpt-5.5",
 	"gpt-5.5-low":                "gpt-5.5",
@@ -280,6 +304,18 @@ func normalizeCodexModel(model string) string {
 
 	normalized := canonicalizeCodexModelID(modelID)
 
+	if hasOpenAIModelPrefix(normalized, "gpt-5.6-sol") {
+		return "gpt-5.6-sol"
+	}
+	if hasOpenAIModelPrefix(normalized, "gpt-5.6-terra") {
+		return "gpt-5.6-terra"
+	}
+	if hasOpenAIModelPrefix(normalized, "gpt-5.6-luna") {
+		return "gpt-5.6-luna"
+	}
+	if hasOpenAIModelPrefix(normalized, "gpt-5.6") {
+		return "gpt-5.6"
+	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.5") {
 		return "gpt-5.5"
 	}

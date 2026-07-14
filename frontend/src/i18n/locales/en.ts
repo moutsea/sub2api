@@ -350,6 +350,7 @@ export default {
     sourceImageLimit: 'Up to {count} reference images are supported',
     noImageReturned: 'The endpoint returned success, but no previewable image was found in the response',
     generateFailed: 'Image request failed',
+    previousRequestInterrupted: 'The previous image request did not finish and was reset automatically. Please submit it again.',
     lastKeyUnavailable: 'The API key used by the last generation is no longer available. Please select another key.',
     editRetrySourceUnavailable: 'The reference image used by the last request is no longer available in this page session. Please upload it again.',
     storagePersistWarning: 'Browser storage is full, so this image may not survive page navigation. Please download it as soon as possible.'

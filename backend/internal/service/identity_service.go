@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 )
 
 // 预编译正则表达式（避免每次调用重新编译）
@@ -24,13 +26,13 @@ var (
 
 // 默认指纹值（当客户端未提供时使用）
 var defaultFingerprint = Fingerprint{
-	UserAgent:               "claude-cli/2.1.45 (external, cli)",  // ← 更新到最新版本
+	UserAgent:               fmt.Sprintf("claude-cli/%s (external, cli)", claude.CLIVersion),
 	StainlessLang:           "js",
-	StainlessPackageVersion: "0.52.0",
+	StainlessPackageVersion: claude.StainlessSDKVersion,
 	StainlessOS:             "Linux",
 	StainlessArch:           "x64",
 	StainlessRuntime:        "node",
-	StainlessRuntimeVersion: "v22.14.0",
+	StainlessRuntimeVersion: claude.StainlessNodeVersion,
 }
 
 // Fingerprint represents account fingerprint data

@@ -717,6 +717,10 @@ const allModels = [
   { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+  { value: 'gpt-5.6', label: 'GPT-5.6' },
   { value: 'gpt-5.5', label: 'GPT-5.5' },
   { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
   { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
@@ -768,6 +772,24 @@ const presetMappings = [
     from: 'claude-opus-4-5-20251101',
     to: 'claude-sonnet-4-5-20250929',
     color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
+  },
+  {
+    label: 'GPT-5.6 Sol',
+    from: 'gpt-5.6-sol',
+    to: 'gpt-5.6-sol',
+    color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400'
+  },
+  {
+    label: 'GPT-5.6 Terra',
+    from: 'gpt-5.6-terra',
+    to: 'gpt-5.6-terra',
+    color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400'
+  },
+  {
+    label: 'GPT-5.6 Luna',
+    from: 'gpt-5.6-luna',
+    to: 'gpt-5.6-luna',
+    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
   },
   {
     label: 'GPT-5.5',

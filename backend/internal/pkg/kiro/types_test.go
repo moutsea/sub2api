@@ -19,6 +19,9 @@ func TestGetModelIDMapsKiroOAuthModels(t *testing.T) {
 		"minimax-m2.1":             "minimax-m2.1",
 		"qwen3-coder-next":         "qwen3-coder-next",
 		"qwen3-coder-480b-a35b":    "qwen3-coder-next",
+		"gpt-5.6-sol":              "gpt-5.6-sol",
+		"gpt-5.6-terra":            "gpt-5.6-terra",
+		"gpt-5.6-luna":             "gpt-5.6-luna",
 		"claude-sonnet-5":          "claude-sonnet-5",
 		"claude-sonnet-5.0":        "claude-sonnet-5",
 		"claude-sonnet-5-thinking": "claude-sonnet-5",
@@ -41,6 +44,10 @@ func TestIsOAuthModelSupported(t *testing.T) {
 		"deepseek-3.2":             true,
 		"glm-5":                    true,
 		"qwen3-coder-next":         true,
+		"gpt-5.6":                  false,
+		"gpt-5.6-sol":              true,
+		"gpt-5.6-terra":            true,
+		"gpt-5.6-luna":             true,
 		"claude-sonnet-5":          true,
 		"claude-sonnet-5-thinking": true,
 		"claude-opus-4-8":          true,
@@ -48,6 +55,7 @@ func TestIsOAuthModelSupported(t *testing.T) {
 		"claude-opus-4-8-thinking": true,
 		"claude-opus-4-6-thinking": true,
 		"deepseek-3.2-thinking":    false,
+		"gpt-5.6-sol-thinking":     false,
 		"unsupported-future-model": false,
 	}
 	for model, want := range tests {
@@ -63,6 +71,10 @@ func TestGetContextWindowLimitForKiroOAuthModels(t *testing.T) {
 		"glm-5":                    KiroContextWindowLimit,
 		"minimax-m2.5":             KiroContextWindowLimit,
 		"qwen3-coder-next":         KiroContextWindowLimit256K,
+		"gpt-5.6-sol":              KiroContextWindowLimit1M,
+		" GPT-5.6-SOL ":            KiroContextWindowLimit1M,
+		"gpt-5.6-terra":            KiroContextWindowLimit1M,
+		"gpt-5.6-luna":             KiroContextWindowLimit1M,
 		"claude-sonnet-5":          KiroContextWindowLimit1M,
 		"claude-sonnet-5-thinking": KiroContextWindowLimit1M,
 		"claude-opus-4-8":          KiroContextWindowLimit1M,
@@ -73,6 +85,22 @@ func TestGetContextWindowLimitForKiroOAuthModels(t *testing.T) {
 		if got := GetContextWindowLimit(model); got != want {
 			t.Fatalf("GetContextWindowLimit(%q) = %d, want %d", model, got, want)
 		}
+	}
+}
+
+func TestDefaultModelsIncludeGPT56Series(t *testing.T) {
+	found := make(map[string]bool, len(DefaultModels))
+	for _, model := range DefaultModels {
+		found[model.ID] = true
+	}
+
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !found[modelID] {
+			t.Fatalf("DefaultModels does not include %q", modelID)
+		}
+	}
+	if found["gpt-5.6"] {
+		t.Fatal("DefaultModels unexpectedly includes unsupported gpt-5.6 alias")
 	}
 }
 

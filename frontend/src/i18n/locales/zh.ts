@@ -347,6 +347,7 @@ export default {
     sourceImageLimit: '最多支持 {count} 张参考图片',
     noImageReturned: '接口已返回成功，但没有拿到可展示的图片内容',
     generateFailed: '图片请求失败',
+    previousRequestInterrupted: '上一次图片请求未完成，已自动结束，请重新提交',
     lastKeyUnavailable: '上次生成使用的 API Key 当前不可用，请重新选择密钥',
     editRetrySourceUnavailable: '上一次图生图使用的参考图无法在当前页面恢复，请重新上传后再试',
     storagePersistWarning: '浏览器本地缓存空间不足，当前图片可能无法在页面跳转后保留，请尽快下载'

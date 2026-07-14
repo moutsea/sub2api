@@ -43,6 +43,8 @@ export interface EditOpenAIImageOptions {
 
 type OpenAIImageEndpoint = '/v1/images/generations' | '/v1/images/edits'
 
+const IMAGE_PREVIEW_JOB_MAX_WAIT_MS = 11 * 60 * 1000
+
 interface CreatePreviewJobRequestOptions {
   apiKey: string
   endpoint: OpenAIImageEndpoint
@@ -184,6 +186,7 @@ async function waitForPreviewJobResult(
   try {
     let job = await createJob()
     jobId = job.id
+    const deadline = Date.now() + IMAGE_PREVIEW_JOB_MAX_WAIT_MS
 
     while (true) {
       if (job.status === 'succeeded') {
@@ -191,6 +194,10 @@ async function waitForPreviewJobResult(
       }
       if (job.status === 'failed' || job.status === 'canceled') {
         throw new Error(job.error || 'Image generation failed')
+      }
+      if (Date.now() >= deadline) {
+        void cancelPreviewJob(apiKey, jobId)
+        throw new Error('Image generation timed out. Please retry.')
       }
       await waitForJobPoll(3000, signal)
       job = await getPreviewJob(apiKey, jobId, signal)

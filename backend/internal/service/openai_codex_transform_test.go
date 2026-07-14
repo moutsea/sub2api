@@ -60,6 +60,28 @@ func TestNormalizeCodexModel_AcceptsGPT55Aliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodexModel_AcceptsGPT56Aliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "gpt56 alias", input: "gpt-5.6", want: "gpt-5.6"},
+		{name: "gpt56 sol", input: "gpt-5.6-sol", want: "gpt-5.6-sol"},
+		{name: "gpt56 sol high", input: "gpt-5.6-sol-high", want: "gpt-5.6-sol"},
+		{name: "gpt56 terra", input: "gpt-5.6-terra", want: "gpt-5.6-terra"},
+		{name: "gpt56 luna", input: "gpt-5.6-luna", want: "gpt-5.6-luna"},
+		{name: "provider gpt56 luna xhigh", input: "provider/gpt-5.6-luna-xhigh", want: "gpt-5.6-luna"},
+		{name: "gpt56 fuzzy", input: "gpt 5.6 terra", want: "gpt-5.6-terra"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
+		})
+	}
+}
+
 func TestNormalizeCodexModel_AcceptsCurrentOfficialCodexModels(t *testing.T) {
 	tests := []struct {
 		name  string

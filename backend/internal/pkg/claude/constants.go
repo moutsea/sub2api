@@ -16,20 +16,20 @@ import (
 
 // Beta header 常量
 const (
-	BetaOAuth                   = "oauth-2025-04-20"
-	BetaClaudeCode              = "claude-code-20250219"
-	BetaInterleavedThinking     = "interleaved-thinking-2025-05-14"
+	BetaOAuth                    = "oauth-2025-04-20"
+	BetaClaudeCode               = "claude-code-20250219"
+	BetaInterleavedThinking      = "interleaved-thinking-2025-05-14"
 	BetaFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
-	BetaContext1M               = "context-1m-2025-08-07"
-	BetaPromptCachingScope      = "prompt-caching-scope-2026-01-05"
+	BetaContext1M                = "context-1m-2025-08-07"
+	BetaPromptCachingScope       = "prompt-caching-scope-2026-01-05"
 )
 
 // CLI 版本号常量 — 跟随官方 Claude Code CLI 更新时只需改这里
 const (
-	CLIVersion            = "2.1.37"                          // claude-cli 版本
-	StainlessSDKVersion   = "0.70.0"                          // @anthropic-ai/sdk 版本
-	StainlessNodeVersion  = "v24.13.0"                        // Node.js runtime 版本
-	StainlessTimeout      = "600"                             // 默认请求超时（秒）
+	CLIVersion           = "2.1.209" // claude-cli 版本
+	StainlessSDKVersion  = "0.94.0"  // @anthropic-ai/sdk 版本
+	StainlessNodeVersion = "v26.3.0" // Node.js runtime 版本
+	StainlessTimeout     = "600"     // 默认请求超时（秒）
 )
 
 // osPlatform 表示一个 OS + Arch 组合，用于 X-Stainless-OS / X-Stainless-Arch
@@ -209,7 +209,7 @@ func EnsureMetadataUserID(body []byte, seed string) []byte {
 // clientID 部分基于 seed 的 SHA256，sessionUUID 基于 seed 的 UUID v5。
 func generateUserID(seed string) string {
 	h := sha256.Sum256([]byte(seed))
-	clientID := hex.EncodeToString(h[:])                                     // 64 hex chars
+	clientID := hex.EncodeToString(h[:])                                        // 64 hex chars
 	sessionUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte("cc:"+seed)).String() // deterministic UUID
 	return fmt.Sprintf("user_%s_account__session_%s", clientID, sessionUUID)
 }
