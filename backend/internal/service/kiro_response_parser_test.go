@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"strings"
 	"testing"
 )
@@ -12,11 +14,48 @@ import (
 // boundaries for a trivial fixture.
 func mustContentPayload(t *testing.T, content string) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]string{"content": content})
+	return mustKiroEventFrame(t, "assistantResponseEvent", map[string]string{"content": content})
+}
+
+func mustKiroEventFrame(t *testing.T, eventType string, body any) []byte {
+	t.Helper()
+	return mustKiroMessageFrame(t, "event", ":event-type", eventType, body)
+}
+
+func mustKiroExceptionFrame(t *testing.T, exceptionType string, body any) []byte {
+	t.Helper()
+	return mustKiroMessageFrame(t, "exception", ":exception-type", exceptionType, body)
+}
+
+func mustKiroMessageFrame(t *testing.T, messageType, typeHeader, typeValue string, body any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal content payload: %v", err)
 	}
-	return append(payload, []byte(`{"stop":true}`)...)
+
+	headers := appendKiroEventStreamStringHeader(nil, ":message-type", messageType)
+	headers = appendKiroEventStreamStringHeader(headers, typeHeader, typeValue)
+	totalLength := 12 + len(headers) + len(payload) + 4
+	frame := make([]byte, totalLength)
+	binary.BigEndian.PutUint32(frame[0:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(len(headers)))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	copy(frame[12:], headers)
+	copy(frame[12+len(headers):], payload)
+	binary.BigEndian.PutUint32(frame[totalLength-4:], crc32.ChecksumIEEE(frame[:totalLength-4]))
+	return frame
+}
+
+func appendKiroEventStreamStringHeader(dst []byte, name, value string) []byte {
+	dst = append(dst, byte(len(name)))
+	dst = append(dst, name...)
+	dst = append(dst, 7)
+	length := make([]byte, 2)
+	binary.BigEndian.PutUint16(length, uint16(len(value)))
+	dst = append(dst, length...)
+	dst = append(dst, value...)
+	return dst
 }
 
 // TestKiroResponseParser_ParseComplete_ThinkingEnabledSeparatesBlocks verifies

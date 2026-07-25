@@ -10,16 +10,17 @@ import (
 
 // OpenAIStreamConverter converts CW StreamEvents to OpenAI chat.completion.chunk SSE events.
 type OpenAIStreamConverter struct {
-	messageID   string
-	model       string
-	inputTokens int
+	messageID    string
+	model        string
+	inputTokens  int
+	finishReason string
 
 	// State tracking
-	sawToolUse       bool
+	sawToolUse        bool
 	totalOutputTokens int
-	toolCallIndex    int
-	activeToolID     string
-	inTextBlock      bool
+	toolCallIndex     int
+	activeToolID      string
+	inTextBlock       bool
 
 	// Cache tokens
 	cacheCreationTokens int
@@ -29,9 +30,9 @@ type OpenAIStreamConverter struct {
 // NewOpenAIStreamConverter creates a new OpenAI stream converter.
 func NewOpenAIStreamConverter(messageID, model string, inputTokens int) *OpenAIStreamConverter {
 	return &OpenAIStreamConverter{
-		messageID:   messageID,
-		model:       model,
-		inputTokens: inputTokens,
+		messageID:     messageID,
+		model:         model,
+		inputTokens:   inputTokens,
 		toolCallIndex: -1,
 	}
 }
@@ -40,6 +41,26 @@ func NewOpenAIStreamConverter(messageID, model string, inputTokens int) *OpenAIS
 func (c *OpenAIStreamConverter) SetCacheTokens(creation, read int) {
 	c.cacheCreationTokens = creation
 	c.cacheReadTokens = read
+}
+
+func (c *OpenAIStreamConverter) SetUsage(input, output, cacheCreation, cacheRead int) {
+	c.inputTokens = input
+	c.totalOutputTokens = output
+	c.cacheCreationTokens = cacheCreation
+	c.cacheReadTokens = cacheRead
+}
+
+func (c *OpenAIStreamConverter) SetFinishReason(reason string) {
+	switch reason {
+	case "tool_use":
+		c.finishReason = "tool_calls"
+	case "max_tokens", "model_context_window_exceeded":
+		c.finishReason = "length"
+	case "refusal":
+		c.finishReason = "content_filter"
+	default:
+		c.finishReason = "stop"
+	}
 }
 
 // SawToolUse returns whether any tool use was seen.
@@ -67,6 +88,8 @@ func (c *OpenAIStreamConverter) ConvertEvent(e StreamEvent) string {
 	case EventThinkingDelta:
 		// Skip thinking blocks for OpenAI format
 		return ""
+	case EventError:
+		return c.BuildErrorEvent(e.ErrorType, e.ErrorMessage)
 	default:
 		return ""
 	}
@@ -86,8 +109,11 @@ func (c *OpenAIStreamConverter) BuildFinalEvent() string {
 	var sb strings.Builder
 
 	// Finish reason
-	finishReason := "stop"
-	if c.sawToolUse {
+	finishReason := c.finishReason
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+	if c.sawToolUse && c.finishReason == "" {
 		finishReason = "tool_calls"
 	}
 
@@ -103,9 +129,9 @@ func (c *OpenAIStreamConverter) BuildFinalEvent() string {
 		"model":   c.model,
 		"choices": []any{},
 		"usage": map[string]any{
-			"prompt_tokens":              c.inputTokens,
-			"completion_tokens":          c.totalOutputTokens,
-			"total_tokens":               c.inputTokens + c.totalOutputTokens,
+			"prompt_tokens":               c.inputTokens,
+			"completion_tokens":           c.totalOutputTokens,
+			"total_tokens":                c.inputTokens + c.totalOutputTokens,
 			"cache_creation_input_tokens": c.cacheCreationTokens,
 			"cache_read_input_tokens":     c.cacheReadTokens,
 		},
@@ -116,6 +142,21 @@ func (c *OpenAIStreamConverter) BuildFinalEvent() string {
 	sb.WriteString("data: [DONE]\n\n")
 
 	return sb.String()
+}
+
+func (c *OpenAIStreamConverter) BuildErrorEvent(errorType, message string) string {
+	if errorType == "" {
+		errorType = "upstream_error"
+	}
+	if message == "" {
+		message = "Upstream stream failed"
+	}
+	return formatOpenAISSE(map[string]any{
+		"error": map[string]any{
+			"type":    errorType,
+			"message": message,
+		},
+	}) + "data: [DONE]\n\n"
 }
 
 // BuildOpenAINonStreamResponse builds a complete non-streaming OpenAI response from a CompleteResponse.

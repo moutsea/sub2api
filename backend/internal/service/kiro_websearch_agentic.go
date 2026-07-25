@@ -211,6 +211,9 @@ func isClaudeBuiltinWebSearch(tool kiro.ClaudeTool) bool {
 // ForwardWithWebSearch handles Claude API requests with web_search agentic loop support
 func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, claudeReq *kiro.ClaudeRequest) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-WebSearch] account=%s", account.Name)
+	if account.IsKiroApiKey() {
+		return s.Forward(ctx, c, account, body)
+	}
 
 	if !account.IsKiroApiKey() && kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
 		log.Printf("%s enabled thinking mode from model alias: %s", prefix, claudeReq.Model)
@@ -461,19 +464,11 @@ func (s *KiroGatewayService) forwardStreamWithWebSearch(ctx context.Context, c *
 // and the final Forward() still applies account mapping exactly once.
 func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest) (*http.Response, error) {
 	prefix := "[kiro-WebSearch]"
+	if account.IsKiroApiKey() {
+		return nil, fmt.Errorf("kiro apikey web search must use the Anthropic Messages passthrough")
+	}
 	execFreeTier := s.isKiroFreeTier(account)
 	execReq := *claudeReq
-	if account.IsKiroApiKey() {
-		originalModel := execReq.Model
-		mappedModel := account.GetMappedModel(originalModel)
-		if mappedModel != originalModel {
-			execReq.Model = mappedModel
-			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
-		}
-		if isKiroOAuthOnlyModel(execReq.Model) {
-			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", execReq.Model)
-		}
-	}
 	requestReq := &execReq
 	if injectKiroOAuthIdentitySystemPrompt(account, requestReq) {
 		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
@@ -572,7 +567,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 					return nil, kiroInitialResponseFailover("response_headers", deadline.timeout)
 				}
 				deadline.close()
-				safeErr := sanitizeUpstreamErrorMessage(err.Error())
+				safeErr := sanitizeKiroClientErrorMessage(err.Error())
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:    account.Platform,
 					AccountID:   account.ID,
@@ -600,7 +595,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				_ = resp.Body.Close()
 				deadline.close()
 
-				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
+				upstreamMsg := sanitizeKiroClientErrorMessage(extractKiroErrorMessage(respBody))
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
@@ -637,7 +632,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				_ = resp.Body.Close()
 				deadline.close()
 
-				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
+				upstreamMsg := sanitizeKiroClientErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -659,7 +654,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				_ = resp.Body.Close()
 				deadline.close()
 
-				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
+				upstreamMsg := sanitizeKiroClientErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -681,7 +676,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 				_ = resp.Body.Close()
 				deadline.close()
 
-				upstreamMsg := sanitizeUpstreamErrorMessage(extractKiroErrorMessage(respBody))
+				upstreamMsg := sanitizeKiroClientErrorMessage(extractKiroErrorMessage(respBody))
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,

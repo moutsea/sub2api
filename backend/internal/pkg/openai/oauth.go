@@ -251,6 +251,7 @@ type IDTokenClaims struct {
 type OpenAIAuthClaims struct {
 	ChatGPTAccountID string              `json:"chatgpt_account_id"`
 	ChatGPTUserID    string              `json:"chatgpt_user_id"`
+	ChatGPTPlanType  string              `json:"chatgpt_plan_type"`
 	UserID           string              `json:"user_id"`
 	Organizations    []OrganizationClaim `json:"organizations"`
 }
@@ -349,6 +350,7 @@ type UserInfo struct {
 	Email            string
 	ChatGPTAccountID string
 	ChatGPTUserID    string
+	PlanType         string
 	UserID           string
 	OrganizationID   string
 	Organizations    []OrganizationClaim
@@ -363,6 +365,7 @@ func (c *IDTokenClaims) GetUserInfo() *UserInfo {
 	if c.OpenAIAuth != nil {
 		info.ChatGPTAccountID = c.OpenAIAuth.ChatGPTAccountID
 		info.ChatGPTUserID = c.OpenAIAuth.ChatGPTUserID
+		info.PlanType = c.OpenAIAuth.ChatGPTPlanType
 		info.UserID = c.OpenAIAuth.UserID
 		info.Organizations = c.OpenAIAuth.Organizations
 

@@ -57,6 +57,18 @@ func TestConvertOpenAIToClaude_BasicMessages(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToClaude_StreamDefaultsToFalse(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hello"}]}`)
+
+	req, err := ConvertOpenAIToClaude(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Stream {
+		t.Error("stream: got true, want false when omitted")
+	}
+}
+
 func TestConvertOpenAIToClaude_ToolCalls(t *testing.T) {
 	body := `{
 		"model": "claude-sonnet-4-20250514",

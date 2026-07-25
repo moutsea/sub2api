@@ -1601,7 +1601,21 @@ export default {
         codexImageGenerationBridgeDisabledDesc: '禁止该账号为 Codex 请求注入图片工具。',
         codexImageGenerationBridgeBadgeInherit: '全局策略',
         codexImageGenerationBridgeBadgeEnabled: '账号开启',
-        codexImageGenerationBridgeBadgeDisabled: '账号关闭'
+        codexImageGenerationBridgeBadgeDisabled: '账号关闭',
+        headerOverride: {
+          title: '自定义上游请求头',
+          hint: '为该 OpenAI API Key 账号固定覆写非敏感请求头。认证、连接和会话类请求头不可覆写。',
+          namePlaceholder: '请求头名称',
+          valuePlaceholder: '请求头值',
+          addRow: '添加请求头',
+          fillTemplate: '填入 Codex 模板',
+          emptyValueHint: '值为空的行仅作为模板占位，不会发送到上游。',
+          invalidName: '请求头名称无效',
+          blockedName: '该请求头涉及认证、连接或会话隔离，不能覆写',
+          duplicateName: '请求头名称重复（不区分大小写）',
+          invalidValue: '请求头值包含非法字符或长度超限',
+          tooManyEntries: '请求头数量不能超过 64 个'
+        }
       },
       modelRestriction: '模型限制（可选）',
       modelWhitelist: '模型白名单',

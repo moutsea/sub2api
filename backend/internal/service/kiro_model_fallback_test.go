@@ -1,11 +1,35 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type recordingKiroAPIKeyUpstream struct {
+	requestBody []byte
+	requestURL  string
+}
+
+func (u *recordingKiroAPIKeyUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	u.requestBody = body
+	u.requestURL = req.URL.String()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}]}`)),
+		Header:     make(http.Header),
+	}, nil
+}
 
 func TestResolveKiroUpstreamModelUsesCachedUnsupportedFallback(t *testing.T) {
 	svc := &KiroGatewayService{}
@@ -65,7 +89,7 @@ func TestResolveKiroUpstreamModelIgnoresApiKeyAccounts(t *testing.T) {
 	require.Equal(t, kiroDynamicProbeModelOpus47, got)
 }
 
-func TestKiroOAuthModelsOnlyApplyToNonApiKeyAccounts(t *testing.T) {
+func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 	oauthAccount := &Account{
 		ID:          8,
 		Platform:    PlatformKiro,
@@ -85,14 +109,12 @@ func TestKiroOAuthModelsOnlyApplyToNonApiKeyAccounts(t *testing.T) {
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-luna"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus48))
-	require.False(t, IsKiroModelSupportedByAccount(apiKeyAccount, "deepseek-3.2"))
-	require.False(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6"))
+	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "deepseek-3.2"))
+	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6"))
+	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6-sol"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "claude-sonnet-4-5"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, KiroModelOpus48))
-	require.True(t, isKiroOAuthOnlyModel("qwen3-coder-next"))
-	require.True(t, isKiroOAuthOnlyModel("gpt-5.6-sol"))
-	require.False(t, isKiroOAuthOnlyModel("claude-sonnet-4-5"))
-	require.False(t, isKiroOAuthOnlyModel(KiroModelOpus48))
+	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "custom-upstream-model"))
 
 	oauthAccount.Credentials["model_mapping"] = map[string]any{"glm-5": "glm-5"}
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "glm-5"))
@@ -113,13 +135,40 @@ func TestKiroAPIKeyDefaultModelsIncludesOpus48(t *testing.T) {
 	require.Equal(t, KiroModelOpus48, models[0].ID)
 
 	var count int
+	found := make(map[string]bool)
 	for _, model := range models {
+		found[model.ID] = true
 		if model.ID == KiroModelOpus48 {
 			count++
 		}
 	}
 	require.Equal(t, 1, count)
+	require.True(t, found["gpt-5.6-sol"])
+	require.True(t, found["gpt-5.6-terra"])
+	require.True(t, found["gpt-5.6-luna"])
 	require.True(t, IsKiroModelSupported(KiroModelOpus48))
+}
+
+func TestKiroAPIKeyConnectionPassesGPTModelToCustomUpstream(t *testing.T) {
+	upstream := &recordingKiroAPIKeyUpstream{}
+	svc := &KiroGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:       12,
+		Platform: PlatformKiro,
+		Credentials: map[string]any{
+			"auth_type": KiroAuthMethodAPIKey,
+			"base_url":  "https://custom.example",
+		},
+	}
+
+	result, err := svc.testClaudeAPIConnection(context.Background(), account, "secret", "gpt-5.6-sol")
+	require.NoError(t, err)
+	require.Equal(t, "gpt-5.6-sol", result.MappedModel)
+	require.Equal(t, "https://custom.example/v1/messages", upstream.requestURL)
+
+	var requestBody map[string]any
+	require.NoError(t, json.Unmarshal(upstream.requestBody, &requestBody))
+	require.Equal(t, "gpt-5.6-sol", requestBody["model"])
 }
 
 func TestRemapModelForFreeTierAllowsKiroFreeModels(t *testing.T) {

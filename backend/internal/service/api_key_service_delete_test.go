@@ -240,9 +240,11 @@ func TestApiKeyService_Delete_NotFound(t *testing.T) {
 // 预期行为：
 //   - GetKeyAndOwnerID 返回正确的所有者 ID
 //   - 所有权验证通过
-//   - 缓存被清除（在删除之前）
+//   - 创建计数缓存在删除之前被清除
 //   - Delete 被调用但返回错误
 //   - 返回包含 "delete api key" 的错误信息
+//   - auth 缓存不被清除：生产实现采用「先删 DB 后失效缓存」，删除失败会提前
+//     返回，InvalidateAuthCacheByKey 不会被调用
 func TestApiKeyService_Delete_DeleteFails(t *testing.T) {
 	repo := &apiKeyRepoStub{
 		apiKey:    &APIKey{ID: 42, UserID: 3, Key: "k"},
@@ -255,6 +257,6 @@ func TestApiKeyService_Delete_DeleteFails(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "delete api key")
 	require.Equal(t, []int64{3}, repo.deletedIDs)   // 验证删除操作被调用
-	require.Equal(t, []int64{3}, cache.invalidated) // 验证缓存已被清除（即使删除失败）
-	require.Equal(t, []string{svc.authCacheKey("k")}, cache.deleteAuthKeys)
+	require.Equal(t, []int64{3}, cache.invalidated) // 验证创建计数缓存已被清除
+	require.Empty(t, cache.deleteAuthKeys)          // 删除失败提前返回，auth 缓存未失效
 }

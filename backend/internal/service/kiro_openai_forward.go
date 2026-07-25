@@ -30,7 +30,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		return nil, fmt.Errorf("convert openai to claude: %w", err)
 	}
 
-	// Ensure stream is set (Kiro always uses streaming internally)
+	// Preserve the downstream response mode; Kiro still streams internally.
 	wantStream := claudeReq.Stream
 	if !account.IsKiroApiKey() && kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
 		log.Printf("%s enabled thinking mode from model alias: %s", prefix, claudeReq.Model)
@@ -51,9 +51,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 			claudeReq.Model = mappedModel
 			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
 		}
-		if isKiroOAuthOnlyModel(claudeReq.Model) {
-			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
-		}
+		return s.forwardKiroAPIKeyChatCompletions(ctx, c, account, claudeReq, originalModel, startTime)
 	}
 	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
 		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
@@ -262,7 +260,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 					}
 
 					return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error",
-						"Bad request: "+extractKiroErrorMessage(respBody))
+						"Bad request: "+sanitizeKiroClientErrorMessage(rawErrorMsg))
 				}
 
 				if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(resp.StatusCode) {

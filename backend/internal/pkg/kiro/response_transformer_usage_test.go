@@ -1,7 +1,10 @@
 package kiro
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
+	"strings"
 	"testing"
 )
 
@@ -31,7 +34,15 @@ func TestExtractTokenUsage_NormalizesInputWithCache(t *testing.T) {
 
 func TestAwsEventStreamParser_EmitsTokenUsageEvent(t *testing.T) {
 	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
-	events := parser.Process([]byte(`{"tokenUsage":{"inputTokens":120,"outputTokens":30,"cacheCreationInputTokens":10,"cacheReadInputTokens":20,"contextUsagePercentage":55.5}}`))
+	events := parser.Process(mustEventFrame(t, "messageMetadataEvent", map[string]any{
+		"tokenUsage": map[string]any{
+			"inputTokens":              120,
+			"outputTokens":             30,
+			"cacheCreationInputTokens": 10,
+			"cacheReadInputTokens":     20,
+			"contextUsagePercentage":   55.5,
+		},
+	}))
 
 	var usageEvent *StreamEvent
 	for i := range events {
@@ -64,8 +75,9 @@ func TestAwsEventStreamParser_EmitsTokenUsageEvent(t *testing.T) {
 }
 
 func TestParseCompleteResponseWithNameRestore_UsesUpstreamTokenUsage(t *testing.T) {
-	// Simulate non-stream payload composed of multiple JSON event objects.
-	payload := []byte(`{"content":"hello"}{"tokenUsage":{"inputTokens":42,"outputTokens":7,"cacheReadInputTokens":5}}{"stop":true}`)
+	payload := append(mustContentPayload(t, "hello"), mustEventFrame(t, "messageMetadataEvent", map[string]any{
+		"tokenUsage": map[string]any{"inputTokens": 42, "outputTokens": 7, "cacheReadInputTokens": 5},
+	})...)
 	resp := ParseCompleteResponseWithNameRestore(payload, nil)
 
 	if resp == nil {
@@ -87,7 +99,11 @@ func TestParseCompleteResponseWithNameRestore_UsesUpstreamTokenUsage(t *testing.
 
 func TestAwsEventStreamParser_EnterPlanModeEmptyInputDoesNotInjectSoftLimit(t *testing.T) {
 	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
-	events := parser.Process([]byte(`{"toolUseId":"toolu_plan","name":"EnterPlanMode","stop":true}`))
+	events := parser.Process(mustEventFrame(t, "toolUseEvent", map[string]any{
+		"toolUseId": "toolu_plan",
+		"name":      "EnterPlanMode",
+		"stop":      true,
+	}))
 	events = append(events, parser.Finish()...)
 
 	var sawToolStart, sawToolStop bool
@@ -111,8 +127,66 @@ func TestAwsEventStreamParser_EnterPlanModeEmptyInputDoesNotInjectSoftLimit(t *t
 	}
 }
 
+func TestAwsEventStreamParser_AccumulatesToolInputAcrossFrames(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	payload := append(
+		mustEventFrame(t, "toolUseEvent", map[string]any{
+			"toolUseId": "toolu_multi",
+			"name":      "Read",
+			"input":     `{"path":"`,
+		}),
+		mustEventFrame(t, "toolUseEvent", map[string]any{
+			"toolUseId": "toolu_multi",
+			"input":     "file.txt\"",
+		})...,
+	)
+	payload = append(payload, mustEventFrame(t, "toolUseEvent", map[string]any{
+		"toolUseId": "toolu_multi",
+		"input":     `}`,
+		"stop":      true,
+	})...)
+
+	var events []StreamEvent
+	for offset := 0; offset < len(payload); offset += 7 {
+		end := offset + 7
+		if end > len(payload) {
+			end = len(payload)
+		}
+		events = append(events, parser.Process(payload[offset:end])...)
+	}
+	events = append(events, parser.Finish()...)
+
+	var starts, stops, errors int
+	var input strings.Builder
+	for _, event := range events {
+		switch event.Type {
+		case EventContentBlockStart:
+			if event.BlockType.Kind == BlockToolUse {
+				starts++
+			}
+		case EventToolUseInputDelta:
+			input.WriteString(event.PartialJSON)
+		case EventToolUseStop:
+			stops++
+		case EventError:
+			errors++
+		}
+	}
+
+	if starts != 1 || stops != 1 || errors != 0 {
+		t.Fatalf("starts=%d stops=%d errors=%d, events=%#v", starts, stops, errors, events)
+	}
+	if got := input.String(); got != `{"path":"file.txt"}` {
+		t.Fatalf("tool input = %q", got)
+	}
+}
+
 func TestBuildClaudeNonStreamResponse_EnterPlanModeEmptyInputIsEmptyObject(t *testing.T) {
-	payload := []byte(`{"toolUseId":"toolu_plan","name":"EnterPlanMode","stop":true}`)
+	payload := mustEventFrame(t, "toolUseEvent", map[string]any{
+		"toolUseId": "toolu_plan",
+		"name":      "EnterPlanMode",
+		"stop":      true,
+	})
 	resp := ParseCompleteResponseWithNameRestore(payload, nil)
 	claudeResp := BuildClaudeNonStreamResponse("msg_test", "claude-sonnet-4-20250514", 1, resp)
 
@@ -178,7 +252,7 @@ func TestAwsEventStreamParser_ThinkingEnabledKeepsDelayedStartPreludeAsText(t *t
 	} {
 		events = append(events, parser.Process(mustContentPayload(t, part))...)
 	}
-	events = append(events, parser.Process([]byte(`{"stop":true}`))...)
+	events = append(events, parser.Finish()...)
 
 	thinking, text := collectThinkingAndText(events)
 	if thinking != "secret" {
@@ -196,7 +270,7 @@ func TestAwsEventStreamParser_ThinkingEnabledUntaggedContentRemainsText(t *testi
 	answer := "This is a normal answer without thinking tags."
 	var events []StreamEvent
 	events = append(events, parser.Process(mustContentPayload(t, answer))...)
-	events = append(events, parser.Process([]byte(`{"stop":true}`))...)
+	events = append(events, parser.Finish()...)
 
 	thinking, text := collectThinkingAndText(events)
 	if thinking != "" {
@@ -235,7 +309,7 @@ func TestStreamEventConverter_ThinkingStopEmitsSignature(t *testing.T) {
 }
 
 func TestBuildClaudeNonStreamResponse_IncludesThinkingBlock(t *testing.T) {
-	payload := append(mustContentPayload(t, "<thinking>\nsecret</thinking>\n\nanswer"), []byte(`{"stop":true}`)...)
+	payload := mustContentPayload(t, "<thinking>\nsecret</thinking>\n\nanswer")
 	resp := ParseCompleteResponseWithNameRestoreAndThinking(payload, nil, true)
 	claudeResp := BuildClaudeNonStreamResponse("msg_test", "claude-opus-4-6", 1, resp)
 
@@ -257,6 +331,113 @@ func TestBuildClaudeNonStreamResponse_IncludesThinkingBlock(t *testing.T) {
 	}
 }
 
+func TestAwsEventStreamParser_IgnoresContentFromUnknownEvent(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	payload := append(
+		mustEventFrame(t, "followupPromptEvent", map[string]any{"content": "course"}),
+		mustContentPayload(t, "answer")...,
+	)
+	events := parser.Process(payload)
+	events = append(events, parser.Finish()...)
+
+	_, text := collectThinkingAndText(events)
+	if text != "answer" {
+		t.Fatalf("text = %q, want answer", text)
+	}
+}
+
+func TestAwsEventStreamParser_DecodesFrameAcrossChunks(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	frame := mustContentPayload(t, "chunked")
+	var events []StreamEvent
+	for offset := 0; offset < len(frame); offset += 3 {
+		end := offset + 3
+		if end > len(frame) {
+			end = len(frame)
+		}
+		events = append(events, parser.Process(frame[offset:end])...)
+	}
+	events = append(events, parser.Finish()...)
+
+	_, text := collectThinkingAndText(events)
+	if text != "chunked" {
+		t.Fatalf("text = %q, want chunked", text)
+	}
+}
+
+func TestAwsEventStreamParser_DecodesAggregateLargerThanBufferLimit(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	first := mustContentPayload(t, "first")
+	second := mustContentPayload(t, "second")
+	parser.SetMaxBufferSize(len(first) + 1)
+
+	events := parser.Process(append(first, second...))
+	events = append(events, parser.Finish()...)
+
+	_, text := collectThinkingAndText(events)
+	if text != "firstsecond" {
+		t.Fatalf("text = %q, want firstsecond", text)
+	}
+}
+
+func TestAwsEventStreamParser_RejectsInvalidMessageCRC(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	frame := mustContentPayload(t, "must not leak")
+	frame[len(frame)-1] ^= 0xff
+	events := parser.Process(frame)
+	events = append(events, parser.Finish()...)
+
+	_, text := collectThinkingAndText(events)
+	if text != "" {
+		t.Fatalf("text = %q, want empty", text)
+	}
+	if parser.ParseErrorCount() != 1 {
+		t.Fatalf("parse errors = %d, want 1", parser.ParseErrorCount())
+	}
+	if len(events) != 1 || events[0].Type != EventError {
+		t.Fatalf("events = %#v, want one EventError", events)
+	}
+}
+
+func TestAwsEventStreamParser_ValidFrameFollowedByInvalidCRCStopsWithError(t *testing.T) {
+	parser := NewAwsEventStreamParser("msg_test", "claude-sonnet-4-20250514")
+	validFrame := mustContentPayload(t, "partial")
+	invalidFrame := mustContentPayload(t, "must not leak")
+	invalidFrame[len(invalidFrame)-1] ^= 0xff
+
+	events := parser.Process(append(validFrame, invalidFrame...))
+	events = append(events, parser.Finish()...)
+
+	_, text := collectThinkingAndText(events)
+	if text != "partial" {
+		t.Fatalf("text = %q, want partial", text)
+	}
+	if events[len(events)-1].Type != EventError {
+		t.Fatalf("last event = %#v, want EventError", events[len(events)-1])
+	}
+	for _, event := range events {
+		if event.Type == EventMessageStop {
+			t.Fatalf("events contain normal message stop after CRC failure: %#v", events)
+		}
+	}
+}
+
+func TestParseCompleteResponseStrictRejectsBadCRC(t *testing.T) {
+	frame := mustContentPayload(t, "must not parse")
+	frame[len(frame)-1] ^= 0xff
+
+	resp, err := ParseCompleteResponseWithNameRestoreAndThinkingStrict(frame, nil, false)
+	if err == nil {
+		t.Fatal("expected CRC validation error")
+	}
+	if resp != nil {
+		t.Fatalf("response = %+v, want nil", resp)
+	}
+	if !strings.Contains(err.Error(), "CRC mismatch") {
+		t.Fatalf("error = %q, want CRC mismatch", err)
+	}
+}
+
 func collectThinkingAndText(events []StreamEvent) (string, string) {
 	var thinking, text string
 	for _, event := range events {
@@ -272,9 +453,36 @@ func collectThinkingAndText(events []StreamEvent) (string, string) {
 
 func mustContentPayload(t *testing.T, content string) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]string{"content": content})
+	return mustEventFrame(t, "assistantResponseEvent", map[string]string{"content": content})
+}
+
+func mustEventFrame(t *testing.T, eventType string, body any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return payload
+
+	headers := appendEventStreamStringHeader(nil, ":message-type", "event")
+	headers = appendEventStreamStringHeader(headers, ":event-type", eventType)
+	totalLength := awsEventStreamPreludeSize + len(headers) + len(payload) + 4
+	frame := make([]byte, totalLength)
+	binary.BigEndian.PutUint32(frame[0:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(len(headers)))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	copy(frame[awsEventStreamPreludeSize:], headers)
+	copy(frame[awsEventStreamPreludeSize+len(headers):], payload)
+	binary.BigEndian.PutUint32(frame[totalLength-4:], crc32.ChecksumIEEE(frame[:totalLength-4]))
+	return frame
+}
+
+func appendEventStreamStringHeader(dst []byte, name, value string) []byte {
+	dst = append(dst, byte(len(name)))
+	dst = append(dst, name...)
+	dst = append(dst, 7)
+	length := make([]byte, 2)
+	binary.BigEndian.PutUint16(length, uint16(len(value)))
+	dst = append(dst, length...)
+	dst = append(dst, value...)
+	return dst
 }

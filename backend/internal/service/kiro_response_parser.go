@@ -35,9 +35,9 @@ type ToolCall struct {
 // avoid leaking private reasoning into assistant messages.
 func (p *KiroResponseParser) ParseComplete(data []byte, thinkingEnabled bool) (*ParseResult, error) {
 	// Use kiro package's parser with thinking-mode awareness
-	completeResp := kiro.ParseCompleteResponseWithNameRestoreAndThinking(data, nil, thinkingEnabled)
-	if completeResp == nil {
-		return &ParseResult{}, nil
+	completeResp, err := kiro.ParseCompleteResponseWithNameRestoreAndThinkingStrict(data, nil, thinkingEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("parse Kiro event stream: %s", sanitizeKiroClientErrorMessage(err.Error()))
 	}
 
 	result := &ParseResult{

@@ -1466,7 +1466,21 @@ export default {
         codexImageGenerationBridgeDisabledDesc: 'Block this account from injecting the image tool for Codex requests.',
         codexImageGenerationBridgeBadgeInherit: 'Global policy',
         codexImageGenerationBridgeBadgeEnabled: 'Account on',
-        codexImageGenerationBridgeBadgeDisabled: 'Account off'
+        codexImageGenerationBridgeBadgeDisabled: 'Account off',
+        headerOverride: {
+          title: 'Custom upstream headers',
+          hint: 'Override non-sensitive headers for this OpenAI API Key account. Authentication, connection, and session headers are blocked.',
+          namePlaceholder: 'Header name',
+          valuePlaceholder: 'Header value',
+          addRow: 'Add header',
+          fillTemplate: 'Fill Codex template',
+          emptyValueHint: 'Rows with empty values are placeholders and are not sent upstream.',
+          invalidName: 'Invalid header name',
+          blockedName: 'Authentication, connection, and session headers cannot be overridden',
+          duplicateName: 'Duplicate header name (case-insensitive)',
+          invalidValue: 'Header value contains invalid characters or is too long',
+          tooManyEntries: 'No more than 64 headers are allowed'
+        }
       },
       modelRestriction: 'Model Restriction (Optional)',
       modelWhitelist: 'Model Whitelist',

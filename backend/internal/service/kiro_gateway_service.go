@@ -597,9 +597,6 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			claudeReq.Model = mappedModel
 			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
 		}
-		if isKiroOAuthOnlyModel(claudeReq.Model) {
-			return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", claudeReq.Model)
-		}
 	}
 	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
 		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
@@ -768,7 +765,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 						return nil, kiroInitialResponseFailover("response_headers", deadline.timeout)
 					}
 					deadline.close()
-					safeErr := sanitizeUpstreamErrorMessage(err.Error())
+					safeErr := sanitizeKiroClientErrorMessage(err.Error())
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						Platform:           account.Platform,
 						AccountID:          account.ID,
@@ -798,7 +795,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					deadline.close()
 
 					upstreamMsg := extractKiroErrorMessage(respBody)
-					upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+					upstreamMsg = sanitizeKiroClientErrorMessage(upstreamMsg)
 
 					s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -937,7 +934,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 					if attempt < kiroMaxRetries {
 						upstreamMsg := extractKiroErrorMessage(respBody)
-						upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+						upstreamMsg = sanitizeKiroClientErrorMessage(upstreamMsg)
 						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 							Platform:           account.Platform,
 							AccountID:          account.ID,
@@ -1009,7 +1006,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 				if s.shouldFailoverUpstreamError(resp.StatusCode) {
 					upstreamMsg := extractKiroErrorMessage(respBody)
-					upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+					upstreamMsg = sanitizeKiroClientErrorMessage(upstreamMsg)
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						Platform:           account.Platform,
 						AccountID:          account.ID,
@@ -1237,6 +1234,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 
 	streamCommitted := false
 	sawRenderableEvent := false
+	streamFailed := false
 
 	writeFormattedClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
 		for _, claudeEvent := range events {
@@ -1393,6 +1391,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 	// Error event tracking
 	errorEventSent := false
 	sendErrorEvent := func(reason string) {
+		streamFailed = true
 		if errorEventSent {
 			return
 		}
@@ -1414,6 +1413,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			if !streamCommitted {
 				return nil, c.Request.Context().Err()
 			}
+			streamFailed = true
 			goto finishStream
 
 		case chunk, ok := <-chunkCh:
@@ -1423,9 +1423,9 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			}
 			if chunk.err != nil {
 				if chunk.err == io.EOF {
-					if !parser.MessageStopped() {
-						log.Printf("Stream EOF without stop event (kiro): duration=%v parse_errors=%d message_stopped=%v",
-							time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped())
+					if parser.ParseErrorCount() > 0 {
+						log.Printf("Stream EOF after Kiro parse errors: duration=%v parse_errors=%d",
+							time.Since(startTime), parser.ParseErrorCount())
 					}
 					goto finishStream
 				}
@@ -1471,7 +1471,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 				}
 
 				if event.Type == kiro.EventError {
-					msg := sanitizeUpstreamErrorMessage(event.ErrorMessage)
+					msg := sanitizeKiroClientErrorMessage(event.ErrorMessage)
 					if msg == "" {
 						msg = "kiro_stream_error"
 					}
@@ -1520,8 +1520,19 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 
 finishStream:
 	// Finish parsing and get remaining events
-	finalParserEvents := parser.Finish()
+	var finalParserEvents []kiro.StreamEvent
+	if !streamFailed {
+		finalParserEvents = parser.Finish()
+	}
 	for _, event := range finalParserEvents {
+		if event.Type == kiro.EventError {
+			msg := sanitizeKiroClientErrorMessage(event.ErrorMessage)
+			if msg == "" {
+				msg = "kiro_stream_error"
+			}
+			sendErrorEvent(msg)
+			break
+		}
 		if isRenderableKiroStreamEvent(event) {
 			sawRenderableEvent = true
 		}
@@ -1536,6 +1547,21 @@ finishStream:
 			}
 			break
 		}
+	}
+	if streamFailed {
+		usage := tokenUsage
+		if usage == nil {
+			usage = &ClaudeUsage{
+				InputTokens:         inputTokens,
+				OutputTokens:        converter.TotalOutputTokens(),
+				ContextUsagePercent: contextPct,
+			}
+		}
+		return &kiroStreamResult{
+			usage:             usage,
+			firstTokenMs:      firstTokenMs,
+			usageFromUpstream: tokenUsage != nil,
+		}, nil
 	}
 
 	if !sawRenderableEvent {
@@ -1642,7 +1668,14 @@ func (s *KiroGatewayService) handleNonStreamingResponseWithOptions(c *gin.Contex
 
 	// Parse complete response with tool name restoration
 	messageID := "msg_" + uuid.New().String()[:24]
-	parsedResp := kiro.ParseCompleteResponseWithNameRestoreAndThinking(respBody, toolNameReverseMap, thinkingEnabled)
+	parsedResp, err := kiro.ParseCompleteResponseWithNameRestoreAndThinkingStrict(respBody, toolNameReverseMap, thinkingEnabled)
+	if err != nil {
+		log.Printf("Kiro upstream returned invalid non-stream response: duration=%v error=%v", time.Since(startTime), err)
+		return nil, &UpstreamFailoverError{
+			StatusCode: http.StatusBadGateway,
+			Message:    sanitizeKiroClientErrorMessage(err.Error()),
+		}
+	}
 	if !isRenderableKiroCompleteResponse(parsedResp) {
 		log.Printf("Kiro upstream returned empty non-stream response before downstream commit: duration=%v body_size=%d", time.Since(startTime), len(respBody))
 		return nil, kiroEmptyStreamFailover("kiro_empty_response")
@@ -1970,7 +2003,7 @@ func (s *KiroGatewayService) writeClaudeError(c *gin.Context, status int, errTyp
 
 func (s *KiroGatewayService) writeMappedClaudeError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte) error {
 	upstreamMsg := extractKiroErrorMessage(body)
-	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	upstreamMsg = sanitizeKiroClientErrorMessage(upstreamMsg)
 
 	setOpsUpstreamError(c, upstreamStatus, upstreamMsg, "")
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -2188,10 +2221,21 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 				break
 			}
 
-			s.markKiroModelSupported(account, testModel, activeTestModel)
-
 			// Parse response to extract text
-			parsedResp := kiro.ParseCompleteResponse(respBody)
+			parsedResp, parseErr := kiro.ParseCompleteResponseWithNameRestoreAndThinkingStrict(respBody, nil, false)
+			if parseErr != nil {
+				safeParseErr := sanitizeKiroClientErrorMessage(parseErr.Error())
+				lastErr = fmt.Errorf("endpoint %s returned invalid event stream: %s", ep.Name, safeParseErr)
+				log.Printf("[kiro-TestConnection] endpoint=%s invalid_event_stream error=%s, trying next", ep.Name, safeParseErr)
+				break
+			}
+			if !isRenderableKiroCompleteResponse(parsedResp) {
+				lastErr = fmt.Errorf("endpoint %s returned empty response", ep.Name)
+				log.Printf("[kiro-TestConnection] endpoint=%s empty_response, trying next", ep.Name)
+				break
+			}
+
+			s.markKiroModelSupported(account, testModel, activeTestModel)
 
 			log.Printf("[kiro-TestConnection] endpoint=%s parsed text=%q, tool_calls=%d", ep.Name, parsedResp.Text, len(parsedResp.ToolCalls))
 
@@ -2359,7 +2403,7 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		// apikey path: 400 errors also trigger failover (different apikey may have different config/limits)
 		if resp.StatusCode == http.StatusBadRequest {
 			upstreamMsg := extractKiroErrorMessage(respBody)
-			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+			upstreamMsg = sanitizeKiroClientErrorMessage(upstreamMsg)
 			log.Printf("%s status=400 apikey bad_request msg=%s, triggering failover", prefix, upstreamMsg)
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 		}
@@ -2621,8 +2665,9 @@ func applyClaudeUsageMap(usageMap map[string]any, usage *ClaudeUsage, overwrite 
 	}
 	applied := false
 
-	setIf := func(target *int, value int) {
-		if value < 0 {
+	setIf := func(target *int, source map[string]any, keys ...string) {
+		value, present := usageIntByKeys(source, keys...)
+		if !present || value < 0 {
 			return
 		}
 		if overwrite || *target == 0 {
@@ -2642,18 +2687,18 @@ func applyClaudeUsageMap(usageMap map[string]any, usage *ClaudeUsage, overwrite 
 		}
 	}
 
-	setIf(&usage.InputTokens, usageIntByKeys(usageMap, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens"))
-	setIf(&usage.OutputTokens, usageIntByKeys(usageMap, "output_tokens", "outputTokens", "completion_tokens", "completionTokens"))
-	setIf(&usage.CacheCreationInputTokens, usageIntByKeys(usageMap, "cache_creation_input_tokens", "cacheCreationInputTokens"))
-	setIf(&usage.CacheReadInputTokens, usageIntByKeys(usageMap, "cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens"))
+	setIf(&usage.InputTokens, usageMap, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens")
+	setIf(&usage.OutputTokens, usageMap, "output_tokens", "outputTokens", "completion_tokens", "completionTokens")
+	setIf(&usage.CacheCreationInputTokens, usageMap, "cache_creation_input_tokens", "cacheCreationInputTokens")
+	setIf(&usage.CacheReadInputTokens, usageMap, "cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens")
 	if usage.CacheReadInputTokens == 0 {
 		if details, ok := usageMap["input_tokens_details"].(map[string]any); ok && details != nil {
-			setIf(&usage.CacheReadInputTokens, usageIntByKeys(details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens"))
+			setIf(&usage.CacheReadInputTokens, details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens")
 		}
 	}
 	if usage.CacheReadInputTokens == 0 {
 		if details, ok := usageMap["prompt_tokens_details"].(map[string]any); ok && details != nil {
-			setIf(&usage.CacheReadInputTokens, usageIntByKeys(details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens"))
+			setIf(&usage.CacheReadInputTokens, details, "cached_tokens", "cachedTokens", "cache_read_input_tokens", "cacheReadInputTokens")
 		}
 	}
 	if value, ok := usageFloatByKeys(usageMap, "context_usage_percent", "contextUsagePercentage", "contextUsagePercent"); ok {
@@ -2663,13 +2708,17 @@ func applyClaudeUsageMap(usageMap map[string]any, usage *ClaudeUsage, overwrite 
 	return applied
 }
 
-func usageIntByKeys(m map[string]any, keys ...string) int {
+func usageIntByKeys(m map[string]any, keys ...string) (int, bool) {
 	for _, key := range keys {
-		if v, ok := usageIntFromAny(m[key]); ok {
-			return v
+		raw, exists := m[key]
+		if !exists {
+			continue
+		}
+		if value, ok := usageIntFromAny(raw); ok {
+			return value, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func usageFloatByKeys(m map[string]any, keys ...string) (float64, bool) {
@@ -2808,9 +2857,6 @@ func (s *KiroGatewayService) testClaudeAPIConnection(ctx context.Context, accoun
 	}
 	requestedTestModel := testModel
 	testModel = account.GetMappedModel(testModel)
-	if isKiroOAuthOnlyModel(testModel) {
-		return nil, fmt.Errorf("model %s is only supported for Kiro OAuth accounts", testModel)
-	}
 	if testModel != requestedTestModel {
 		log.Printf("[kiro-apikey-TestConnection] model_mapping: %s -> %s", requestedTestModel, testModel)
 	}

@@ -124,8 +124,10 @@ func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 
 	shouldDisable := service.HandleUpstreamError(context.Background(), account, 401, http.Header{}, []byte("unauthorized"))
 
-	require.True(t, shouldDisable)
-	require.Equal(t, 1, repo.setErrorCalls)
+	// OpenAI API key accounts are treated as an upstream pool: all errors are
+	// transient, so the account is never disabled and no error is recorded.
+	require.False(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls)
 	require.Empty(t, invalidator.accounts)
 }
 
@@ -135,7 +137,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429RetryAfter(t *testing.T) 
 	account := &Account{
 		ID:       201,
 		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
+		Type:     AccountTypeOAuth,
 	}
 
 	start := time.Now()
@@ -234,7 +236,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429UsesOpenAIResetHeader(t *
 	account := &Account{
 		ID:       204,
 		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
+		Type:     AccountTypeOAuth,
 	}
 
 	start := time.Now()
@@ -260,7 +262,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429TakesMaxResetTime(t *test
 	account := &Account{
 		ID:       206,
 		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
+		Type:     AccountTypeOAuth,
 	}
 
 	// Retry-After=2s, x-ratelimit-reset-requests=1500ms → max is 2s (Retry-After)
@@ -288,7 +290,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI429MaxFromNonRetryAfterHeade
 	account := &Account{
 		ID:       207,
 		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
+		Type:     AccountTypeOAuth,
 	}
 
 	// Retry-After=1s, x-ratelimit-reset-tokens=5s → max is 5s (tokens header wins)

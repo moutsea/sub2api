@@ -55,19 +55,24 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	flusher.Flush()
 
 	var firstTokenMs *int
+	streamFailed := false
+	sawRenderableEvent := false
 
 	// Read and process stream
 	buf := make([]byte, 4096)
 	var lastReadAt int64
 	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 
-	for {
+	for !streamFailed {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 
 			events := parser.Process(buf[:n])
 			for _, e := range events {
+				if isRenderableKiroStreamEvent(e) {
+					sawRenderableEvent = true
+				}
 				// Restore tool names
 				if e.Type == kiro.EventContentBlockStart && e.BlockType.Kind == kiro.BlockToolUse {
 					if toolNameReverseMap != nil {
@@ -77,6 +82,10 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 					}
 				}
 
+				if e.Type == kiro.EventError {
+					e.ErrorType = sanitizeKiroClientErrorMessage(e.ErrorType)
+					e.ErrorMessage = sanitizeKiroClientErrorMessage(e.ErrorMessage)
+				}
 				sseStr := converter.ConvertEvent(e)
 				if sseStr == "" {
 					continue
@@ -91,6 +100,10 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 				if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
 					return nil, err
 				}
+				if e.Type == kiro.EventError {
+					streamFailed = true
+					break
+				}
 			}
 			flusher.Flush()
 		}
@@ -98,32 +111,58 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 		if readErr != nil {
 			if readErr != io.EOF {
 				log.Printf("[kiro-OpenAI] stream read error: %v", readErr)
+				if _, err := c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_read_error", sanitizeKiroClientErrorMessage(readErr.Error())))); err != nil {
+					return nil, err
+				}
+				flusher.Flush()
+				streamFailed = true
 			}
 			break
 		}
 	}
 
 	// Process remaining events
-	finalEvents := parser.Finish()
-	for _, e := range finalEvents {
-		if e.Type == kiro.EventContentBlockStart && e.BlockType.Kind == kiro.BlockToolUse {
-			if toolNameReverseMap != nil {
-				if original, ok := toolNameReverseMap[e.BlockType.ToolName]; ok {
-					e.BlockType.ToolName = original
+	if !streamFailed {
+		finalEvents := parser.Finish()
+		for _, e := range finalEvents {
+			if isRenderableKiroStreamEvent(e) {
+				sawRenderableEvent = true
+			}
+			if e.Type == kiro.EventContentBlockStart && e.BlockType.Kind == kiro.BlockToolUse {
+				if toolNameReverseMap != nil {
+					if original, ok := toolNameReverseMap[e.BlockType.ToolName]; ok {
+						e.BlockType.ToolName = original
+					}
 				}
 			}
-		}
-		sseStr := converter.ConvertEvent(e)
-		if sseStr != "" {
-			if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
-				return nil, err
+			if e.Type == kiro.EventError {
+				e.ErrorType = sanitizeKiroClientErrorMessage(e.ErrorType)
+				e.ErrorMessage = sanitizeKiroClientErrorMessage(e.ErrorMessage)
+			}
+			sseStr := converter.ConvertEvent(e)
+			if sseStr != "" {
+				if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
+					return nil, err
+				}
+			}
+			if e.Type == kiro.EventError {
+				streamFailed = true
+				break
 			}
 		}
 	}
+	if !streamFailed && !sawRenderableEvent {
+		if _, err := c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_empty_stream", "kiro_empty_stream"))); err != nil {
+			return nil, err
+		}
+		streamFailed = true
+	}
 
 	// Send final events (finish_reason + usage + [DONE])
-	if _, err := c.Writer.Write([]byte(converter.BuildFinalEvent())); err != nil {
-		return nil, err
+	if !streamFailed {
+		if _, err := c.Writer.Write([]byte(converter.BuildFinalEvent())); err != nil {
+			return nil, err
+		}
 	}
 	flusher.Flush()
 
@@ -163,6 +202,15 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 	parser.SetThinkingEnabled(thinkingEnabled)
 	events := parser.Process(respBody)
 	events = append(events, parser.Finish()...)
+	for _, event := range events {
+		if event.Type != kiro.EventError {
+			continue
+		}
+		return nil, &UpstreamFailoverError{
+			StatusCode: http.StatusBadGateway,
+			Message:    sanitizeKiroClientErrorMessage(event.ErrorMessage),
+		}
+	}
 
 	// Collect text and tool calls from events
 	var text string
@@ -204,6 +252,9 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 				currentToolInput = ""
 			}
 		}
+	}
+	if text == "" && len(toolCalls) == 0 {
+		return nil, kiroEmptyStreamFailover("kiro_empty_response")
 	}
 
 	// Build CompleteResponse for the non-stream builder

@@ -55,6 +55,7 @@ export const kiroOAuthModels = [
   'gpt-5.6-terra',
   'gpt-5.6-luna',
   'claude-sonnet-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -73,6 +74,7 @@ export const kiroOAuthModels = [
 ]
 
 export const kiroAPIKeyModels = [
+  'claude-opus-5',
   'claude-opus-4-8',
   ...claudeModels
 ]
@@ -267,6 +269,7 @@ const anthropicPresetMappings = [
 ]
 
 const kiroAPIKeyPresetMappings = [
+  { label: 'Opus 5', from: 'claude-opus-5', to: 'claude-opus-5', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
   { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4-8', color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400' },
   ...anthropicPresetMappings
 ]
@@ -276,6 +279,7 @@ const kiroOAuthPresetMappings = [
   { label: 'GPT-5.6 Terra', from: 'gpt-5.6-terra', to: 'gpt-5.6-terra', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400' },
   { label: 'GPT-5.6 Luna', from: 'gpt-5.6-luna', to: 'gpt-5.6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
   { label: 'Sonnet 5', from: 'claude-sonnet-5', to: 'claude-sonnet-5', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
+  { label: 'Opus 5', from: 'claude-opus-5', to: 'claude-opus-5', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
   { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4-8', color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400' },
   { label: 'Sonnet 4.6', from: 'claude-sonnet-4-6', to: 'claude-sonnet-4-6', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400' },
   { label: 'Qwen3 Coder', from: 'qwen3-coder-next', to: 'qwen3-coder-next', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' }

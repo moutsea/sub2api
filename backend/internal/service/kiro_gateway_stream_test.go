@@ -122,10 +122,10 @@ type gatedReadCloser struct {
 	readDone bool
 }
 
-func newGatedReadCloser(data string) *gatedReadCloser {
+func newGatedReadCloser(data []byte) *gatedReadCloser {
 	return &gatedReadCloser{
 		release: make(chan struct{}),
-		data:    []byte(data),
+		data:    data,
 	}
 }
 
@@ -223,7 +223,7 @@ func TestKiroStreamingEmptyBodyCommitsInitialEnvelope(t *testing.T) {
 func TestKiroStreamingCommitsInitialEnvelopeBeforeFirstRenderableEvent(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
-	body := newGatedReadCloser(`{"content":"hello"}{"stop":true}`)
+	body := newGatedReadCloser(mustContentPayload(t, "hello"))
 	defer body.Close()
 
 	type streamResult struct {
@@ -317,7 +317,9 @@ func TestKiroStreamingUsageOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
 
 	result, err := svc.handleStreamingResponse(
 		c,
-		newKiroStreamHTTPResponse(`{"tokenUsage":{"inputTokens":100,"outputTokens":0}}`),
+		newKiroStreamHTTPResponse(string(mustKiroEventFrame(t, "messageMetadataEvent", map[string]any{
+			"tokenUsage": map[string]any{"inputTokens": 100, "outputTokens": 0},
+		}))),
 		time.Now(),
 		"claude-opus-4-7",
 		10,
@@ -348,7 +350,7 @@ func TestKiroStreamingStopOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
 
 	result, err := svc.handleStreamingResponse(
 		c,
-		newKiroStreamHTTPResponse(`{"stop":true}`),
+		newKiroStreamHTTPResponse(string(mustKiroEventFrame(t, "toolUseEvent", map[string]any{"stop": true}))),
 		time.Now(),
 		"claude-sonnet-4-6",
 		10,
@@ -366,10 +368,13 @@ func TestKiroStreamingStopOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
 		t.Fatalf("result/usage should not be nil: %+v", result)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
+	for _, want := range []string{"event: message_start", "event: error", "toolUseEvent missing toolUseId"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("response body missing %q: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "event: message_delta") || strings.Contains(body, "event: message_stop") {
+		t.Fatalf("response body contains normal completion after malformed tool frame: %s", body)
 	}
 }
 
@@ -379,7 +384,10 @@ func TestKiroStreamingErrorBeforeContentReturnsSSEErrorAfterCommit(t *testing.T)
 
 	result, err := svc.handleStreamingResponse(
 		c,
-		newKiroStreamHTTPResponse(`{"__type":"com.amazon.aws.codewhisperer#AccessDeniedException","message":"Your subscription does not support this application."}`),
+		newKiroStreamHTTPResponse(string(mustKiroExceptionFrame(t,
+			"com.amazon.aws.codewhisperer#AccessDeniedException",
+			map[string]any{"message": "Your subscription does not support this application."},
+		))),
 		time.Now(),
 		"claude-sonnet-4-6",
 		10,
@@ -397,10 +405,17 @@ func TestKiroStreamingErrorBeforeContentReturnsSSEErrorAfterCommit(t *testing.T)
 		t.Fatalf("result/usage should not be nil: %+v", result)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
+	for _, want := range []string{
+		"event: message_start",
+		"event: error",
+		"Your subscription does not support this application.",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("response body missing %q: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "kiro_empty_stream") {
+		t.Fatalf("response body should preserve the upstream exception instead of reporting an empty stream: %s", body)
 	}
 }
 
@@ -445,7 +460,7 @@ func TestKiroStreamingContentCommitsClaudeSSE(t *testing.T) {
 
 	result, err := svc.handleStreamingResponse(
 		c,
-		newKiroStreamHTTPResponse(`{"content":"hello"}{"stop":true}`),
+		newKiroStreamHTTPResponse(string(mustContentPayload(t, "hello"))),
 		time.Now(),
 		"claude-sonnet-4-6",
 		10,
@@ -475,6 +490,175 @@ func TestKiroStreamingContentCommitsClaudeSSE(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("content-type = %q, want text/event-stream", rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestKiroStreamingBadCRCDoesNotSendNormalCompletion(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	validFrame := mustContentPayload(t, "partial")
+	invalidFrame := mustContentPayload(t, "must not leak")
+	invalidFrame[len(invalidFrame)-1] ^= 0xff
+
+	result, err := svc.handleStreamingResponse(
+		c,
+		newKiroStreamHTTPResponse(string(append(validFrame, invalidFrame...))),
+		time.Now(),
+		"claude-sonnet-4-6",
+		10,
+		nil,
+		0,
+		0,
+		false,
+		false,
+	)
+
+	if err != nil {
+		t.Fatalf("handleStreamingResponse error: %v", err)
+	}
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") || !strings.Contains(body, "CRC mismatch") {
+		t.Fatalf("response body missing CRC error: %s", body)
+	}
+	if strings.Contains(body, "event: message_delta") || strings.Contains(body, "event: message_stop") {
+		t.Fatalf("response body contains normal completion after CRC error: %s", body)
+	}
+}
+
+func TestKiroNonStreamingBadCRCReturnsFailoverBeforeCommit(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	validFrame := mustContentPayload(t, "partial")
+	invalidFrame := mustContentPayload(t, "must not leak")
+	invalidFrame[len(invalidFrame)-1] ^= 0xff
+
+	result, err := svc.handleNonStreamingResponse(
+		c,
+		newKiroStreamHTTPResponse(string(append(validFrame, invalidFrame...))),
+		time.Now(),
+		"claude-sonnet-4-6",
+		10,
+		nil,
+		0,
+		0,
+		false,
+		false,
+	)
+
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
+	}
+}
+
+func TestKiroOpenAIStreamingBadCRCDoesNotSendNormalCompletion(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	validFrame := mustContentPayload(t, "partial")
+	invalidFrame := mustContentPayload(t, "must not leak")
+	invalidFrame[len(invalidFrame)-1] ^= 0xff
+
+	result, err := svc.handleOpenAIStreamingResponse(
+		c,
+		newKiroStreamHTTPResponse(string(append(validFrame, invalidFrame...))),
+		time.Now(),
+		"gpt-5.6-sol",
+		10,
+		nil,
+		0,
+		0,
+		false,
+	)
+
+	if err != nil {
+		t.Fatalf("handleOpenAIStreamingResponse error: %v", err)
+	}
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"event_stream_decode_error"`) || !strings.Contains(body, "CRC mismatch") {
+		t.Fatalf("response body missing CRC error: %s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) || strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("response body contains normal completion after CRC error: %s", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("response body should contain exactly one [DONE]: %s", body)
+	}
+}
+
+func TestKiroOpenAIStreamingEmptyBodyReturnsSSEError(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+
+	result, err := svc.handleOpenAIStreamingResponse(
+		c,
+		newKiroStreamHTTPResponse(""),
+		time.Now(),
+		"gpt-5.6-sol",
+		10,
+		nil,
+		0,
+		0,
+		false,
+	)
+
+	if err != nil {
+		t.Fatalf("handleOpenAIStreamingResponse error: %v", err)
+	}
+	if result == nil || result.usage == nil {
+		t.Fatalf("result/usage should not be nil: %+v", result)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"upstream_empty_stream"`) || !strings.Contains(body, "kiro_empty_stream") {
+		t.Fatalf("response body missing empty stream error: %s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("response body contains normal completion after empty stream: %s", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("response body should contain exactly one [DONE]: %s", body)
+	}
+}
+
+func TestKiroOpenAINonStreamingBadCRCReturnsFailoverBeforeCommit(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+	validFrame := mustContentPayload(t, "partial")
+	invalidFrame := mustContentPayload(t, "must not leak")
+	invalidFrame[len(invalidFrame)-1] ^= 0xff
+
+	result, err := svc.handleOpenAINonStreamingResponse(
+		c,
+		newKiroStreamHTTPResponse(string(append(validFrame, invalidFrame...))),
+		"gpt-5.6-sol",
+		10,
+		nil,
+		0,
+		0,
+		false,
+		0,
+	)
+
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
 	}
 }
 
@@ -516,7 +700,7 @@ func TestKiroNonStreamingContentWritesClaudeJSON(t *testing.T) {
 
 	result, err := svc.handleNonStreamingResponse(
 		c,
-		newKiroStreamHTTPResponse(`{"content":"hello"}{"stop":true}`),
+		newKiroStreamHTTPResponse(string(mustContentPayload(t, "hello"))),
 		time.Now(),
 		"claude-sonnet-4-6",
 		10,

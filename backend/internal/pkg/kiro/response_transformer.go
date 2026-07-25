@@ -2,7 +2,6 @@
 package kiro
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -80,9 +79,10 @@ type AwsEventStreamParser struct {
 	pendingContent              strings.Builder // Buffer for partial tag matching
 
 	parseErrorCount int
+	terminalError   bool
 }
 
-const defaultMaxBufferSize = 1024 * 1024
+const defaultMaxBufferSize = 16 * 1024 * 1024
 
 // NewAwsEventStreamParser creates a new parser
 func NewAwsEventStreamParser(messageID, model string) *AwsEventStreamParser {
@@ -136,33 +136,54 @@ func (p *AwsEventStreamParser) nextIndex() uint32 {
 
 // Process processes a chunk of data and returns stream events
 func (p *AwsEventStreamParser) Process(chunk []byte) []StreamEvent {
-	if len(chunk) == 0 {
+	if len(chunk) == 0 || p.terminalError {
 		return nil
 	}
 
-	if len(p.buffer)+len(chunk) > p.maxBufferSize {
-		p.parseErrorCount++
-		// Clear buffer to prevent permanent parser stall.
-		// Without this, every subsequent Process() call would re-trigger overflow
-		// because the oversized buffer is never drained, blocking all further parsing
-		// including stop events — causing the stream to hang until timeout.
-		p.buffer = nil
-		return []StreamEvent{{
-			Type:         EventError,
-			ErrorType:    "buffer_overflow",
-			ErrorMessage: "buffer overflow",
-		}}
-	}
+	var events []StreamEvent
+	for len(chunk) > 0 {
+		available := p.maxBufferSize - len(p.buffer)
+		if available <= 0 {
+			return append(events, p.failEventStream("buffer_overflow", fmt.Errorf("buffer overflow"))...)
+		}
 
-	p.buffer = append(p.buffer, chunk...)
-	return p.parseBuffer()
+		appendLength := len(chunk)
+		if appendLength > available {
+			appendLength = available
+		}
+		p.buffer = append(p.buffer, chunk[:appendLength]...)
+		chunk = chunk[appendLength:]
+
+		bufferedBeforeParse := len(p.buffer)
+		events = append(events, p.parseBuffer()...)
+		if p.terminalError {
+			return events
+		}
+		if len(p.buffer) == bufferedBeforeParse && len(p.buffer) >= p.maxBufferSize {
+			return append(events, p.failEventStream("buffer_overflow", fmt.Errorf("buffer overflow"))...)
+		}
+	}
+	return events
 }
 
 // Finish finalizes parsing and returns any remaining events
 func (p *AwsEventStreamParser) Finish() []StreamEvent {
+	if p.terminalError {
+		return nil
+	}
+
 	var events []StreamEvent
 
 	events = append(events, p.parseBuffer()...)
+	if p.terminalError {
+		return events
+	}
+	if len(p.buffer) > 0 {
+		return append(events, p.failEventStream(
+			"event_stream_decode_error",
+			fmt.Errorf("truncated event stream frame: %d buffered bytes", len(p.buffer)),
+		)...)
+	}
 
 	if p.messageStopped {
 		p.buffer = nil
@@ -302,129 +323,6 @@ func (p *AwsEventStreamParser) Finish() []StreamEvent {
 	return events
 }
 
-func (p *AwsEventStreamParser) parseBuffer() []StreamEvent {
-	var events []StreamEvent
-	pos := 0
-
-	for pos < len(p.buffer) {
-		start := p.findJSONStart(pos)
-		if start < 0 {
-			break
-		}
-
-		jsonBytes, endPos, ok := extractJSONObject(p.buffer, start)
-		if !ok {
-			nextStart := p.findJSONStart(start + 1)
-			if nextStart < 0 {
-				break
-			}
-			pos = start + 1
-			continue
-		}
-
-		parsed, err := p.parseJSONEvent(jsonBytes)
-		if err != nil {
-			p.parseErrorCount++
-			events = append(events, StreamEvent{Type: EventError, ErrorType: "parse_error", ErrorMessage: err.Error()})
-		} else {
-			events = append(events, parsed...)
-		}
-
-		pos = endPos
-	}
-
-	if pos > 0 {
-		p.buffer = p.buffer[pos:]
-	}
-
-	return events
-}
-
-var jsonStartPatterns = [][]byte{
-	[]byte(`{"content":`),
-	[]byte(`{"name":`),
-	[]byte(`{"toolUseId":`),
-	[]byte(`{"input":`),
-	[]byte(`{"stop":`),
-	[]byte(`{"usage":`),
-	[]byte(`{"contextUsagePercentage":`),
-	[]byte(`{"followupPrompt":`),
-	[]byte(`{"meteringEvent":`),
-	[]byte(`{"contextUsageEvent":`),
-	[]byte(`{"messageMetadataEvent":`),
-	[]byte(`{"metadataEvent":`),
-	[]byte(`{"tokenUsage":`),
-	[]byte(`{"unit":`),
-	[]byte(`{"message":`),
-	[]byte(`{"Message":`),
-}
-
-func (p *AwsEventStreamParser) findJSONStart(from int) int {
-	if from < 0 || from >= len(p.buffer) {
-		return -1
-	}
-
-	buf := p.buffer[from:]
-	best := -1
-	for _, pat := range jsonStartPatterns {
-		idx := bytes.Index(buf, pat)
-		if idx < 0 {
-			continue
-		}
-		if best < 0 || idx < best {
-			best = idx
-		}
-	}
-	if best < 0 {
-		return -1
-	}
-	return from + best
-}
-
-func extractJSONObject(buf []byte, start int) ([]byte, int, bool) {
-	if start < 0 || start >= len(buf) || buf[start] != '{' {
-		return nil, 0, false
-	}
-
-	braceCount := 0
-	inString := false
-	escapeNext := false
-
-	for i := start; i < len(buf); i++ {
-		b := buf[i]
-		if escapeNext {
-			escapeNext = false
-			continue
-		}
-
-		if inString {
-			if b == '\\' {
-				escapeNext = true
-				continue
-			}
-			if b == '"' {
-				inString = false
-			}
-			continue
-		}
-
-		switch b {
-		case '"':
-			inString = true
-		case '{':
-			braceCount++
-		case '}':
-			braceCount--
-			if braceCount == 0 {
-				end := i + 1
-				return buf[start:end], end, true
-			}
-		}
-	}
-
-	return nil, 0, false
-}
-
 func contextUsageFromTokenUsage(tokenUsage map[string]any) float64 {
 	if tokenUsage == nil {
 		return 0
@@ -550,31 +448,40 @@ func tokenUsageFromMetadata(meta map[string]any) map[string]any {
 	return meta
 }
 
-func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, error) {
+func (p *AwsEventStreamParser) parseJSONEvent(eventType string, jsonBytes []byte) ([]StreamEvent, error) {
+	switch eventType {
+	case "assistantResponseEvent", "toolUseEvent", "meteringEvent", "contextUsageEvent", "messageMetadataEvent", "metadataEvent", "tokenUsageEvent":
+	default:
+		return nil, nil
+	}
+
 	var payload awsPayload
 	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
 		return nil, err
 	}
+	if eventType == "toolUseEvent" && payload.ToolUseID == nil {
+		return nil, fmt.Errorf("toolUseEvent missing toolUseId")
+	}
 
 	var events []StreamEvent
 
-	if !p.messageStarted {
+	isRenderableEvent := eventType == "assistantResponseEvent" || eventType == "toolUseEvent"
+	if isRenderableEvent && !p.messageStarted {
 		p.messageStarted = true
 		events = append(events, StreamEvent{Type: EventMessageStart, MessageID: p.messageID, Model: p.model})
 	}
 
-	// 1) content text delta (skip followupPrompt) - with thinking tag parsing
-	if payload.Content != nil {
-		if len(payload.FollowupPrompt) == 0 || string(payload.FollowupPrompt) == "null" {
-			// Parse thinking tags from content
+	// Only assistantResponseEvent payloads are allowed to become assistant text.
+	if eventType == "assistantResponseEvent" {
+		if payload.Content != nil {
 			contentEvents := p.parseContentWithThinking(*payload.Content)
 			events = append(events, contentEvents...)
 		}
 		return events, nil
 	}
 
-	// 2) toolUseId tool event
-	if payload.ToolUseID != nil {
+	// Tool input is accepted only from toolUseEvent frames.
+	if eventType == "toolUseEvent" && payload.ToolUseID != nil {
 		// Flush thinking buffer before tool_use (aligned with kiro.rs process_tool_use).
 		// tool_use must happen after thinking ends. If </thinking> is at buffer end
 		// without \n\n, flush it now.
@@ -648,188 +555,7 @@ func (p *AwsEventStreamParser) parseJSONEvent(jsonBytes []byte) ([]StreamEvent, 
 		return events, nil
 	}
 
-	// 3) Standalone input event (no toolUseId)
-	if payload.Input != nil {
-		input := *payload.Input
-		if input == "" {
-			return nil, nil
-		}
-
-		// Select any active tool call (usually only one)
-		for toolID, acc := range p.toolAccumulators {
-			if !acc.started {
-				// Fallback: even without explicit start, add start to ensure downstream has index
-				acc.started = true
-				acc.name = "unknown"
-				acc.blockIndex = p.nextIndex()
-				p.sawToolUse = true
-
-				events = append(events,
-					StreamEvent{Type: EventContentBlockStart, Index: acc.blockIndex, BlockType: ContentBlockType{Kind: BlockToolUse, ToolID: toolID, ToolName: acc.name}},
-					StreamEvent{Type: EventToolUseStart, ToolID: toolID, ToolName: acc.name},
-				)
-			}
-
-			acc.inputBuffer.WriteString(input)
-			events = append(events, StreamEvent{Type: EventToolUseInputDelta, ToolID: toolID, PartialJSON: input})
-			return events, nil
-		}
-
-		// No active tool: ignore
-		return nil, nil
-	}
-
-	// 4) stop event (no toolUseId)
-	if payload.Stop != nil && *payload.Stop {
-		for toolID, acc := range p.toolAccumulators {
-			if acc.started {
-				events = append(events,
-					StreamEvent{Type: EventToolUseStop, ToolID: toolID},
-					StreamEvent{Type: EventContentBlockStop, Index: acc.blockIndex},
-				)
-			}
-		}
-		p.toolAccumulators = make(map[string]*toolAccumulator)
-
-		// Flush pending thinking content before closing blocks.
-		// When the model exhausts its token budget on thinking, the stop event
-		// arrives while pendingContent still holds the tail of the thinking stream
-		// (up to 13 bytes reserved for cross-chunk </thinking>\n\n detection).
-		// Without this flush, the thinking block is never closed and the last
-		// chunk of thinking content is silently discarded, causing truncated
-		// thinking output and a malformed SSE stream (missing content_block_stop).
-		pendingStr := p.pendingContent.String()
-		p.pendingContent.Reset()
-
-		if p.inThinkingBlock {
-			pendingStr = p.stripThinkingLeadingNewlineIfNeeded(pendingStr)
-			// Check if buffer ends with </thinking> (boundary: stop arrives right after end tag)
-			if endPos := findRealThinkingEndTagAtBufferEnd(pendingStr); endPos >= 0 {
-				thinkingContent := pendingStr[:endPos]
-				if thinkingContent != "" {
-					if p.thinkingBlockIndex == nil {
-						idx := p.nextIndex()
-						p.thinkingBlockIndex = &idx
-						events = append(events, StreamEvent{
-							Type: EventContentBlockStart, Index: idx,
-							BlockType: ContentBlockType{Kind: BlockThinking},
-						})
-					}
-					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: thinkingContent})
-				}
-				// Close thinking block
-				if p.thinkingBlockIndex != nil {
-					idx := *p.thinkingBlockIndex
-					events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
-					p.thinkingBlockIndex = nil
-				}
-				p.inThinkingBlock = false
-				p.thinkingExtracted = true
-				p.stripThinkingLeadingNewline = false
-				// Remaining after tag as text
-				afterPos := endPos + len(ThinkingEndTag)
-				remaining := strings.TrimLeft(pendingStr[afterPos:], " \t\n\r")
-				if remaining != "" {
-					events = append(events, p.emitTextDelta(remaining)...)
-				}
-			} else {
-				// No end tag — emit remaining as thinking delta (model ran out of tokens mid-thinking)
-				if pendingStr != "" {
-					if p.thinkingBlockIndex == nil {
-						idx := p.nextIndex()
-						p.thinkingBlockIndex = &idx
-						events = append(events, StreamEvent{
-							Type: EventContentBlockStart, Index: idx,
-							BlockType: ContentBlockType{Kind: BlockThinking},
-						})
-					}
-					events = append(events, StreamEvent{Type: EventThinkingDelta, Text: pendingStr})
-				}
-			}
-		} else if pendingStr != "" {
-			// Not in thinking block — emit pending as text.
-			// If the stream ends before any real <thinking> tag appears, this is
-			// normal assistant output. Treating it as thinking leaves clients with
-			// no result.
-			events = append(events, p.emitTextDelta(pendingStr)...)
-		}
-
-		// Close thinking block if still open
-		if p.thinkingBlockIndex != nil {
-			idx := *p.thinkingBlockIndex
-			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
-			p.thinkingBlockIndex = nil
-			p.inThinkingBlock = false
-			p.stripThinkingLeadingNewline = false
-		}
-
-		if p.textBlockIndex != nil {
-			idx := *p.textBlockIndex
-			p.textBlockIndex = nil
-			p.inTextBlock = false
-			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
-		}
-
-		stopReason := StopReasonEndTurn
-		if p.sawToolUse {
-			stopReason = StopReasonToolUse
-		} else if p.sawThinking && !p.sawText {
-			stopReason = StopReasonMaxTokens
-
-			// Aligned with kiro.rs: emit a space text block so that the response
-			// content array contains at least one text block.
-			idx := p.nextIndex()
-			events = append(events,
-				StreamEvent{
-					Type:  EventContentBlockStart,
-					Index: idx,
-					BlockType: ContentBlockType{
-						Kind: BlockText,
-					},
-				},
-				StreamEvent{Type: EventTextDelta, Text: " "},
-				StreamEvent{Type: EventContentBlockStop, Index: idx},
-			)
-		}
-		events = append(events, StreamEvent{Type: EventMessageStop, StopReason: stopReason})
-		p.messageStopped = true
-		return events, nil
-	}
-
-	// 5) AWS EventStream exception (mid-stream error from upstream)
-	if payload.ExceptionType != nil && payload.Message != nil {
-		errType := *payload.ExceptionType
-		errMsg := *payload.Message
-		log.Printf("[kiro-parser] upstream exception: type=%s message=%s", errType, errMsg)
-		p.parseErrorCount++
-
-		// Flush thinking state before emitting error — same rationale as stop handler.
-		// Without this, an exception arriving mid-thinking leaves the thinking block
-		// unclosed and pendingContent is silently discarded by Finish().
-		events = append(events, p.flushThinkingBeforeToolUse()...)
-		if p.thinkingBlockIndex != nil {
-			idx := *p.thinkingBlockIndex
-			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
-			p.thinkingBlockIndex = nil
-			p.inThinkingBlock = false
-			p.stripThinkingLeadingNewline = false
-		}
-		if p.textBlockIndex != nil {
-			idx := *p.textBlockIndex
-			events = append(events, StreamEvent{Type: EventContentBlockStop, Index: idx})
-			p.textBlockIndex = nil
-			p.inTextBlock = false
-		}
-
-		events = append(events, StreamEvent{
-			Type:         EventError,
-			ErrorType:    errType,
-			ErrorMessage: errMsg,
-		})
-		return events, nil
-	}
-
-	// 6) usage / context usage (nested and flat)
+	// Usage events are parsed for accounting only and can never produce text.
 	credits := 0.0
 	ctxPct := 0.0
 	hasTokenUsage := false
@@ -1440,10 +1166,30 @@ func ParseCompleteResponseWithNameRestore(data []byte, toolNameReverseMap map[st
 // ParseCompleteResponseWithNameRestoreAndThinking parses a complete response
 // and restores tool names with explicit thinking-mode awareness.
 func ParseCompleteResponseWithNameRestoreAndThinking(data []byte, toolNameReverseMap map[string]string, thinkingEnabled bool) *CompleteResponse {
+	resp, _ := ParseCompleteResponseWithNameRestoreAndThinkingStrict(data, toolNameReverseMap, thinkingEnabled)
+	if resp == nil {
+		return &CompleteResponse{}
+	}
+	return resp
+}
+
+// ParseCompleteResponseWithNameRestoreAndThinkingStrict parses a complete
+// response and returns event-stream framing and upstream error events.
+func ParseCompleteResponseWithNameRestoreAndThinkingStrict(data []byte, toolNameReverseMap map[string]string, thinkingEnabled bool) (*CompleteResponse, error) {
 	parser := NewAwsEventStreamParser("", "")
 	parser.SetThinkingEnabled(thinkingEnabled)
 	events := parser.Process(data)
 	events = append(events, parser.Finish()...)
+	for _, event := range events {
+		if event.Type != EventError {
+			continue
+		}
+		errorType := event.ErrorType
+		if errorType == "" {
+			errorType = "upstream_error"
+		}
+		return nil, fmt.Errorf("%s: %s", errorType, event.ErrorMessage)
+	}
 
 	resp := &CompleteResponse{}
 	var textParts []string
@@ -1508,7 +1254,7 @@ func ParseCompleteResponseWithNameRestoreAndThinking(data []byte, toolNameRevers
 		}
 	}
 
-	return resp
+	return resp, nil
 }
 
 func shouldReportToolInputTruncation(toolName, rawInput string) bool {

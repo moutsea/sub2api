@@ -852,6 +852,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 			}
 		}
 	}
+	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
 
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -992,6 +995,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		account.Notes = normalizeAccountNotes(input.Notes)
 	}
 	if len(input.Credentials) > 0 {
+		if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
 		account.Credentials = input.Credentials
 	}
 	if input.ExtraProvided || len(input.Extra) > 0 {
@@ -1097,6 +1103,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		if *input.RateMultiplier < 0 {
 			return nil, errors.New("rate_multiplier must be >= 0")
 		}
+	}
+	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
+		return nil, err
 	}
 
 	// Prepare bulk updates for columns and JSONB fields.

@@ -4,6 +4,7 @@ package kiro
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,8 @@ const (
 	jsonSchemaDraft07      = "http://json-schema.org/draft-07/schema#"
 
 	historyAssistantFillerContent = "."
+	taskNotificationStart         = "<task-notification>"
+	taskNotificationEnd           = "</task-notification>"
 )
 
 // normalizeJSONSchema fixes common type issues in MCP tool JSON schemas.
@@ -469,7 +472,126 @@ func parseClaudeMessage(msg ClaudeMessage, msgIdx int) (*UnifiedMessage, error) 
 		}
 	}
 
+	if um.Role == "user" {
+		content := um.GetText()
+		normalized := normalizeInternalTaskNotifications(content)
+		if normalized != content {
+			um.TextParts = []string{normalized}
+		}
+	}
+
 	return um, nil
+}
+
+func normalizeInternalTaskNotifications(content string) string {
+	remaining := strings.TrimSpace(content)
+	if !strings.HasPrefix(remaining, taskNotificationStart) || !strings.HasSuffix(remaining, taskNotificationEnd) {
+		return content
+	}
+
+	var normalized []string
+	for remaining != "" {
+		if !strings.HasPrefix(remaining, taskNotificationStart) {
+			return content
+		}
+		endOffset := findTaskNotificationEnd(remaining)
+		if endOffset < 0 {
+			return content
+		}
+
+		inner := remaining[len(taskNotificationStart):endOffset]
+		if !isInternalTaskNotificationBody(inner) {
+			return content
+		}
+		normalized = append(normalized, normalizeInternalTaskNotificationBody(inner))
+		remaining = strings.TrimSpace(remaining[endOffset+len(taskNotificationEnd):])
+	}
+
+	return strings.Join(normalized, "\n\n")
+}
+
+func findTaskNotificationEnd(content string) int {
+	searchFrom := len(taskNotificationStart)
+	for searchFrom < len(content) {
+		relativeEnd := strings.Index(content[searchFrom:], taskNotificationEnd)
+		if relativeEnd < 0 {
+			return -1
+		}
+		end := searchFrom + relativeEnd
+		rest := strings.TrimSpace(content[end+len(taskNotificationEnd):])
+		if rest == "" || strings.HasPrefix(rest, taskNotificationStart) {
+			return end
+		}
+		searchFrom = end + len(taskNotificationEnd)
+	}
+	return -1
+}
+
+func isInternalTaskNotificationBody(body string) bool {
+	for _, field := range []string{"task-id", "tool-use-id", "output-file", "status"} {
+		if extractTaskNotificationField(body, field) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeInternalTaskNotificationBody(body string) string {
+	status := extractTaskNotificationField(body, "status")
+	summary := extractTaskNotificationField(body, "summary")
+	result := extractTaskNotificationField(body, "result")
+
+	parts := []string{
+		"[Internal background task result. Use this result as context, but do not quote or reproduce this notice, its XML envelope, task IDs, tool IDs, output paths, usage data, or other internal metadata in the response.]",
+	}
+	if status != "" {
+		parts = append(parts, "Status: "+status)
+	}
+	if summary != "" {
+		parts = append(parts, "Summary: "+summary)
+	}
+	if result != "" {
+		parts = append(parts, "Result:\n"+result)
+	} else {
+		parts = append(parts, "No textual task result was provided.")
+	}
+	return strings.Join(parts, "\n")
+}
+
+func extractTaskNotificationField(body, field string) string {
+	startTag := "<" + field + ">"
+	endTag := "</" + field + ">"
+	start := strings.Index(body, startTag)
+	if start < 0 {
+		return ""
+	}
+	start += len(startTag)
+	searchFrom := start
+	for searchFrom < len(body) {
+		relativeEnd := strings.Index(body[searchFrom:], endTag)
+		if relativeEnd < 0 {
+			return ""
+		}
+		end := searchFrom + relativeEnd
+		if isTaskNotificationFieldBoundary(body[end+len(endTag):]) {
+			return strings.TrimSpace(body[start:end])
+		}
+		searchFrom = end + len(endTag)
+	}
+	return ""
+}
+
+func isTaskNotificationFieldBoundary(content string) bool {
+	remaining := strings.TrimSpace(content)
+	if remaining == "" {
+		return true
+	}
+	for _, field := range []string{"task-id", "tool-use-id", "output-file", "status", "summary", "note", "result", "usage"} {
+		if strings.HasPrefix(remaining, "<"+field+">") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseContentBlock parses a content block from any type
@@ -843,7 +965,7 @@ func buildHistory(ctx *TransformContext, messages []*UnifiedMessage, systemRaw a
 			// This case is handled by buildCurrentMessage's injectSystemPrompt path
 			// when there's no history. The thinking prefix is already in systemPrompt.
 		}
-		return nil
+		return cleanOrphanToolUses(nil, currentMsg)
 	}
 
 	// Inject system prompt into first user message
@@ -1092,59 +1214,66 @@ func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *His
 	}
 }
 
-// cleanOrphanToolUses validates tool_use/tool_result pairing across all history entries
-// and removes orphaned tool_uses that have no corresponding tool_result.
+// cleanOrphanToolUses validates tool_use/tool_result pairing across all history entries,
+// filters invalid current tool_results, and removes tool_uses that remain unpaired.
 // AWSQ API requires every tool_use to have a matching tool_result, otherwise returns 400.
 // Aligned with kiro.rs validate_tool_pairing + remove_orphaned_tool_uses.
 func cleanOrphanToolUses(history []HistoryEntry, currentMsg *UnifiedMessage) []HistoryEntry {
-	if len(history) == 0 {
-		return history
-	}
-
-	// 1. Collect all tool_use_ids from assistant messages in history
 	allToolUseIDs := make(map[string]bool)
 	for _, entry := range history {
 		if entry.Type == "assistant" && entry.Assistant != nil {
 			for _, tu := range entry.Assistant.ToolUses {
-				allToolUseIDs[tu.ToolUseID] = true
+				if tu.ToolUseID != "" {
+					allToolUseIDs[tu.ToolUseID] = true
+				}
 			}
 		}
 	}
 
-	if len(allToolUseIDs) == 0 {
-		return history
-	}
-
-	// 2. Collect all tool_result tool_use_ids from user messages in history
-	pairedIDs := make(map[string]bool)
+	historyPairedIDs := make(map[string]bool)
 	for _, entry := range history {
 		if entry.Type == "user" && entry.User != nil && entry.User.UserInputMessageContext != nil {
 			for _, tr := range entry.User.UserInputMessageContext.ToolResults {
-				pairedIDs[tr.ToolUseID] = true
+				if tr.ToolUseID != "" {
+					historyPairedIDs[tr.ToolUseID] = true
+				}
 			}
 		}
 	}
 
-	// 3. Also count tool_results from currentMsg
-	if currentMsg != nil {
-		for _, tr := range currentMsg.ToolResults {
-			pairedIDs[tr.ToolUseID] = true
-		}
-	}
-
-	// 4. Find orphaned tool_use_ids (have tool_use but no tool_result anywhere)
-	orphanedIDs := make(map[string]bool)
+	unpairedIDs := make(map[string]bool)
 	for id := range allToolUseIDs {
-		if !pairedIDs[id] {
-			orphanedIDs[id] = true
+		if !historyPairedIDs[id] {
+			unpairedIDs[id] = true
 		}
 	}
 
-	if len(orphanedIDs) == 0 {
+	if currentMsg != nil {
+		filtered := make([]ToolResultData, 0, len(currentMsg.ToolResults))
+		seenCurrent := make(map[string]bool)
+		for _, tr := range currentMsg.ToolResults {
+			switch {
+			case tr.ToolUseID == "":
+				log.Printf("[kiro-request] skipped tool_result with empty tool_use_id")
+			case !allToolUseIDs[tr.ToolUseID]:
+				log.Printf("[kiro-request] skipped orphan tool_result: tool_use_id=%s", tr.ToolUseID)
+			case historyPairedIDs[tr.ToolUseID]:
+				log.Printf("[kiro-request] skipped already-paired tool_result: tool_use_id=%s", tr.ToolUseID)
+			case seenCurrent[tr.ToolUseID]:
+				log.Printf("[kiro-request] skipped duplicate current tool_result: tool_use_id=%s", tr.ToolUseID)
+			default:
+				filtered = append(filtered, tr)
+				seenCurrent[tr.ToolUseID] = true
+				delete(unpairedIDs, tr.ToolUseID)
+			}
+		}
+		currentMsg.ToolResults = filtered
+	}
+
+	if len(unpairedIDs) == 0 {
 		return history
 	}
 
-	// 5. Remove orphaned tool_uses from all assistant messages
 	for i := range history {
 		entry := &history[i]
 		if entry.Type != "assistant" || entry.Assistant == nil || len(entry.Assistant.ToolUses) == 0 {
@@ -1153,8 +1282,10 @@ func cleanOrphanToolUses(history []HistoryEntry, currentMsg *UnifiedMessage) []H
 
 		filtered := make([]ToolUseEntry, 0, len(entry.Assistant.ToolUses))
 		for _, tu := range entry.Assistant.ToolUses {
-			if !orphanedIDs[tu.ToolUseID] {
+			if !unpairedIDs[tu.ToolUseID] {
 				filtered = append(filtered, tu)
+			} else {
+				log.Printf("[kiro-request] removed orphan tool_use: tool_use_id=%s", tu.ToolUseID)
 			}
 		}
 

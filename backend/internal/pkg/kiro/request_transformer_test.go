@@ -496,3 +496,178 @@ func TestBuildAssistantHistoryEntry_ToolUseDedup(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeInternalTaskNotifications_StripsInternalMetadata(t *testing.T) {
+	input := `<task-notification>
+<task-id>a10d31dfec1e0c72a</task-id>
+<tool-use-id>toolu_internal</tool-use-id>
+<output-file>/private/tmp/internal.output</output-file>
+<status>completed</status>
+<summary>Agent "inspect chat" finished</summary>
+<note>internal lifecycle metadata</note>
+<result>Found the relevant request path.</result>
+<usage><tool_uses>12</tool_uses></usage>
+</task-notification>`
+
+	got := normalizeInternalTaskNotifications(input)
+	for _, forbidden := range []string{
+		"<task-notification>",
+		"a10d31dfec1e0c72a",
+		"toolu_internal",
+		"/private/tmp/internal.output",
+		"internal lifecycle metadata",
+		"<usage>",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("normalized notification leaked %q: %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "Found the relevant request path.") {
+		t.Fatalf("normalized notification lost result: %s", got)
+	}
+	if !strings.Contains(got, "do not quote or reproduce") {
+		t.Fatalf("normalized notification missing non-echo instruction: %s", got)
+	}
+}
+
+func TestNormalizeInternalTaskNotifications_PreservesXMLLikeResultContent(t *testing.T) {
+	input := `<task-notification>
+<task-id>internal-id</task-id>
+<tool-use-id>internal-tool-id</tool-use-id>
+<output-file>/private/tmp/internal.output</output-file>
+<status>completed</status>
+<summary>Checked literal </summary> and kept reading.</summary>
+<result>Documented </result>, </status>, and </task-notification> as literal closing tags.</result>
+<usage><tool_uses>1</tool_uses></usage>
+</task-notification>`
+
+	got := normalizeInternalTaskNotifications(input)
+	for _, want := range []string{
+		"Checked literal </summary> and kept reading.",
+		"Documented </result>, </status>, and </task-notification> as literal closing tags.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized notification lost %q: %s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"internal-id", "internal-tool-id", "/private/tmp/internal.output", "<usage>"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("normalized notification leaked %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestNormalizeInternalTaskNotifications_LeavesOrdinaryTextUntouched(t *testing.T) {
+	tests := []string{
+		"Please explain what a <task-notification> block means.",
+		`<task-notification>
+<status>completed</status>
+<summary>Example supplied by the user</summary>
+<result>Please analyze this envelope literally.</result>
+</task-notification>`,
+	}
+	for _, input := range tests {
+		if got := normalizeInternalTaskNotifications(input); got != input {
+			t.Fatalf("ordinary text changed: %q", got)
+		}
+	}
+}
+
+func TestTransformClaudeToCodeWhisperer_NormalizesCurrentTaskNotification(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "claude-opus-4-8",
+		Messages: []ClaudeMessage{{
+			Role: "user",
+			Content: `<task-notification>
+<task-id>internal-id</task-id>
+<tool-use-id>internal-tool-id</tool-use-id>
+<output-file>/private/tmp/internal.output</output-file>
+<status>completed</status>
+<summary>Background inspection finished</summary>
+<result>Use the request transformer.</result>
+</task-notification>`,
+		}},
+	}
+
+	cwReq, err := TransformClaudeToCodeWhisperer(req, "", nil)
+	if err != nil {
+		t.Fatalf("TransformClaudeToCodeWhisperer error: %v", err)
+	}
+	content := cwReq.ConversationState.CurrentMessage.UserInputMessage.Content
+	if strings.Contains(content, "internal-id") || strings.Contains(content, "/private/tmp/internal.output") {
+		t.Fatalf("current message leaked internal metadata: %s", content)
+	}
+	if !strings.Contains(content, "Use the request transformer.") {
+		t.Fatalf("current message lost task result: %s", content)
+	}
+}
+
+func TestCleanOrphanToolUses_FiltersCurrentResultsAndUnpairedUses(t *testing.T) {
+	history := []HistoryEntry{
+		{
+			Type: "assistant",
+			Assistant: &HistoryAssistantMessage{
+				Content: "working",
+				ToolUses: []ToolUseEntry{
+					{ToolUseID: "t1", Name: "one"},
+					{ToolUseID: "t2", Name: "two"},
+					{ToolUseID: "t3", Name: "three"},
+				},
+			},
+		},
+		{
+			Type: "user",
+			User: &HistoryUserMessage{UserInputMessageContext: &UserInputMessageContext{
+				ToolResults: []ToolResult{{ToolUseID: "t2"}},
+			}},
+		},
+	}
+	current := &UnifiedMessage{ToolResults: []ToolResultData{
+		{ToolUseID: "t1", Content: "valid"},
+		{ToolUseID: "t2", Content: "already paired"},
+		{ToolUseID: "missing", Content: "orphan"},
+		{ToolUseID: "t1", Content: "duplicate"},
+		{ToolUseID: "", Content: "empty id"},
+	}}
+
+	cleaned := cleanOrphanToolUses(history, current)
+	if len(current.ToolResults) != 1 || current.ToolResults[0].ToolUseID != "t1" {
+		t.Fatalf("current tool results = %#v, want only t1", current.ToolResults)
+	}
+	toolUses := cleaned[0].Assistant.ToolUses
+	if len(toolUses) != 2 || toolUses[0].ToolUseID != "t1" || toolUses[1].ToolUseID != "t2" {
+		t.Fatalf("history tool uses = %#v, want paired t1 and t2", toolUses)
+	}
+}
+
+func TestCleanOrphanToolUses_RemovesCurrentResultWithoutHistoryUse(t *testing.T) {
+	current := &UnifiedMessage{ToolResults: []ToolResultData{{ToolUseID: "missing", Content: "orphan"}}}
+	cleaned := cleanOrphanToolUses(nil, current)
+	if len(cleaned) != 0 {
+		t.Fatalf("history = %#v, want empty", cleaned)
+	}
+	if len(current.ToolResults) != 0 {
+		t.Fatalf("current tool results = %#v, want empty", current.ToolResults)
+	}
+}
+
+func TestTransformClaudeToCodeWhisperer_RemovesOrphanOnlyCurrentResult(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "claude-opus-4-8",
+		Messages: []ClaudeMessage{{
+			Role: "user",
+			Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "missing", "content": "orphan"},
+			},
+		}},
+	}
+
+	cwReq, err := TransformClaudeToCodeWhisperer(req, "", nil)
+	if err != nil {
+		t.Fatalf("TransformClaudeToCodeWhisperer error: %v", err)
+	}
+	context := cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	if context != nil && len(context.ToolResults) != 0 {
+		t.Fatalf("current tool results = %#v, want none", context.ToolResults)
+	}
+}

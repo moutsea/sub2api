@@ -63,6 +63,12 @@
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
 
+        <OpenAIHeaderOverrideEditor
+          v-if="account.platform === 'openai' && account.type === 'apikey'"
+          v-model:enabled="headerOverrideEnabled"
+          v-model:rows="headerOverrideRows"
+        />
+
         <!-- Model Restriction Section -->
         <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
@@ -944,7 +950,14 @@ import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import OpenAIHeaderOverrideEditor from '@/components/account/OpenAIHeaderOverrideEditor.vue'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
+import {
+  applyHeaderOverrides,
+  splitHeaderOverrides,
+  validateHeaderOverrideRows,
+  type HeaderOverrideRow
+} from '@/components/account/openaiHeaderOverrides'
 import {
   getPresetMappingsByPlatform,
   commonErrorCodes,
@@ -995,6 +1008,8 @@ type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled'
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const headerOverrideEnabled = ref(false)
+const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const modelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
@@ -1218,6 +1233,14 @@ watch(
       // Load intercept warmup requests setting (applies to all account types)
       const credentials = newAccount.credentials as Record<string, unknown> | undefined
       interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
+      headerOverrideEnabled.value =
+        newAccount.platform === 'openai' &&
+        newAccount.type === 'apikey' &&
+        credentials?.header_override_enabled === true
+      headerOverrideRows.value =
+        newAccount.platform === 'openai' && newAccount.type === 'apikey'
+          ? splitHeaderOverrides(credentials?.header_overrides)
+          : []
       autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
       editKiroProfileArn.value =
         typeof credentials?.profile_arn === 'string'
@@ -1659,6 +1682,16 @@ const handleSubmit = async () => {
       if (!applyTempUnschedConfig(newCredentials)) {
         submitting.value = false
         return
+      }
+
+      if (props.account.platform === 'openai' && props.account.type === 'apikey') {
+        const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
+        if (headerOverrideEnabled.value && headerError) {
+          appStore.showError(t(`admin.accounts.openai.headerOverride.${headerError}`))
+          submitting.value = false
+          return
+        }
+        applyHeaderOverrides(newCredentials, headerOverrideEnabled.value, headerOverrideRows.value)
       }
 
       updatePayload.credentials = newCredentials

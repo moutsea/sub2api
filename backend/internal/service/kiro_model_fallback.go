@@ -68,11 +68,6 @@ func newKiroInitialResponseTimeoutError(phase string, timeout time.Duration) err
 	}
 }
 
-func isKiroOAuthOnlyModel(requestedModel string) bool {
-	model := strings.TrimSpace(strings.ToLower(requestedModel))
-	return kiro.IsOAuthModelSupported(model) && !strings.HasPrefix(model, "claude-")
-}
-
 func (s *KiroGatewayService) resolveKiroUpstreamModel(account *Account, requestedModel string) string {
 	if !shouldAutoDetectKiroModel(account, requestedModel) {
 		return requestedModel

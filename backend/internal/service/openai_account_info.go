@@ -93,8 +93,10 @@ func selectChatGPTAccountPlanType(accounts map[string]any, orgID string) string 
 	orgID = strings.TrimSpace(orgID)
 	if orgID != "" {
 		if account, ok := asStringAnyMap(accounts[orgID]); ok {
-			if planType := extractChatGPTAccountPlanType(account); planType != "" {
-				return planType
+			if isUsableChatGPTAccountCandidate(account, time.Now()) {
+				if planType := extractChatGPTAccountPlanType(account); planType != "" {
+					return planType
+				}
 			}
 		}
 	}
@@ -106,6 +108,9 @@ func selectChatGPTAccountPlanType(accounts map[string]any, orgID string) string 
 	for _, rawAccount := range accounts {
 		account, ok := asStringAnyMap(rawAccount)
 		if !ok {
+			continue
+		}
+		if !isUsableChatGPTAccountCandidate(account, time.Now()) {
 			continue
 		}
 
@@ -132,6 +137,46 @@ func selectChatGPTAccountPlanType(accounts map[string]any, orgID string) string 
 	default:
 		return anyPlanType
 	}
+}
+
+func isUsableChatGPTAccountCandidate(account map[string]any, now time.Time) bool {
+	if account == nil || hasChatGPTAccountInactiveMarker(account) {
+		return false
+	}
+	if accountInfo, ok := asStringAnyMap(account["account"]); ok && hasChatGPTAccountInactiveMarker(accountInfo) {
+		return false
+	}
+	entitlement, ok := asStringAnyMap(account["entitlement"])
+	if !ok {
+		return true
+	}
+	expiresAt, _ := entitlement["expires_at"].(string)
+	if strings.TrimSpace(expiresAt) == "" {
+		return true
+	}
+	expiry, err := time.Parse(time.RFC3339, expiresAt)
+	return err != nil || expiry.After(now)
+}
+
+func hasChatGPTAccountInactiveMarker(account map[string]any) bool {
+	for _, key := range []string{"deactivated", "is_deactivated", "disabled", "is_disabled"} {
+		if value, ok := account[key].(bool); ok && value {
+			return true
+		}
+	}
+	for _, key := range []string{"deactivated_at", "disabled_at", "deleted_at"} {
+		if value, ok := account[key].(string); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	for _, key := range []string{"status", "state"} {
+		value, _ := account[key].(string)
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "deactivated", "disabled", "deleted", "inactive", "suspended":
+			return true
+		}
+	}
+	return false
 }
 
 func extractChatGPTAccountPlanType(account map[string]any) string {

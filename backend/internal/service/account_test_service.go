@@ -439,6 +439,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
 	}
+	account.ApplyHeaderOverrides(req.Header)
 
 	// Get proxy URL
 	proxyURL := ""
@@ -499,6 +500,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
+	account.ApplyHeaderOverrides(req.Header)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

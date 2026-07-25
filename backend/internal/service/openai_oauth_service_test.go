@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +63,70 @@ func TestSelectChatGPTAccountPlanType_EntitlementFallback(t *testing.T) {
 	}
 
 	require.Equal(t, "team", selectChatGPTAccountPlanType(accounts, "acct"))
+}
+
+func TestSelectChatGPTAccountPlanTypeSkipsInactiveWorkspaces(t *testing.T) {
+	accounts := map[string]any{
+		"expired-workspace": map[string]any{
+			"account": map[string]any{
+				"plan_type":  "self_serve_business_usage_based",
+				"is_default": true,
+			},
+			"entitlement": map[string]any{
+				"expires_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+		"deactivated-workspace": map[string]any{
+			"account": map[string]any{
+				"plan_type":      "team",
+				"is_deactivated": true,
+			},
+		},
+		"personal": map[string]any{
+			"account": map[string]any{
+				"plan_type": "pro",
+			},
+		},
+	}
+
+	require.Equal(t, "pro", selectChatGPTAccountPlanType(accounts, "expired-workspace"))
+	require.Equal(t, "pro", selectChatGPTAccountPlanType(accounts, "deactivated-workspace"))
+}
+
+func TestOpenAIOAuthServiceExchangeCodePrefersIDTokenPlanType(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &fakeOpenAIOAuthClient{
+		exchangeResp: &openai.TokenResponse{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			IDToken: makeOpenAIIDToken(t, map[string]any{
+				"chatgpt_account_id": "account-id",
+				"chatgpt_plan_type":  "pro",
+			}),
+			ExpiresIn: 3600,
+		},
+	})
+	accountInfoCalls := 0
+	svc.accountInfoClientFactory = func(proxyURL string) (*req.Client, error) {
+		accountInfoCalls++
+		return req.C(), nil
+	}
+	svc.sessionStore.Set("session-id", &openai.OAuthSession{
+		CodeVerifier: "code-verifier",
+		State:        "oauth-state",
+		ClientID:     openai.ClientID,
+		RedirectURI:  openai.DefaultRedirectURI,
+		CreatedAt:    time.Now(),
+	})
+
+	tokenInfo, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID: "session-id",
+		Code:      "code",
+		State:     "oauth-state",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "pro", tokenInfo.PlanType)
+	require.Zero(t, accountInfoCalls)
 }
 
 func TestOpenAIOAuthService_ExchangeCodeEnrichesPlanType(t *testing.T) {
@@ -145,6 +211,16 @@ type fakeOpenAIOAuthClient struct {
 	exchangeResp *openai.TokenResponse
 	refreshResp  *openai.TokenResponse
 	err          error
+}
+
+func makeOpenAIIDToken(t *testing.T, authClaims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"email":                       "user@example.com",
+		"https://api.openai.com/auth": authClaims,
+	})
+	require.NoError(t, err)
+	return "header." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
 
 func (c *fakeOpenAIOAuthClient) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {

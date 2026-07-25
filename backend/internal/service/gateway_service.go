@@ -2199,8 +2199,7 @@ func IsAntigravityModelSupported(requestedModel string) bool {
 		strings.HasPrefix(requestedModel, "gemini-")
 }
 
-// IsKiroModelSupported 检查 Kiro OAuth runtime 是否支持指定模型
-// Kiro apikey 账号不走 runtime，不适用这些非 Claude 模型。
+// IsKiroModelSupported 检查 Kiro OAuth runtime 是否支持指定模型。
 func IsKiroModelSupported(requestedModel string) bool {
 	return kiro.IsOAuthModelSupported(requestedModel)
 }
@@ -2216,7 +2215,9 @@ func IsKiroModelSupportedByAccount(account *Account, requestedModel string) bool
 		return ok
 	}
 	if account.IsKiroApiKey() {
-		return strings.HasPrefix(requestedModel, "claude-")
+		// API Key accounts are custom Anthropic Messages-compatible endpoints.
+		// Without an explicit mapping, model capability is determined by the upstream.
+		return true
 	}
 	return IsKiroModelSupported(requestedModel)
 }

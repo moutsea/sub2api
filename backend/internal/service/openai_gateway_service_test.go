@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 type stubOpenAIAccountRepo struct {
@@ -1054,6 +1055,41 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for invalid base_url when allowlist disabled")
 	}
+}
+
+func TestOpenAIBuildUpstreamRequestAppliesAccountHeaderOverrides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	c.Request.Header.Set("User-Agent", "client-agent")
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":                       "test-key",
+			credentialHeaderOverrideEnabled: true,
+			credentialHeaderOverrides: map[string]any{
+				"user-agent":    "account-agent",
+				"openai-beta":   "responses=experimental",
+				"authorization": "Bearer attacker",
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}}
+	req, err := svc.buildUpstreamRequest(
+		c.Request.Context(), c, account, []byte("{}"), "real-token", false, "", false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "Bearer real-token", req.Header.Get("Authorization"))
+	require.Equal(t, "account-agent", req.Header.Get("User-Agent"))
+	require.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
 }
 
 func TestOpenAIValidateUpstreamBaseURLDisabledRequiresHTTPS(t *testing.T) {

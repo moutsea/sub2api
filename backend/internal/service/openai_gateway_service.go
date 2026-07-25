@@ -1357,6 +1357,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if req.Header.Get("content-type") == "" {
 		req.Header.Set("content-type", "application/json")
 	}
+	account.ApplyHeaderOverrides(req.Header)
 
 	return req, nil
 }
@@ -2908,6 +2909,7 @@ func (s *OpenAIGatewayService) buildChatCompletionsRequest(ctx context.Context, 
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	account.ApplyHeaderOverrides(req.Header)
 
 	return req, nil
 }

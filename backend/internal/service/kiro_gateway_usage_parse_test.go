@@ -23,8 +23,33 @@ func TestUpdateClaudeUsageFromSSEData_MessageStartAndDelta(t *testing.T) {
 	if usage.OutputTokens != 45 {
 		t.Fatalf("output_tokens=%d, want 45", usage.OutputTokens)
 	}
+	if usage.InputTokens != 123 {
+		t.Fatalf("input_tokens=%d after delta, want preserved 123", usage.InputTokens)
+	}
+	if usage.CacheCreationInputTokens != 11 {
+		t.Fatalf("cache_creation_input_tokens=%d after delta, want preserved 11", usage.CacheCreationInputTokens)
+	}
 	if usage.CacheReadInputTokens != 6 {
 		t.Fatalf("cache_read_input_tokens=%d, want 6", usage.CacheReadInputTokens)
+	}
+}
+
+func TestApplyClaudeUsageMap_ExplicitZeroOverwritesExistingValue(t *testing.T) {
+	usage := &ClaudeUsage{InputTokens: 123, CacheReadInputTokens: 456}
+
+	updated := applyClaudeUsageMap(map[string]any{
+		"input_tokens":            0,
+		"cache_read_input_tokens": 0,
+	}, usage, true)
+
+	if updated {
+		t.Fatal("zero-only usage update should not count as positive upstream usage")
+	}
+	if usage.InputTokens != 0 {
+		t.Fatalf("input_tokens=%d, want explicit zero", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 0 {
+		t.Fatalf("cache_read_input_tokens=%d, want explicit zero", usage.CacheReadInputTokens)
 	}
 }
 

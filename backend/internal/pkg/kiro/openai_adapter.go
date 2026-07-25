@@ -17,9 +17,7 @@ func ConvertOpenAIToClaude(body []byte) (*ClaudeRequest, error) {
 		return nil, fmt.Errorf("parse openai request: %w", err)
 	}
 
-	claudeReq := &ClaudeRequest{
-		Stream: true, // default to streaming for Kiro
-	}
+	claudeReq := &ClaudeRequest{}
 
 	// Model
 	if model, ok := req["model"].(string); ok {

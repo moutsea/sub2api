@@ -59,13 +59,14 @@ const (
 )
 
 // Is1MContext returns true if the model supports 1M context window.
-// Currently GPT-5.6, claude-sonnet-5, claude-opus-4.8, claude-opus-4.7,
+// Currently GPT-5.6, claude-sonnet-5, claude-opus-5, claude-opus-4.8, claude-opus-4.7,
 // claude-opus-4.6, and claude-sonnet-4.6 natively support 1M.
 // Accepts both input formats: dashes (claude-opus-4-8) and dots (claude-opus-4.8).
 func Is1MContext(model string) bool {
 	m := strings.TrimSpace(strings.ToLower(model))
 	return m == "gpt-5.6-sol" || m == "gpt-5.6-terra" || m == "gpt-5.6-luna" ||
 		strings.Contains(m, "sonnet-5") ||
+		strings.Contains(m, "opus-5") ||
 		strings.Contains(m, "opus-4-8") || strings.Contains(m, "opus-4.8") ||
 		strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") ||
 		strings.Contains(m, "opus-4-6") || strings.Contains(m, "opus-4.6") ||

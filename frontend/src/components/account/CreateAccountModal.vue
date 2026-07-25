@@ -1190,6 +1190,12 @@
           <p class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
+        <OpenAIHeaderOverrideEditor
+          v-if="form.platform === 'openai'"
+          v-model:enabled="headerOverrideEnabled"
+          v-model:rows="headerOverrideRows"
+        />
+
         <!-- Gemini API Key tier selection -->
         <div v-if="form.platform === 'gemini'">
           <label class="input-label">{{ t('admin.accounts.gemini.tier.label') }}</label>
@@ -2136,6 +2142,12 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
+import OpenAIHeaderOverrideEditor from './OpenAIHeaderOverrideEditor.vue'
+import {
+  applyHeaderOverrides,
+  validateHeaderOverrideRows,
+  type HeaderOverrideRow
+} from './openaiHeaderOverrides'
 
 // Type for exposed OAuthAuthorizationFlow component
 // Note: defineExpose automatically unwraps refs, so we use the unwrapped types
@@ -2253,6 +2265,8 @@ const accountCategory = ref<'oauth-based' | 'apikey'>('oauth-based') // UI selec
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const headerOverrideEnabled = ref(false)
+const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const modelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
@@ -2450,6 +2464,8 @@ watch(
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
+    headerOverrideEnabled.value = false
+    headerOverrideRows.value = []
     // Reset Anthropic-specific settings when switching to other platforms
     if (newPlatform !== 'anthropic') {
       interceptWarmupRequests.value = false
@@ -2703,6 +2719,8 @@ const resetForm = () => {
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  headerOverrideEnabled.value = false
+  headerOverrideRows.value = []
   modelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
   allowedModels.value = [...claudeModels] // Default fill related models
@@ -3499,6 +3517,15 @@ const handleSubmit = async () => {
   }
   if (!applyTempUnschedConfig(credentials)) {
     return
+  }
+
+  if (form.platform === 'openai') {
+    const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
+    if (headerOverrideEnabled.value && headerError) {
+      appStore.showError(t(`admin.accounts.openai.headerOverride.${headerError}`))
+      return
+    }
+    applyHeaderOverrides(credentials, headerOverrideEnabled.value, headerOverrideRows.value)
   }
 
   form.credentials = credentials
