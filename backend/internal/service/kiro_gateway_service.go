@@ -25,9 +25,10 @@ import (
 )
 
 const (
-	kiroMaxRetries     = 3
-	kiroRetryBaseDelay = 1 * time.Second
-	kiroRetryMaxDelay  = 16 * time.Second
+	kiroMaxRetries                     = 3
+	kiroRetryBaseDelay                 = 1 * time.Second
+	kiroRetryMaxDelay                  = 16 * time.Second
+	defaultKiroStreamKeepaliveInterval = 15 * time.Second
 )
 
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
@@ -136,6 +137,17 @@ func NewKiroGatewayService(
 // GetTokenProvider returns the token provider
 func (s *KiroGatewayService) GetTokenProvider() *KiroTokenProvider {
 	return s.tokenProvider
+}
+
+func (s *KiroGatewayService) kiroStreamKeepaliveInterval() time.Duration {
+	cfg := s.cfg
+	if s.settingService != nil && s.settingService.cfg != nil {
+		cfg = s.settingService.cfg
+	}
+	if cfg != nil && cfg.Gateway.StreamKeepaliveInterval > 0 {
+		return time.Duration(cfg.Gateway.StreamKeepaliveInterval) * time.Second
+	}
+	return defaultKiroStreamKeepaliveInterval
 }
 
 // applyRequestJitter sleeps a random duration between configured min/max before an upstream request.
@@ -586,7 +598,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	originalModel := claudeReq.Model
-	if account.IsKiroApiKey() {
+	isAPIKeyAccount := account.IsKiroApiKey()
+	if isAPIKeyAccount {
 		mappedModel := account.GetMappedModel(originalModel)
 		if mappedModel != originalModel {
 			rewrittenBody, rewriteErr := rewriteTopLevelModelJSON(body, mappedModel)
@@ -598,20 +611,25 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
 		}
 	}
-	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
-		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
+	activeUpstreamModel := ""
+	mappedModel := ""
+	contextWindowLimit := 0
+	if !isAPIKeyAccount {
+		if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
+			log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
+		}
+		activeUpstreamModel = s.resolveKiroUpstreamModel(account, claudeReq.Model)
+		mappedModel = kiro.GetModelID(activeUpstreamModel)
+		contextWindowLimit = kiro.GetContextWindowLimit(claudeReq.Model)
+
+		// AWSQ thinking mode shares the output token budget between thinking and text.
+		claudeReq.MaxTokens = kiro.KiroFixedMaxTokens
 	}
-	activeUpstreamModel := s.resolveKiroUpstreamModel(account, claudeReq.Model)
-	mappedModel := kiro.GetModelID(activeUpstreamModel)
-	contextWindowLimit := kiro.GetContextWindowLimit(claudeReq.Model)
 
-	// Force max_tokens to 64000.
-	// AWSQ thinking mode shares the output token budget between thinking and text.
-	// A too-small max_tokens causes thinking to exhaust the budget with no room for text output.
-	// Fixed at 64000 to ensure consistent behavior across all clients.
-	claudeReq.MaxTokens = 64000
-
-	estimatedTokens := kiro.EstimateInputTokens(claudeReq)
+	estimatedTokens := 0
+	if !isAPIKeyAccount {
+		estimatedTokens = kiro.EstimateInputTokens(claudeReq)
+	}
 
 	// Cache estimation for billing — computed from the actual request as-is.
 	cacheEstimation := kiro.EstimateCache(claudeReq)
@@ -641,7 +659,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	proxyURL := s.resolveProxyURL(ctx, account, freeTier)
 
 	// apikey accounts: direct Claude API passthrough (no CodeWhisperer transform)
-	if account.IsKiroApiKey() {
+	if isAPIKeyAccount {
 		// Override X-Session-ID with content-based fingerprint for apikey accounts.
 		// This ensures CacheTracker and any downstream logic that reads X-Session-ID
 		// uses a stable, content-based identifier instead of whatever the client sent.
@@ -1375,13 +1393,7 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 	}
 
 	// Keepalive: send SSE comment to prevent proxy idle disconnect
-	keepaliveInterval := time.Duration(0)
-	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.StreamKeepaliveInterval > 0 {
-		keepaliveInterval = time.Duration(s.settingService.cfg.Gateway.StreamKeepaliveInterval) * time.Second
-	}
-	if keepaliveInterval <= 0 {
-		keepaliveInterval = 15 * time.Second // default 15s keepalive for Kiro streams
-	}
+	keepaliveInterval := s.kiroStreamKeepaliveInterval()
 	keepaliveTicker := time.NewTicker(keepaliveInterval)
 	defer keepaliveTicker.Stop()
 
@@ -1948,19 +1960,17 @@ func (s *KiroGatewayService) handleUpstreamError(ctx context.Context, prefix str
 		log.Printf("%s status=429 rate_limited", prefix)
 
 	case 401:
-		// Token expired/invalid — invalidate cached token so next request triggers refresh.
-		// Do NOT ban the account; 401 is typically a stale access token.
-		// Skip rateLimitService to prevent permanent disable (except for apikey accounts
-		// which go through the consecutive error threshold in rateLimitService).
 		errMsg := extractKiroErrorMessage(body)
-		if s.tokenProvider != nil {
-			s.tokenProvider.InvalidateToken(account.ID)
-		}
-		log.Printf("%s status=401 token_invalidated msg=%s", prefix, errMsg)
 		if !account.IsKiroApiKey() {
+			// OAuth tokens may be stale, so invalidate the cache and let the next request refresh.
+			if s.tokenProvider != nil {
+				s.tokenProvider.InvalidateToken(account.ID)
+			}
+			log.Printf("%s status=401 token_invalidated msg=%s", prefix, errMsg)
 			return
 		}
-		// apikey accounts: fall through to rateLimitService for consecutive error tracking
+		// API keys are static; track repeated authorization failures without touching OAuth token state.
+		log.Printf("%s status=401 api_key_unauthorized msg=%s", prefix, errMsg)
 
 	case 403:
 		// Permission error — mark banned (skip for apikey accounts)
@@ -2284,6 +2294,72 @@ func (s *KiroGatewayService) buildClaudeAPIHTTPRequest(ctx context.Context, targ
 	return req, nil
 }
 
+func looksLikeClaudeToolSignatureError(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "tool_use") ||
+		strings.Contains(message, "tool_result") ||
+		strings.Contains(message, "functioncall") || strings.Contains(message, "function_call") ||
+		strings.Contains(message, "functionresponse") || strings.Contains(message, "function_response")
+}
+
+func (s *KiroGatewayService) retryClaudeAPISignatureError(
+	ctx context.Context,
+	resp *http.Response,
+	account *Account,
+	targetURL, apiKey string,
+	body []byte,
+	sessionID, anthropicBeta, proxyURL, prefix string,
+	fingerprint map[string]string,
+) *http.Response {
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
+		return resp
+	}
+
+	originalBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	_ = resp.Body.Close()
+	if !isThinkingBlockSignatureError(originalBody) {
+		resp.Body = io.NopCloser(bytes.NewReader(originalBody))
+		return resp
+	}
+
+	log.Printf("%s detected thinking block signature error, attempting retry with filtered body", prefix)
+
+	// Stage 1: filter thinking blocks (thinking→text, remove redacted_thinking, disable thinking).
+	time.Sleep(500 * time.Millisecond)
+	filteredBody := FilterThinkingBlocksForRetry(body)
+	if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody, sessionID, anthropicBeta, 1, fingerprint); buildErr == nil {
+		if retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency); retryErr == nil {
+			if retryResp.StatusCode < 400 {
+				log.Printf("%s signature error retry succeeded (thinking downgraded)", prefix)
+				return retryResp
+			}
+
+			retryBody, retryReadErr := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
+			_ = retryResp.Body.Close()
+			if retryReadErr == nil && retryResp.StatusCode == http.StatusBadRequest &&
+				isThinkingBlockSignatureError(retryBody) &&
+				looksLikeClaudeToolSignatureError(extractUpstreamErrorMessage(retryBody)) {
+				log.Printf("%s signature retry still failing and tool-related, retrying with tool blocks downgraded", prefix)
+				time.Sleep(500 * time.Millisecond)
+				filteredToolBody := FilterSignatureSensitiveBlocksForRetry(body)
+				if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredToolBody, sessionID, anthropicBeta, 2, fingerprint); buildErr2 == nil {
+					if retryResp2, retryErr2 := s.httpUpstream.Do(retryReq2, proxyURL, account.ID, account.Concurrency); retryErr2 == nil {
+						if retryResp2.StatusCode < 400 {
+							log.Printf("%s signature error retry succeeded (tools downgraded)", prefix)
+							return retryResp2
+						}
+						_ = retryResp2.Body.Close()
+					}
+				}
+			}
+		}
+	}
+
+	log.Printf("%s signature error retries exhausted, falling back to failover", prefix)
+	resp.Body = io.NopCloser(bytes.NewReader(originalBody))
+	return resp
+}
+
 // forwardClaudeAPIRequest forwards Claude API requests directly to a base_url endpoint (apikey accounts).
 // No CodeWhisperer transformation — request and response are Claude API format.
 func (s *KiroGatewayService) forwardClaudeAPIRequest(
@@ -2323,75 +2399,20 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	if err != nil {
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
+	resp = s.retryClaudeAPISignatureError(
+		ctx,
+		resp,
+		account,
+		targetURL,
+		apiKey,
+		body,
+		stableSessionID,
+		anthropicBeta,
+		proxyURL,
+		prefix,
+		fingerprint,
+	)
 	defer func() { _ = resp.Body.Close() }()
-
-	// Thinking block signature error detection and two-stage retry.
-	// When Claude API returns 400 due to invalid/missing signature in thinking blocks,
-	// retry with filtered body before falling back to failover.
-	if resp.StatusCode == http.StatusBadRequest {
-		sigCheckBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		_ = resp.Body.Close() // close original body explicitly; defer will close whatever resp points to at return
-
-		if isThinkingBlockSignatureError(sigCheckBody) {
-			log.Printf("%s detected thinking block signature error, attempting retry with filtered body", prefix)
-
-			looksLikeToolSignatureError := func(msg string) bool {
-				m := strings.ToLower(msg)
-				return strings.Contains(m, "tool_use") ||
-					strings.Contains(m, "tool_result") ||
-					strings.Contains(m, "functioncall") || strings.Contains(m, "function_call") ||
-					strings.Contains(m, "functionresponse") || strings.Contains(m, "function_response")
-			}
-
-			retrySucceeded := false
-
-			// Stage 1: filter thinking blocks (thinking→text, remove redacted_thinking, disable thinking)
-			time.Sleep(500 * time.Millisecond)
-			filteredBody := FilterThinkingBlocksForRetry(body)
-			if retryReq, buildErr := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody, stableSessionID, anthropicBeta, 1, fingerprint); buildErr == nil {
-				if retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency); retryErr == nil {
-					if retryResp.StatusCode < 400 {
-						log.Printf("%s signature error retry succeeded (thinking downgraded)", prefix)
-						resp = retryResp
-						retrySucceeded = true
-					} else {
-						// Stage 1 still errored — check if Stage 2 (tool block downgrade) applies
-						retryRespBody, retryReadErr := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
-						_ = retryResp.Body.Close()
-
-						if retryReadErr == nil && retryResp.StatusCode == 400 && isThinkingBlockSignatureError(retryRespBody) {
-							msg2 := extractUpstreamErrorMessage(retryRespBody)
-							if looksLikeToolSignatureError(msg2) {
-								log.Printf("%s signature retry still failing and tool-related, retrying with tool blocks downgraded", prefix)
-								time.Sleep(500 * time.Millisecond)
-								filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body)
-								if retryReq2, buildErr2 := s.buildClaudeAPIHTTPRequest(ctx, targetURL, apiKey, filteredBody2, stableSessionID, anthropicBeta, 2, fingerprint); buildErr2 == nil {
-									if retryResp2, retryErr2 := s.httpUpstream.Do(retryReq2, proxyURL, account.ID, account.Concurrency); retryErr2 == nil {
-										if retryResp2.StatusCode < 400 {
-											log.Printf("%s signature error retry succeeded (tools downgraded)", prefix)
-											resp = retryResp2
-											retrySucceeded = true
-										} else {
-											_ = retryResp2.Body.Close()
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-
-			if !retrySucceeded {
-				log.Printf("%s signature error retries exhausted, falling back to failover", prefix)
-				// Restore body so downstream error handling can read it
-				resp.Body = io.NopCloser(bytes.NewReader(sigCheckBody))
-			}
-		} else {
-			// Not a signature error — restore body for downstream error handling
-			resp.Body = io.NopCloser(bytes.NewReader(sigCheckBody))
-		}
-	}
 
 	// Handle error responses
 	if resp.StatusCode >= 400 {
@@ -2443,21 +2464,75 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		usageFromUpstream := false
 		clientDisconnected := false
 		var sseTail strings.Builder
-		buf := make([]byte, 4096)
 
+		// Commit response bytes immediately after upstream headers arrive. This
+		// prevents a slow first body chunk from leaving Cloudflare waiting for
+		// downstream response data until its 524 timeout.
+		if _, writeErr := c.Writer.Write([]byte(":\n\n")); writeErr != nil {
+			clientDisconnected = true
+		} else {
+			flusher.Flush()
+		}
+
+		type claudeAPIStreamChunk struct {
+			data []byte
+			err  error
+		}
+		chunks := make(chan claudeAPIStreamChunk, 32)
+		readerDone := make(chan struct{})
+		defer close(readerDone)
+		sendChunk := func(chunk claudeAPIStreamChunk) bool {
+			select {
+			case chunks <- chunk:
+				return true
+			case <-readerDone:
+				return false
+			}
+		}
+		go func() {
+			defer close(chunks)
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					data := make([]byte, n)
+					copy(data, buf[:n])
+					if !sendChunk(claudeAPIStreamChunk{data: data}) {
+						return
+					}
+				}
+				if readErr != nil {
+					_ = sendChunk(claudeAPIStreamChunk{err: readErr})
+					return
+				}
+			}
+		}()
+
+		keepaliveInterval := s.kiroStreamKeepaliveInterval()
+		keepaliveTicker := time.NewTicker(keepaliveInterval)
+		defer keepaliveTicker.Stop()
+		lastDataAt := time.Now()
+
+	streamLoop:
 		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
+			select {
+			case chunk, open := <-chunks:
+				if !open || chunk.err != nil {
+					break streamLoop
+				}
+				if len(chunk.data) == 0 {
+					continue
+				}
+				lastDataAt = time.Now()
 				if firstTokenMs == nil {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 				}
 
-				chunk := buf[:n]
 				// Count output tokens from text deltas for estimation
-				outputTokens += s.countClaudeSSEOutputTokens(chunk)
+				outputTokens += s.countClaudeSSEOutputTokens(chunk.data)
 				// Reconstruct full SSE lines for usage parsing + cache rewrite.
-				sseTail.Write(chunk)
+				sseTail.Write(chunk.data)
 				sseData := sseTail.String()
 				lines := strings.Split(sseData, "\n")
 				sseTail.Reset()
@@ -2493,9 +2568,19 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 				if !clientDisconnected {
 					flusher.Flush()
 				}
-			}
-			if readErr != nil {
-				break
+
+			case <-keepaliveTicker.C:
+				if clientDisconnected || time.Since(lastDataAt) < keepaliveInterval {
+					continue
+				}
+				// The direct passthrough may currently be between an SSE event's
+				// event/data lines. A single comment line keeps the connection active
+				// without the blank line that would prematurely dispatch that event.
+				if _, writeErr := c.Writer.Write([]byte(":\n")); writeErr != nil {
+					clientDisconnected = true
+					continue
+				}
+				flusher.Flush()
 			}
 		}
 

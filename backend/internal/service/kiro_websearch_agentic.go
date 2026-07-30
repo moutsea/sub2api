@@ -215,7 +215,7 @@ func (s *KiroGatewayService) ForwardWithWebSearch(ctx context.Context, c *gin.Co
 		return s.Forward(ctx, c, account, body)
 	}
 
-	if !account.IsKiroApiKey() && kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
+	if kiro.ApplyThinkingDefaultsFromModelName(claudeReq) {
 		log.Printf("%s enabled thinking mode from model alias: %s", prefix, claudeReq.Model)
 		if newBody, err := json.Marshal(claudeReq); err == nil {
 			body = newBody

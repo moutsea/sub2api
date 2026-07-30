@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -97,6 +98,30 @@ func applyKiroOpus47GroupDowngrade(group *service.Group, requestedModel string, 
 		return requestedModel, body, false, err
 	}
 	return effectiveModel, rewritten, true, nil
+}
+
+// applyModelContextSuffix 剥掉模型名上的 "[1m]" 上下文标记，并把 1M 语义改用
+// anthropic-beta header 表达。
+//
+// Claude Code CLI 会给派生请求（如 auto 模式的 Bash 安全分类器）带上这个后缀，
+// 而带后缀的模型名不在任何账号的模型范围内，会被账号选择阶段判定为模型不可用。
+// 归一化后基础模型名可正常参与调度与计费。
+//
+// beta header 直接改写到入站请求上，这样下游 OAuth 与 Kiro 两条链路各自读取
+// c.GetHeader("anthropic-beta") 时都能拿到补齐后的值。
+func applyModelContextSuffix(c *gin.Context, requestedModel string, body []byte) (string, []byte, bool, error) {
+	baseModel, wants1M := claude.SplitModelContextSuffix(requestedModel)
+	if !wants1M {
+		return requestedModel, body, false, nil
+	}
+	rewritten, err := replaceTopLevelJSONModel(body, baseModel)
+	if err != nil {
+		return requestedModel, body, false, err
+	}
+	if c != nil && c.Request != nil {
+		c.Request.Header.Set("anthropic-beta", claude.EnsureContext1MBeta(c.GetHeader("anthropic-beta")))
+	}
+	return baseModel, rewritten, true, nil
 }
 
 func replaceTopLevelJSONModel(body []byte, model string) ([]byte, error) {

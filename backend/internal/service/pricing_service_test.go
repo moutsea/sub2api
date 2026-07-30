@@ -115,6 +115,136 @@ func TestPricingServiceGetModelPricing_Sonnet5DoesNotFallBackToSonnet4(t *testin
 	}
 }
 
+func TestPricingServiceGetModelPricing_Opus5And48UseExplicitStaticPricing(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-opus-4": {
+				InputCostPerToken:  15e-6,
+				OutputCostPerToken: 75e-6,
+			},
+			"claude-opus-4.6": {
+				InputCostPerToken:  99e-6,
+				OutputCostPerToken: 199e-6,
+			},
+		},
+	}
+
+	for _, model := range []string{
+		"claude-opus-5",
+		"claude-opus-5.0",
+		"claude-opus-5-0-thinking",
+		"claude-opus-5-20260701",
+		"claude-opus-4-8",
+		"claude-opus-4.8-thinking",
+	} {
+		t.Run(model, func(t *testing.T) {
+			pricing := svc.GetModelPricing(model)
+			if pricing == nil {
+				t.Fatalf("expected pricing for %q", model)
+			}
+			if pricing.InputCostPerToken != 5e-6 {
+				t.Fatalf("input pricing = %v, want %v", pricing.InputCostPerToken, 5e-6)
+			}
+			if pricing.OutputCostPerToken != 25e-6 {
+				t.Fatalf("output pricing = %v, want %v", pricing.OutputCostPerToken, 25e-6)
+			}
+			if pricing.CacheCreationInputTokenCost != 6.25e-6 {
+				t.Fatalf("cache creation pricing = %v, want %v", pricing.CacheCreationInputTokenCost, 6.25e-6)
+			}
+			if pricing.CacheReadInputTokenCost != 0.5e-6 {
+				t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadInputTokenCost, 0.5e-6)
+			}
+		})
+	}
+}
+
+func TestClaudeOpusModelFamilyMatchingRequiresTokenBoundary(t *testing.T) {
+	for _, model := range []string{
+		"claude-opus-5",
+		"claude-opus-5.0",
+		"claude-opus-5-0-thinking",
+		"claude-opus-5-20260701",
+		"anthropic/claude-opus-5-thinking",
+	} {
+		if !isClaudeOpus5Model(model) {
+			t.Fatalf("expected %q to match Opus 5", model)
+		}
+	}
+	for _, model := range []string{"claude-opus-50", "claude-opus-51", "claude-opus-5beta"} {
+		if isClaudeOpus5Model(model) {
+			t.Fatalf("expected %q not to match Opus 5", model)
+		}
+	}
+
+	for _, model := range []string{"claude-opus-4-80", "claude-opus-4.80", "claude-opus-4.8beta"} {
+		if isClaudeOpus48Model(model) {
+			t.Fatalf("expected %q not to match Opus 4.8", model)
+		}
+	}
+}
+
+func TestPricingServiceGetModelPricing_OpusFamilyDoesNotMatchFutureMajorVersion(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-opus-50": {
+				InputCostPerToken:  50e-6,
+				OutputCostPerToken: 100e-6,
+			},
+		},
+	}
+
+	pricing := svc.GetModelPricing("claude-opus-5-thinking")
+	if pricing == nil {
+		t.Fatal("expected static Opus 5 pricing")
+	}
+	if pricing.InputCostPerToken != 5e-6 || pricing.OutputCostPerToken != 25e-6 {
+		t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputCostPerToken, pricing.OutputCostPerToken, 5e-6, 25e-6)
+	}
+	if pricing := svc.GetModelPricing("claude-opus-50-thinking"); pricing != nil {
+		t.Fatalf("pricing = %+v, want nil for unknown future major version", pricing)
+	}
+}
+
+func TestPricingServiceGetModelPricing_Opus5PrefersDynamicPricing(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-opus-5": {
+				InputCostPerToken:           1e-6,
+				OutputCostPerToken:          2e-6,
+				CacheCreationInputTokenCost: 3e-6,
+				CacheReadInputTokenCost:     4e-6,
+			},
+		},
+	}
+
+	pricing := svc.GetModelPricing("claude-opus-5-thinking")
+	if pricing == nil {
+		t.Fatal("expected dynamic Opus 5 pricing")
+	}
+	if pricing.InputCostPerToken != 1e-6 || pricing.OutputCostPerToken != 2e-6 {
+		t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputCostPerToken, pricing.OutputCostPerToken, 1e-6, 2e-6)
+	}
+}
+
+func TestBillingServiceGetModelPricing_Opus5DoesNotUseClaude3OpusFallback(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-3-opus": {
+				InputCostPerToken:  15e-6,
+				OutputCostPerToken: 75e-6,
+			},
+		},
+	})
+
+	pricing, err := svc.GetModelPricing("claude-opus-5-thinking")
+	if err != nil {
+		t.Fatalf("expected Opus 5 pricing, got error %v", err)
+	}
+	if pricing.InputPricePerToken != 5e-6 || pricing.OutputPricePerToken != 25e-6 {
+		t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputPricePerToken, pricing.OutputPricePerToken, 5e-6, 25e-6)
+	}
+}
+
 func TestPricingServiceGetModelPricing_Sonnet5FamilyMatchesDynamicPricing(t *testing.T) {
 	svc := &PricingService{
 		pricingData: map[string]*LiteLLMModelPricing{

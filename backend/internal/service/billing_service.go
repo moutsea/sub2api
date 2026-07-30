@@ -121,6 +121,24 @@ func NewBillingService(cfg *config.Config, pricingService *PricingService) *Bill
 // initFallbackPricing 初始化硬编码回退价格（当动态价格不可用时使用）
 // 价格单位：USD per token（与LiteLLM格式一致）
 func (s *BillingService) initFallbackPricing() {
+	// Claude Opus 5 (same pricing as Opus 4.8)
+	s.fallbackPrices["claude-opus-5"] = &ModelPricing{
+		InputPricePerToken:         5e-6,
+		OutputPricePerToken:        25e-6,
+		CacheCreationPricePerToken: 6.25e-6,
+		CacheReadPricePerToken:     0.5e-6,
+		SupportsCacheBreakdown:     false,
+	}
+
+	// Claude Opus 4.8
+	s.fallbackPrices["claude-opus-4-8"] = &ModelPricing{
+		InputPricePerToken:         5e-6,
+		OutputPricePerToken:        25e-6,
+		CacheCreationPricePerToken: 6.25e-6,
+		CacheReadPricePerToken:     0.5e-6,
+		SupportsCacheBreakdown:     false,
+	}
+
 	// Claude Opus 4.6
 	s.fallbackPrices["claude-opus-4-6"] = &ModelPricing{
 		InputPricePerToken:         5e-6,    // $5 per MTok
@@ -233,6 +251,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 	// 按模型系列匹配
 	if strings.Contains(modelLower, "opus") {
+		if isClaudeOpus5Model(modelLower) {
+			return s.fallbackPrices["claude-opus-5"]
+		}
+		if isClaudeOpus48Model(modelLower) {
+			return s.fallbackPrices["claude-opus-4-8"]
+		}
 		if strings.Contains(modelLower, "4.6") || strings.Contains(modelLower, "4-6") {
 			return s.fallbackPrices["claude-opus-4-6"]
 		}
@@ -266,6 +290,42 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 func isClaudeSonnet5Model(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
+}
+
+func isClaudeOpus5Model(model string) bool {
+	return containsModelFamilyToken(model, "opus-5")
+}
+
+func isClaudeOpus48Model(model string) bool {
+	return containsModelFamilyToken(model, "opus-4-8") || containsModelFamilyToken(model, "opus-4.8")
+}
+
+func containsModelFamilyToken(model, family string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	family = strings.ToLower(strings.TrimSpace(family))
+	if model == "" || family == "" {
+		return false
+	}
+
+	for searchFrom := 0; searchFrom < len(model); {
+		relativeIndex := strings.Index(model[searchFrom:], family)
+		if relativeIndex < 0 {
+			return false
+		}
+		index := searchFrom + relativeIndex
+		end := index + len(family)
+		beforeBoundary := index == 0 || !isASCIIAlphaNumeric(model[index-1])
+		afterBoundary := end == len(model) || !isASCIIAlphaNumeric(model[end])
+		if beforeBoundary && afterBoundary {
+			return true
+		}
+		searchFrom = index + 1
+	}
+	return false
+}
+
+func isASCIIAlphaNumeric(char byte) bool {
+	return char >= 'a' && char <= 'z' || char >= '0' && char <= '9'
 }
 
 // GetModelPricing 获取模型价格配置

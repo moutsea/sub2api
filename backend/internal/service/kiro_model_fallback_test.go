@@ -44,9 +44,28 @@ func TestResolveKiroUpstreamModelUsesCachedUnsupportedFallback(t *testing.T) {
 	got := svc.resolveKiroUpstreamModel(account, kiroDynamicProbeModelOpus47)
 	require.Equal(t, kiroDynamicFallbackModelOpus46, got)
 
+	svc.setKiroModelCapability(account.ID, "claude-opus-5.0-thinking", kiroModelCapabilityUnsupported)
+	got = svc.resolveKiroUpstreamModel(account, kiroDynamicProbeModelOpus5)
+	require.Equal(t, kiroDynamicFallbackModelOpus46, got)
+
 	svc.setKiroModelCapability(account.ID, kiroDynamicProbeModelOpus48, kiroModelCapabilityUnsupported)
 	got = svc.resolveKiroUpstreamModel(account, kiroDynamicProbeModelOpus48)
 	require.Equal(t, kiroDynamicFallbackModelOpus46, got)
+}
+
+func TestIsKiroDynamicProbeModelSupportsOpusAliases(t *testing.T) {
+	for _, model := range []string{
+		"claude-opus-5",
+		"claude-opus-5.0",
+		"claude-opus-5-0",
+		"claude-opus-5-thinking",
+		"claude-opus-5.0-thinking",
+		"claude-opus-4-8-thinking",
+		"claude-opus-4.7-thinking",
+	} {
+		require.Truef(t, isKiroDynamicProbeModel(model), "expected %s to use capability probing", model)
+	}
+	require.False(t, isKiroDynamicProbeModel("claude-opus-4-6"))
 }
 
 func TestDowngradeKiroOpus47ModelRequiresKiroGroupSwitch(t *testing.T) {
@@ -129,24 +148,26 @@ func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4-5", apiKeyAccount.GetMappedModel("deepseek-3.2"))
 }
 
-func TestKiroAPIKeyDefaultModelsIncludesOpus48(t *testing.T) {
+func TestKiroAPIKeyDefaultModelsIncludesNewestOpusModels(t *testing.T) {
 	models := KiroAPIKeyDefaultModels()
 	require.NotEmpty(t, models)
-	require.Equal(t, KiroModelOpus48, models[0].ID)
+	// Newest Opus first, then the previous generation.
+	require.Equal(t, KiroModelOpus5, models[0].ID)
+	require.Equal(t, KiroModelOpus48, models[1].ID)
 
-	var count int
+	counts := make(map[string]int)
 	found := make(map[string]bool)
 	for _, model := range models {
 		found[model.ID] = true
-		if model.ID == KiroModelOpus48 {
-			count++
-		}
+		counts[model.ID]++
 	}
-	require.Equal(t, 1, count)
+	require.Equal(t, 1, counts[KiroModelOpus48])
+	require.Equal(t, 1, counts[KiroModelOpus5])
 	require.True(t, found["gpt-5.6-sol"])
 	require.True(t, found["gpt-5.6-terra"])
 	require.True(t, found["gpt-5.6-luna"])
 	require.True(t, IsKiroModelSupported(KiroModelOpus48))
+	require.True(t, IsKiroModelSupported(KiroModelOpus5))
 }
 
 func TestKiroAPIKeyConnectionPassesGPTModelToCustomUpstream(t *testing.T) {
@@ -210,6 +231,19 @@ func TestMaybeFallbackUnsupportedKiroModel(t *testing.T) {
 
 	fallbackModel, ok := svc.maybeFallbackUnsupportedKiroModel(
 		account,
+		"claude-opus-5.0-thinking",
+		kiroDynamicProbeModelOpus5,
+		"Model claude-opus-5 is not supported for this account",
+	)
+	require.True(t, ok)
+	require.Equal(t, kiroDynamicFallbackModelOpus46, fallbackModel)
+
+	status, cached := svc.getKiroModelCapability(account.ID, kiroDynamicProbeModelOpus5)
+	require.True(t, cached)
+	require.Equal(t, kiroModelCapabilityUnsupported, status)
+
+	fallbackModel, ok = svc.maybeFallbackUnsupportedKiroModel(
+		account,
 		kiroDynamicProbeModelOpus47,
 		kiroDynamicProbeModelOpus47,
 		"Model claude-opus-4.7 is not supported for this account",
@@ -217,7 +251,7 @@ func TestMaybeFallbackUnsupportedKiroModel(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, kiroDynamicFallbackModelOpus46, fallbackModel)
 
-	status, cached := svc.getKiroModelCapability(account.ID, kiroDynamicProbeModelOpus47)
+	status, cached = svc.getKiroModelCapability(account.ID, kiroDynamicProbeModelOpus47)
 	require.True(t, cached)
 	require.Equal(t, kiroModelCapabilityUnsupported, status)
 

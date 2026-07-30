@@ -18,6 +18,13 @@ import (
 
 const defaultKiroAPIKeyOpenAIMaxTokens = 4096
 
+func kiroAPIKeyOpenAIDefaultMaxTokens(req *kiro.ClaudeRequest) int {
+	if kiro.IsThinkingConfigEnabled(req) {
+		return kiro.KiroFixedMaxTokens
+	}
+	return defaultKiroAPIKeyOpenAIMaxTokens
+}
+
 func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
 	ctx context.Context,
 	c *gin.Context,
@@ -26,8 +33,9 @@ func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
 	originalModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	prefix := fmt.Sprintf("[kiro-apikey-OpenAI] account=%s", account.Name)
 	if claudeReq.MaxTokens <= 0 {
-		claudeReq.MaxTokens = defaultKiroAPIKeyOpenAIMaxTokens
+		claudeReq.MaxTokens = kiroAPIKeyOpenAIDefaultMaxTokens(claudeReq)
 	}
 	requestBody, err := json.Marshal(claudeReq)
 	if err != nil {
@@ -51,30 +59,46 @@ func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
 	}
 	targetURL := strings.TrimRight(baseURL, "/") + "/v1/messages"
 	sessionID := kiro.GenerateContentBasedConversationID(kiro.ExtractAPIKey(c), claudeReq.Model, claudeReq.Messages)
+	anthropicBeta := c.GetHeader("anthropic-beta")
+	fingerprint := claude.NewRequestHeaders()
 	req, err := s.buildClaudeAPIHTTPRequest(
 		ctx,
 		targetURL,
 		apiKey,
 		requestBody,
 		sessionID,
-		c.GetHeader("anthropic-beta"),
+		anthropicBeta,
 		0,
-		claude.NewRequestHeaders(),
+		fingerprint,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
 	proxyURL := s.resolveProxyURL(ctx, account, false)
+	s.applyRequestJitter(ctx)
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, Message: sanitizeKiroClientErrorMessage(err.Error())}
 	}
+	resp = s.retryClaudeAPISignatureError(
+		ctx,
+		resp,
+		account,
+		targetURL,
+		apiKey,
+		requestBody,
+		sessionID,
+		anthropicBeta,
+		proxyURL,
+		prefix,
+		fingerprint,
+	)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		s.handleUpstreamError(ctx, "[kiro-apikey-OpenAI]", account, resp.StatusCode, resp.Header, respBody)
+		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody)
 		message := sanitizeKiroClientErrorMessage(extractKiroErrorMessage(respBody))
 		if resp.StatusCode == http.StatusBadRequest || s.shouldFailoverUpstreamError(resp.StatusCode) {
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: message}
@@ -226,6 +250,41 @@ func (s *KiroGatewayService) handleClaudeAPIAsOpenAIStream(
 	dataLines := make([]string, 0, 1)
 	streamFailed := false
 	streamStopped := false
+	type claudeAPIStreamLine struct {
+		line string
+		err  error
+	}
+	lines := make(chan claudeAPIStreamLine, 32)
+	readerDone := make(chan struct{})
+	defer close(readerDone)
+	sendLine := func(line claudeAPIStreamLine) bool {
+		select {
+		case lines <- line:
+			return true
+		case <-readerDone:
+			return false
+		}
+	}
+	go func() {
+		defer close(lines)
+		for {
+			line, readErr := reader.ReadString('\n')
+			if len(line) > 0 {
+				if !sendLine(claudeAPIStreamLine{line: line}) {
+					return
+				}
+			}
+			if readErr != nil {
+				_ = sendLine(claudeAPIStreamLine{err: readErr})
+				return
+			}
+		}
+	}()
+
+	keepaliveInterval := s.kiroStreamKeepaliveInterval()
+	keepaliveTicker := time.NewTicker(keepaliveInterval)
+	defer keepaliveTicker.Stop()
+	lastDataAt := time.Now()
 
 	flushData := func() error {
 		if len(dataLines) == 0 {
@@ -272,33 +331,49 @@ func (s *KiroGatewayService) handleClaudeAPIAsOpenAIStream(
 		return nil
 	}
 
+streamLoop:
 	for !streamFailed && !streamStopped {
-		line, readErr := reader.ReadString('\n')
-		if len(line) > 0 {
-			line = strings.TrimRight(line, "\r\n")
-			switch {
-			case line == "":
+		select {
+		case streamLine, open := <-lines:
+			if !open {
+				break streamLoop
+			}
+			if streamLine.line != "" {
+				lastDataAt = time.Now()
+				line := strings.TrimRight(streamLine.line, "\r\n")
+				switch {
+				case line == "":
+					if err := flushData(); err != nil {
+						return nil, firstTokenMs, err
+					}
+				case strings.HasPrefix(line, "data:"):
+					dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+			if streamLine.err != nil {
 				if err := flushData(); err != nil {
 					return nil, firstTokenMs, err
 				}
-			case strings.HasPrefix(line, "data:"):
-				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				if streamLine.err == io.EOF && !streamFailed && !streamStopped {
+					streamFailed = true
+					_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_incomplete_stream", "Upstream stream ended before message_stop")))
+					flusher.Flush()
+				} else if streamLine.err != io.EOF && !streamFailed {
+					streamFailed = true
+					_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_read_error", sanitizeKiroClientErrorMessage(streamLine.err.Error()))))
+					flusher.Flush()
+				}
+				break streamLoop
 			}
-		}
-		if readErr != nil {
-			if err := flushData(); err != nil {
+
+		case <-keepaliveTicker.C:
+			if time.Since(lastDataAt) < keepaliveInterval {
+				continue
+			}
+			if _, err := c.Writer.Write([]byte(":\n\n")); err != nil {
 				return nil, firstTokenMs, err
 			}
-			if readErr == io.EOF && !streamFailed && !streamStopped {
-				streamFailed = true
-				_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_incomplete_stream", "Upstream stream ended before message_stop")))
-				flusher.Flush()
-			} else if readErr != io.EOF && !streamFailed {
-				streamFailed = true
-				_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_read_error", sanitizeKiroClientErrorMessage(readErr.Error()))))
-				flusher.Flush()
-			}
-			break
+			flusher.Flush()
 		}
 	}
 

@@ -118,6 +118,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	// 归一化模型名上的 "[1m]" 上下文标记，必须early于任何模型范围校验。
+	if effectiveModel, effectiveBody, normalized, rewriteErr := applyModelContextSuffix(c, reqModel, body); rewriteErr != nil {
+		log.Printf("[Gateway] model_context_suffix rewrite failed model=%s error=%v", reqModel, rewriteErr)
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "failed to rewrite model context suffix")
+		return
+	} else if normalized {
+		log.Printf("[Gateway] model_context_suffix model=%s -> %s (context-1m beta)", reqModel, effectiveModel)
+		reqModel = effectiveModel
+		parsedReq.Model = effectiveModel
+		body = effectiveBody
+		// Kiro/Antigravity 链路用局部 body 转发，OAuth 链路用 parsedReq.Body，两者都要同步。
+		parsedReq.Body = effectiveBody
+		setOpsRequestContext(c, reqModel, reqStream, body)
+	}
+
 	// 拦截：openai 分组不支持 claude 系列模型
 	if isOpenAIGroupClaudeModelMismatch(apiKey.Group, reqModel) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
@@ -844,6 +859,18 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	if parsedReq.Model == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
+	}
+
+	// 归一化模型名上的 "[1m]" 上下文标记，必须early于账号选择。
+	if effectiveModel, effectiveBody, normalized, rewriteErr := applyModelContextSuffix(c, parsedReq.Model, body); rewriteErr != nil {
+		log.Printf("[CountTokens] model_context_suffix rewrite failed model=%s error=%v", parsedReq.Model, rewriteErr)
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "failed to rewrite model context suffix")
+		return
+	} else if normalized {
+		parsedReq.Model = effectiveModel
+		body = effectiveBody
+		// ForwardCountTokens 读 parsedReq.Body，必须一起改写。
+		parsedReq.Body = effectiveBody
 	}
 
 	setOpsRequestContext(c, parsedReq.Model, parsedReq.Stream, body)

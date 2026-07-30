@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	kiroDynamicProbeModelOpus5     = "claude-opus-5"
 	kiroDynamicProbeModelOpus48    = "claude-opus-4-8"
 	kiroDynamicProbeModelOpus47    = "claude-opus-4-7"
 	kiroDynamicFallbackModelOpus46 = "claude-opus-4-6"
@@ -35,13 +36,26 @@ func shouldAutoDetectKiroModel(account *Account, requestedModel string) bool {
 }
 
 func isKiroDynamicProbeModel(model string) bool {
-	switch strings.TrimSpace(strings.ToLower(model)) {
-	case kiroDynamicProbeModelOpus48, "claude-opus-4.8":
-		return true
-	case kiroDynamicProbeModelOpus47, "claude-opus-4.7":
+	switch normalizeKiroDynamicProbeModel(model) {
+	case kiroDynamicProbeModelOpus5, kiroDynamicProbeModelOpus48, kiroDynamicProbeModelOpus47:
 		return true
 	default:
 		return false
+	}
+}
+
+func normalizeKiroDynamicProbeModel(model string) string {
+	normalized := strings.TrimSpace(strings.ToLower(model))
+	normalized = strings.TrimSuffix(normalized, "-thinking")
+	switch normalized {
+	case kiroDynamicProbeModelOpus5, "claude-opus-5.0", "claude-opus-5-0":
+		return kiroDynamicProbeModelOpus5
+	case kiroDynamicProbeModelOpus48, "claude-opus-4.8":
+		return kiroDynamicProbeModelOpus48
+	case kiroDynamicProbeModelOpus47, "claude-opus-4.7":
+		return kiroDynamicProbeModelOpus47
+	default:
+		return normalized
 	}
 }
 
@@ -84,7 +98,7 @@ func (s *KiroGatewayService) getKiroModelCapability(accountID int64, requestedMo
 		return "", false
 	}
 
-	key := kiroModelCapabilityKey{AccountID: accountID, RequestedModel: requestedModel}
+	key := kiroModelCapabilityKey{AccountID: accountID, RequestedModel: normalizeKiroDynamicProbeModel(requestedModel)}
 	raw, ok := s.modelCapabilityCache.Load(key)
 	if !ok {
 		return "", false
@@ -117,7 +131,7 @@ func (s *KiroGatewayService) setKiroModelCapability(accountID int64, requestedMo
 
 	s.modelCapabilityCache.Store(kiroModelCapabilityKey{
 		AccountID:      accountID,
-		RequestedModel: requestedModel,
+		RequestedModel: normalizeKiroDynamicProbeModel(requestedModel),
 	}, kiroModelCapabilityState{
 		Status:    status,
 		CheckedAt: time.Now(),
@@ -208,7 +222,7 @@ func isKiroUnsupportedModelError(errorMsg string, modelVariants ...string) bool 
 	// Some upstreams return only a generic invalid-model message without echoing
 	// the requested model name, e.g.:
 	// "Invalid request: Invalid model. Please select a different model to continue."
-	// This path is only used by the Opus 4.7 auto-detect fallback, so allowing
+	// This path is only used by the dynamic Opus capability probe, so allowing
 	// this high-signal generic form is safe and lets us fall back to 4.6.
 	genericInvalidModelPatterns := []string{
 		"invalid model",

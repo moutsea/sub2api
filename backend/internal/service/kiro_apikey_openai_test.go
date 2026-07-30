@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -20,7 +22,39 @@ type kiroAPIKeyProtocolUpstream struct {
 	requestHeader  http.Header
 	requestBody    []byte
 	responseBody   string
+	responseReader io.ReadCloser
 	responseHeader http.Header
+}
+
+type kiroAPIKeyScriptedResponse struct {
+	statusCode int
+	body       string
+	header     http.Header
+}
+
+type kiroAPIKeyScriptedUpstream struct {
+	responses      []kiroAPIKeyScriptedResponse
+	requestBodies  [][]byte
+	requestHeaders []http.Header
+}
+
+func (u *kiroAPIKeyScriptedUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	responseIndex := len(u.requestBodies)
+	u.requestBodies = append(u.requestBodies, body)
+	u.requestHeaders = append(u.requestHeaders, req.Header.Clone())
+	if responseIndex >= len(u.responses) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	response := u.responses[responseIndex]
+	return &http.Response{
+		StatusCode: response.statusCode,
+		Body:       io.NopCloser(strings.NewReader(response.body)),
+		Header:     response.header.Clone(),
+	}, nil
 }
 
 func (u *kiroAPIKeyProtocolUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
@@ -31,9 +65,13 @@ func (u *kiroAPIKeyProtocolUpstream) Do(req *http.Request, _ string, _ int64, _ 
 	u.requestURL = req.URL.String()
 	u.requestHeader = req.Header.Clone()
 	u.requestBody = body
+	responseBody := u.responseReader
+	if responseBody == nil {
+		responseBody = io.NopCloser(strings.NewReader(u.responseBody))
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(u.responseBody)),
+		Body:       responseBody,
 		Header:     u.responseHeader.Clone(),
 	}, nil
 }
@@ -94,6 +132,136 @@ func TestKiroAPIKeyGPTChatCompletionsUsesAnthropicMessagesProtocol(t *testing.T)
 	require.Contains(t, recorder.Body.String(), `"content":"ok"`)
 }
 
+func TestKiroAPIKeyOpenAIThinkingUsesLargerDefaultMaxTokens(t *testing.T) {
+	upstream := &kiroAPIKeyProtocolUpstream{
+		responseBody:   `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`,
+		responseHeader: make(http.Header),
+	}
+	svc := newKiroAPIKeyProtocolService(upstream)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":20000}}`)
+	c, _ := newOpenAIKiroTestContext(body)
+
+	result, err := svc.ForwardChatCompletions(context.Background(), c, newKiroAPIKeyProtocolAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	var upstreamPayload map[string]any
+	require.NoError(t, json.Unmarshal(upstream.requestBody, &upstreamPayload))
+	require.Equal(t, float64(kiro.KiroFixedMaxTokens), upstreamPayload["max_tokens"])
+}
+
+func TestKiroAPIKeyOpenAISignatureErrorRetriesWithThinkingDisabled(t *testing.T) {
+	upstream := &kiroAPIKeyScriptedUpstream{
+		responses: []kiroAPIKeyScriptedResponse{
+			{
+				statusCode: http.StatusBadRequest,
+				body:       `{"type":"error","error":{"type":"invalid_request_error","message":"Invalid signature in thinking block"}}`,
+				header:     make(http.Header),
+			},
+			{
+				statusCode: http.StatusOK,
+				body:       `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`,
+				header:     make(http.Header),
+			},
+		},
+	}
+	svc := newKiroAPIKeyProtocolService(upstream)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":20000}}`)
+	c, recorder := newOpenAIKiroTestContext(body)
+
+	result, err := svc.ForwardChatCompletions(context.Background(), c, newKiroAPIKeyProtocolAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requestBodies, 2)
+	require.Contains(t, string(upstream.requestBodies[0]), `"thinking"`)
+	require.NotContains(t, string(upstream.requestBodies[1]), `"thinking"`)
+	require.Equal(t, "1", upstream.requestHeaders[1].Get("X-Stainless-Retry-Count"))
+	require.Contains(t, recorder.Body.String(), `"content":"ok"`)
+}
+
+func TestKiroAPIKeyOpenAIToolSignatureErrorUsesSecondStageRetry(t *testing.T) {
+	upstream := &kiroAPIKeyScriptedUpstream{
+		responses: []kiroAPIKeyScriptedResponse{
+			{
+				statusCode: http.StatusBadRequest,
+				body:       `{"type":"error","error":{"type":"invalid_request_error","message":"Invalid signature in thinking block"}}`,
+				header:     make(http.Header),
+			},
+			{
+				statusCode: http.StatusBadRequest,
+				body:       `{"type":"error","error":{"type":"invalid_request_error","message":"Expected thinking block before tool_use because of invalid signature"}}`,
+				header:     make(http.Header),
+			},
+			{
+				statusCode: http.StatusOK,
+				body:       `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`,
+				header:     make(http.Header),
+			},
+		},
+	}
+	svc := newKiroAPIKeyProtocolService(upstream)
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"messages":[
+			{"role":"user","content":"run it"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"pwd\"}"}}]},
+			{"role":"tool","tool_call_id":"toolu_1","content":"/tmp"}
+		],
+		"thinking":{"type":"enabled","budget_tokens":20000}
+	}`)
+	c, recorder := newOpenAIKiroTestContext(body)
+
+	result, err := svc.ForwardChatCompletions(context.Background(), c, newKiroAPIKeyProtocolAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requestBodies, 3)
+	require.Contains(t, string(upstream.requestBodies[1]), `"tool_use"`)
+	require.NotContains(t, string(upstream.requestBodies[2]), `"tool_use"`)
+	require.NotContains(t, string(upstream.requestBodies[2]), `"tool_result"`)
+	require.Equal(t, "2", upstream.requestHeaders[2].Get("X-Stainless-Retry-Count"))
+	require.Contains(t, recorder.Body.String(), `"content":"ok"`)
+}
+
+func TestKiroAPIKeyOpenAIRequestAppliesJitter(t *testing.T) {
+	upstream := &kiroAPIKeyProtocolUpstream{
+		responseBody:   `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`,
+		responseHeader: make(http.Header),
+	}
+	svc := newKiroAPIKeyProtocolService(upstream)
+	svc.cfg = &config.Config{
+		Gateway: config.GatewayConfig{
+			RequestJitterMinMs: 30,
+			RequestJitterMaxMs: 30,
+		},
+	}
+	body := []byte(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hi"}]}`)
+	c, _ := newOpenAIKiroTestContext(body)
+
+	start := time.Now()
+	result, err := svc.ForwardChatCompletions(context.Background(), c, newKiroAPIKeyProtocolAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.GreaterOrEqual(t, time.Since(start), 25*time.Millisecond)
+}
+
+func TestKiroAPIKeyUnauthorizedDoesNotInvalidateOAuthTokenState(t *testing.T) {
+	provider := NewKiroTokenProvider(nil, nil)
+	svc := &KiroGatewayService{tokenProvider: provider}
+	account := newKiroAPIKeyProtocolAccount()
+
+	svc.handleUpstreamError(
+		context.Background(),
+		"[kiro-apikey-test]",
+		account,
+		http.StatusUnauthorized,
+		make(http.Header),
+		[]byte(`{"type":"error","error":{"message":"invalid api key"}}`),
+	)
+
+	_, exists := provider.cache.Load(account.ID)
+	require.False(t, exists)
+}
+
 func TestKiroAPIKeyClaudeSSEConvertsToOpenAISSE(t *testing.T) {
 	upstream := &kiroAPIKeyProtocolUpstream{
 		responseBody: strings.Join([]string{
@@ -131,6 +299,112 @@ func TestKiroAPIKeyClaudeSSEConvertsToOpenAISSE(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `"content":"hello"`)
 	require.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
 	require.Contains(t, recorder.Body.String(), "data: [DONE]")
+}
+
+func TestKiroAPIKeyClaudeStreamCommitsKeepaliveBeforeUpstreamBody(t *testing.T) {
+	streamBody := newGatedReadCloser([]byte(strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")))
+	defer streamBody.Close()
+	upstream := &kiroAPIKeyProtocolUpstream{
+		responseReader: streamBody,
+		responseHeader: make(http.Header),
+	}
+	svc := newKiroAPIKeyProtocolService(upstream)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	claudeReq, err := kiro.ParseClaudeRequestFromJSON(body)
+	require.NoError(t, err)
+	c, recorder := newKiroStreamTestContext()
+
+	type forwardResult struct {
+		result *ForwardResult
+		err    error
+	}
+	done := make(chan forwardResult, 1)
+	go func() {
+		result, forwardErr := svc.forwardClaudeAPIRequest(
+			context.Background(),
+			c,
+			newKiroAPIKeyProtocolAccount(),
+			claudeReq,
+			body,
+			"kiro-secret",
+			"",
+			claudeReq.Model,
+			time.Now(),
+			kiro.CacheEstimation{},
+			kiro.CacheResult{},
+			false,
+		)
+		done <- forwardResult{result: result, err: forwardErr}
+	}()
+
+	require.True(t, recorder.WaitForWrite(200*time.Millisecond), "expected SSE keepalive before upstream body data")
+	require.Contains(t, recorder.BodyString(), ":\n\n")
+	streamBody.Release()
+
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+	case <-time.After(time.Second):
+		t.Fatal("stream did not finish after releasing upstream body")
+	}
+}
+
+func TestKiroAPIKeyOpenAIStreamSendsKeepaliveWhileUpstreamSilent(t *testing.T) {
+	streamBody := newGatedReadCloser([]byte(strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")))
+	defer streamBody.Close()
+	svc := &KiroGatewayService{
+		settingService: NewSettingService(nil, &config.Config{
+			Gateway: config.GatewayConfig{StreamKeepaliveInterval: 1},
+		}),
+	}
+	c, recorder := newKiroStreamTestContext()
+
+	type streamResult struct {
+		usage *OpenAIUsage
+		err   error
+	}
+	done := make(chan streamResult, 1)
+	go func() {
+		usage, _, streamErr := svc.handleClaudeAPIAsOpenAIStream(
+			c,
+			newBlockingKiroStreamHTTPResponse(streamBody),
+			"gpt-5.6-sol",
+			4,
+			time.Now(),
+		)
+		done <- streamResult{usage: usage, err: streamErr}
+	}()
+
+	require.True(t, recorder.WaitForWrite(200*time.Millisecond), "expected initial OpenAI SSE event")
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(recorder.BodyString(), ":\n\n") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Contains(t, recorder.BodyString(), ":\n\n", "expected keepalive while upstream body is silent")
+	streamBody.Release()
+
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.usage)
+	case <-time.After(time.Second):
+		t.Fatal("stream did not finish after releasing upstream body")
+	}
 }
 
 func TestKiroAPIKeyIncompleteClaudeSSEDoesNotBecomeNormalCompletion(t *testing.T) {

@@ -114,6 +114,16 @@ var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
 	},
 }
 
+var claudeOpus48EquivalentStaticPricing = &LiteLLMModelPricing{
+	InputCostPerToken:           5e-06,
+	OutputCostPerToken:          25e-06,
+	CacheCreationInputTokenCost: 6.25e-06,
+	CacheReadInputTokenCost:     0.5e-06,
+	LiteLLMProvider:             "anthropic",
+	Mode:                        "chat",
+	SupportsPromptCaching:       true,
+}
+
 // LiteLLMModelPricing LiteLLM价格数据结构
 // 只保留我们需要的字段，使用指针来处理可能缺失的值
 type LiteLLMModelPricing struct {
@@ -611,6 +621,9 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	if pricing := s.matchByModelFamily(lookupCandidates[0]); pricing != nil {
 		return pricing
 	}
+	if isClaudeOpus5Model(lookupCandidates[0]) || isClaudeOpus48Model(lookupCandidates[0]) {
+		return cloneLiteLLMModelPricing(claudeOpus48EquivalentStaticPricing)
+	}
 
 	// 5. OpenAI 模型回退策略
 	if strings.HasPrefix(lookupCandidates[0], "gpt-") || strings.HasPrefix(lookupCandidates[0], "codex-") {
@@ -701,26 +714,34 @@ func (s *PricingService) extractBaseName(model string) string {
 // matchByModelFamily 基于模型系列匹配
 func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	// Claude模型系列匹配规则
-	familyPatterns := map[string][]string{
-		"sonnet-5":   {"claude-sonnet-5"},
-		"opus-4.6":   {"claude-opus-4.6", "claude-opus-4-6"},
-		"opus-4.5":   {"claude-opus-4.5", "claude-opus-4-5"},
-		"opus-4":     {"claude-opus-4", "claude-3-opus"},
-		"sonnet-4.6": {"claude-sonnet-4.6", "claude-sonnet-4-6"},
-		"sonnet-4.5": {"claude-sonnet-4.5", "claude-sonnet-4-5"},
-		"sonnet-4":   {"claude-sonnet-4", "claude-3-5-sonnet"},
-		"sonnet-3.5": {"claude-3-5-sonnet", "claude-3.5-sonnet"},
-		"sonnet-3":   {"claude-3-sonnet"},
-		"haiku-3.5":  {"claude-3-5-haiku", "claude-3.5-haiku"},
-		"haiku-3":    {"claude-3-haiku"},
+	type familyPattern struct {
+		name     string
+		patterns []string
+	}
+	familyPatterns := []familyPattern{
+		{name: "opus-5", patterns: []string{"claude-opus-5"}},
+		{name: "opus-4.8", patterns: []string{"claude-opus-4.8", "claude-opus-4-8"}},
+		{name: "opus-4.6", patterns: []string{"claude-opus-4.6", "claude-opus-4-6"}},
+		{name: "opus-4.5", patterns: []string{"claude-opus-4.5", "claude-opus-4-5"}},
+		{name: "opus-4", patterns: []string{"claude-opus-4", "claude-3-opus"}},
+		{name: "sonnet-5", patterns: []string{"claude-sonnet-5"}},
+		{name: "sonnet-4.6", patterns: []string{"claude-sonnet-4.6", "claude-sonnet-4-6"}},
+		{name: "sonnet-4.5", patterns: []string{"claude-sonnet-4.5", "claude-sonnet-4-5"}},
+		{name: "sonnet-4", patterns: []string{"claude-sonnet-4", "claude-3-5-sonnet"}},
+		{name: "sonnet-3.5", patterns: []string{"claude-3-5-sonnet", "claude-3.5-sonnet"}},
+		{name: "sonnet-3", patterns: []string{"claude-3-sonnet"}},
+		{name: "haiku-3.5", patterns: []string{"claude-3-5-haiku", "claude-3.5-haiku"}},
+		{name: "haiku-3", patterns: []string{"claude-3-haiku"}},
 	}
 
 	// 确定模型属于哪个系列
 	var matchedFamily string
-	for family, patterns := range familyPatterns {
-		for _, pattern := range patterns {
-			if strings.Contains(model, pattern) || strings.Contains(model, strings.ReplaceAll(pattern, "-", "")) {
-				matchedFamily = family
+	var matchedPatterns []string
+	for _, family := range familyPatterns {
+		for _, pattern := range family.patterns {
+			if containsModelFamilyToken(model, pattern) || containsModelFamilyToken(model, strings.ReplaceAll(pattern, "-", "")) {
+				matchedFamily = family.name
+				matchedPatterns = family.patterns
 				break
 			}
 		}
@@ -732,7 +753,11 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	if matchedFamily == "" {
 		// 简单的系列匹配
 		if strings.Contains(model, "opus") {
-			if strings.Contains(model, "4.5") || strings.Contains(model, "4-5") {
+			if isClaudeOpus5Model(model) {
+				matchedFamily = "opus-5"
+			} else if isClaudeOpus48Model(model) {
+				matchedFamily = "opus-4.8"
+			} else if strings.Contains(model, "4.5") || strings.Contains(model, "4-5") {
 				matchedFamily = "opus-4.5"
 			} else {
 				matchedFamily = "opus-4"
@@ -761,11 +786,18 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	}
 
 	// 在价格数据中查找该系列的模型
-	patterns := familyPatterns[matchedFamily]
-	for _, pattern := range patterns {
+	if len(matchedPatterns) == 0 {
+		for _, family := range familyPatterns {
+			if family.name == matchedFamily {
+				matchedPatterns = family.patterns
+				break
+			}
+		}
+	}
+	for _, pattern := range matchedPatterns {
 		for key, pricing := range s.pricingData {
 			keyLower := strings.ToLower(key)
-			if strings.Contains(keyLower, pattern) {
+			if containsModelFamilyToken(keyLower, pattern) {
 				log.Printf("[Pricing] Fuzzy matched %s -> %s", model, key)
 				return pricing
 			}
