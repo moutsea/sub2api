@@ -417,6 +417,21 @@ In Claude Code, Plan Mode cannot exit automatically. (Normally when using the na
 
 ---
 
+## Grok / xAI Support
+
+Grok accounts use xAI's OpenAI-compatible API. Both OAuth subscription accounts and API key accounts are supported.
+
+- Platform: `grok`
+- Default upstream: OAuth uses `https://cli-chat-proxy.grok.com/v1`; API keys use `https://api.x.ai/v1`
+- Endpoints: `/v1/responses`, `/v1/chat/completions`, and Claude Messages compatibility through `/v1/messages`
+- Models: `grok-4.6`, `grok-4.5`, `grok-4.3`, Grok 3 Mini, Composer/Build, and the curated Grok 4.20 variants; custom model mappings are supported
+
+Grok OAuth uses PKCE and the official CLI proxy by default. The authorization client can be customized with `XAI_OAUTH_CLIENT_ID`, `XAI_OAUTH_SCOPE`, `XAI_OAUTH_REDIRECT_URI`, `XAI_OAUTH_AUTHORIZE_URL`, and `XAI_OAUTH_TOKEN_URL`. Set an account's `base_url` when forwarding through a custom xAI-compatible endpoint; account settings take precedence over process-wide defaults.
+
+The dashboard records xAI rate-limit headers when available and reports quota as unknown until a response provides those headers. Local request, token, and cost totals remain available for both OAuth and API key accounts.
+
+---
+
 ## Project Structure
 
 ```

@@ -320,6 +320,69 @@
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
 
+    <!-- Grok accounts: show passive xAI quota headers and local usage -->
+    <template v-else-if="account.platform === 'grok'">
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+
+      <div v-else-if="error" class="text-xs text-red-500">
+        {{ error }}
+      </div>
+
+      <div v-else-if="usageInfo" class="space-y-1">
+        <div v-if="usageInfo.needs_reauth" class="text-[10px] text-orange-600 dark:text-orange-400">
+          {{ t('admin.accounts.needsReauth') }}
+        </div>
+        <div v-if="usageInfo.is_forbidden" class="text-[10px] text-red-600 dark:text-red-400">
+          {{ usageInfo.grok_entitlement_status || t('common.forbidden') }}
+        </div>
+        <div v-if="grokEntitlementLabel" class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ grokEntitlementLabel }}
+        </div>
+        <div v-if="grokLocalUsage" class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            {{ formatGrokRequests(grokLocalUsage.requests) }} req
+          </span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            {{ formatGrokTokens(grokLocalUsage.tokens) }}
+          </span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
+            A ${{ grokLocalUsage.cost.toFixed(2) }}
+          </span>
+        </div>
+        <UsageProgressBar
+          v-if="grokRequestQuotaBar"
+          :label="t('admin.accounts.usageWindow.grokRequests')"
+          :utilization="grokRequestQuotaBar.utilization"
+          :resets-at="grokRequestQuotaBar.resetsAt"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="grokTokenQuotaBar"
+          :label="t('admin.accounts.usageWindow.grokTokens')"
+          :utilization="grokTokenQuotaBar.utilization"
+          :resets-at="grokTokenQuotaBar.resetsAt"
+          color="emerald"
+        />
+        <div v-if="grokRetryAfterLabel" class="text-[10px] text-amber-600 dark:text-amber-400">
+          {{ t('admin.accounts.usageWindow.grokRetryAfter', { time: grokRetryAfterLabel }) }}
+        </div>
+        <div v-if="grokQuotaUnknown" class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.usageWindow.grokUnknown') }}
+        </div>
+        <div v-else-if="usageInfo.error" class="truncate text-[10px] text-amber-600 dark:text-amber-400" :title="usageInfo.error">
+          {{ usageInfo.error }}
+        </div>
+      </div>
+
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
@@ -338,7 +401,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type { Account, AccountUsageInfo, GeminiCredentials, GrokQuotaWindow, WindowStats } from '@/types'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
 
@@ -358,6 +421,8 @@ const showUsageWindows = computed(() => {
   if (props.account.platform === 'gemini') return true
   // Kiro: always show credits if available
   if (props.account.platform === 'kiro') return true
+  // Grok: quota snapshots are populated from upstream response headers.
+  if (props.account.platform === 'grok') return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
@@ -374,8 +439,61 @@ const shouldFetchUsage = computed(() => {
   if (props.account.platform === 'kiro') {
     return true
   }
+  if (props.account.platform === 'grok') {
+    return true
+  }
   return false
 })
+
+interface GrokQuotaBarInfo {
+  utilization: number
+  resetsAt: string | null
+}
+
+const makeGrokQuotaBar = (quota?: GrokQuotaWindow | null): GrokQuotaBarInfo | null => {
+  if (!quota || quota.limit == null || quota.remaining == null || quota.limit <= 0) return null
+  const used = Math.max(0, quota.limit - quota.remaining)
+  let resetsAt = quota.reset_at || null
+  if (!resetsAt && quota.reset_unix != null) {
+    resetsAt = new Date(quota.reset_unix * 1000).toISOString()
+  }
+  return {
+    utilization: Math.min(100, (used / quota.limit) * 100),
+    resetsAt
+  }
+}
+
+const grokRequestQuotaBar = computed(() => makeGrokQuotaBar(usageInfo.value?.grok_request_quota))
+const grokTokenQuotaBar = computed(() => makeGrokQuotaBar(usageInfo.value?.grok_token_quota))
+const grokQuotaUnknown = computed(() => {
+  if (props.account.platform !== 'grok') return false
+  if (grokRequestQuotaBar.value || grokTokenQuotaBar.value) return false
+  return usageInfo.value?.grok_quota_snapshot_state !== 'observed'
+})
+const grokLocalUsage = computed(() => usageInfo.value?.grok_local_usage || null)
+const grokEntitlementLabel = computed(() => {
+  const status = (usageInfo.value?.grok_entitlement_status || '').trim()
+  return status || null
+})
+const grokRetryAfterLabel = computed(() => {
+  const seconds = usageInfo.value?.grok_retry_after_seconds
+  if (seconds == null || seconds <= 0) return null
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.ceil(seconds / 60)}m`
+})
+
+const formatGrokRequests = (value: number): string => {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return value.toString()
+}
+
+const formatGrokTokens = (value: number): string => {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return value.toString()
+}
 
 const geminiUsageAvailable = computed(() => {
   return (

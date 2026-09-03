@@ -43,10 +43,11 @@ func ProvideTokenRefreshService(
 	openaiOAuthService *OpenAIOAuthService,
 	geminiOAuthService *GeminiOAuthService,
 	antigravityOAuthService *AntigravityOAuthService,
+	grokOAuthService *GrokOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	cfg *config.Config,
 ) *TokenRefreshService {
-	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, cfg)
+	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, cfg, grokOAuthService)
 	svc.Start()
 	return svc
 }
@@ -268,6 +269,7 @@ var ProviderSet = wire.NewSet(
 	NewOpenAIGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
+	NewGrokOAuthService,
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,
@@ -277,6 +279,7 @@ var ProviderSet = wire.NewSet(
 	NewGeminiMessagesCompatService,
 	NewAntigravityTokenProvider,
 	NewOpenAITokenProvider,
+	NewGrokTokenProvider,
 	NewClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideKiroTokenProvider,

@@ -13,12 +13,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequestJSON(t *testing.T) {
@@ -193,6 +195,57 @@ func TestOpenAIImagesRequestNormalizeForOAuthDoesNotIgnoreMask(t *testing.T) {
 	normalized, ignored := parsed.NormalizeForAccount(&Account{Type: AccountTypeOAuth})
 	require.Same(t, parsed, normalized)
 	require.Nil(t, ignored)
+}
+
+func TestOpenAIImagesRequestMultipartPreservesGrokMaskUpload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "grok-imagine-image-quality"))
+	require.NoError(t, writer.WriteField("prompt", "replace the sky"))
+	imagePart, err := writer.CreateFormFile("image", "source.png")
+	require.NoError(t, err)
+	_, err = imagePart.Write([]byte("source-image"))
+	require.NoError(t, err)
+	maskPart, err := writer.CreateFormFile("mask", "mask.png")
+	require.NoError(t, err)
+	_, err = maskPart.Write([]byte("mask-image"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = req
+
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIImagesRequest(c, body.Bytes())
+	require.NoError(t, err)
+	require.True(t, parsed.HasMask)
+	require.NotNil(t, parsed.MaskUpload)
+	require.Equal(t, "mask-image", string(parsed.MaskUpload.Data))
+
+	forwarded, contentType, err := prepareGrokImagesBody(body.Bytes(), parsed, "grok-imagine-image-quality")
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, "data:application/octet-stream;base64,bWFzay1pbWFnZQ==", gjson.GetBytes(forwarded, "mask.url").String())
+	require.Equal(t, "image_url", gjson.GetBytes(forwarded, "mask.type").String())
+}
+
+func TestPrepareGrokImagesBodyRejects4KSize(t *testing.T) {
+	parsed := &OpenAIImagesRequest{Model: "grok-imagine-image-quality", Size: "4k"}
+	_, _, err := prepareGrokImagesBody([]byte(`{"model":"grok-imagine-image-quality","prompt":"cat"}`), parsed, parsed.Model)
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("prepareGrokImagesBody() error = %v, want unsupported 4K error", err)
+	}
+}
+
+func TestOpenAIGatewayServiceForwardImagesRejectsNilAccount(t *testing.T) {
+	parsed := &OpenAIImagesRequest{Model: "gpt-image-2"}
+	result, err := (&OpenAIGatewayService{}).ForwardImages(context.Background(), nil, nil, nil, parsed)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "account")
 }
 
 func TestExtractOpenAIImageConversationPointersPrefersToolOutputs(t *testing.T) {

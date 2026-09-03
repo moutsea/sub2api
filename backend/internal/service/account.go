@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 type Account struct {
@@ -337,14 +339,23 @@ func (a *Account) GetModelMapping() map[string]string {
 	if !ok || raw == nil {
 		return nil
 	}
-	if m, ok := raw.(map[string]any); ok {
-		result := make(map[string]string)
+	switch m := raw.(type) {
+	case map[string]any:
+		result := make(map[string]string, len(m))
 		for k, v := range m {
-			if s, ok := v.(string); ok {
-				result[k] = s
+			if value, ok := v.(string); ok {
+				result[k] = value
 			}
 		}
 		if len(result) > 0 {
+			return result
+		}
+	case map[string]string:
+		if len(m) > 0 {
+			result := make(map[string]string, len(m))
+			for k, value := range m {
+				result[k] = value
+			}
 			return result
 		}
 	}
@@ -458,6 +469,14 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+func (a *Account) IsGrok() bool {
+	return a != nil && a.Platform == PlatformGrok
+}
+
+func (a *Account) IsGrokOAuth() bool {
+	return a.IsGrok() && a.Type == AccountTypeOAuth
+}
+
 func (a *Account) IsAnthropic() bool {
 	return a.Platform == PlatformAnthropic
 }
@@ -488,6 +507,50 @@ func (a *Account) GetOpenAIAccessToken() string {
 		return ""
 	}
 	return a.GetCredential("access_token")
+}
+
+func (a *Account) GetGrokBaseURL() string {
+	if !a.IsGrok() {
+		return ""
+	}
+	if baseURL := strings.TrimSpace(a.GetCredential("base_url")); baseURL != "" {
+		return baseURL
+	}
+	if a.IsGrokOAuth() {
+		return xai.DefaultCLIBaseURL
+	}
+	// API-key accounts use the public xAI API by default. Do not inherit the
+	// process-wide XAI_BASE_URL override: account base_url is the forwarding
+	// control, while XAI_BASE_URL is reserved for diagnostics and SDK helpers.
+	return xai.DefaultBaseURL
+}
+
+// GetGrokMediaBaseURL routes OAuth media uploads to the public API when the
+// text-only CLI proxy is selected; that proxy has a small request-body limit
+// which rejects base64 image payloads.
+func (a *Account) GetGrokMediaBaseURL() string {
+	if !a.IsGrok() {
+		return ""
+	}
+	baseURL := a.GetGrokBaseURL()
+	if a.IsGrokOAuth() && strings.Contains(strings.ToLower(baseURL), "//cli-chat-proxy.grok.com") {
+		return xai.DefaultBaseURL
+	}
+	return baseURL
+}
+
+func (a *Account) GetGrokAccessToken() string {
+	if !a.IsGrok() {
+		return ""
+	}
+	return a.GetCredential("access_token")
+}
+
+func (a *Account) GetGrokRefreshToken() string {
+	if !a.IsGrokOAuth() {
+		return ""
+	}
+	return a.GetCredential("refresh_token")
 }
 
 func (a *Account) GetOpenAIRefreshToken() string {
@@ -547,6 +610,17 @@ func (a *Account) GetOpenAISessionID() string {
 }
 
 func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapability) bool {
+	if a.IsGrok() {
+		// Grok Imagine uses the xAI media endpoints but shares the OpenAI image
+		// request shape. The Grok-specific forwarding path performs the actual
+		// endpoint/model validation.
+		switch capability {
+		case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative, OpenAIImagesCapabilityOAuth:
+			return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
+		default:
+			return true
+		}
+	}
 	if !a.IsOpenAI() {
 		return false
 	}

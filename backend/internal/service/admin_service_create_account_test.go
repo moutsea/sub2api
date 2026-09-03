@@ -231,6 +231,36 @@ func TestCreateAccountKiroIdCProxyIDWithNilProxyRepoDoesNotPanic(t *testing.T) {
 	require.Equal(t, []int64{100}, repo.boundGroups[account.ID])
 }
 
+func TestCreateAccountRejectsUnsupportedGrokAccountType(t *testing.T) {
+	repo := &createAccountRepoStub{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	account, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:     "grok-setup-token",
+		Platform: PlatformGrok,
+		Type:     AccountTypeSetupToken,
+	})
+
+	require.Error(t, err)
+	require.Nil(t, account)
+	require.Empty(t, repo.created)
+}
+
+func TestUpdateAccountRejectsUnsupportedGrokAccountType(t *testing.T) {
+	existing := &Account{ID: 1, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+	repo := &createAccountRepoStub{
+		getByIDFunc: func(context.Context, int64) (*Account, error) {
+			return existing, nil
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	account, err := svc.UpdateAccount(context.Background(), existing.ID, &UpdateAccountInput{Type: AccountTypeSetupToken})
+
+	require.Error(t, err)
+	require.Nil(t, account)
+}
+
 func TestUpdateAccountClearsExtraWhenExplicitlyProvided(t *testing.T) {
 	existing := &Account{
 		ID:          1,

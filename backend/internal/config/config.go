@@ -694,6 +694,8 @@ func setDefaults() {
 	viper.SetDefault("security.url_allowlist.upstream_hosts", []string{
 		"api.openai.com",
 		"api.anthropic.com",
+		"api.x.ai",
+		"cli-chat-proxy.grok.com",
 		"api.kimi.com",
 		"open.bigmodel.cn",
 		"api.minimaxi.com",

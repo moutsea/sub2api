@@ -201,6 +201,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, reqBody)
+	selectionCtx := c.Request.Context()
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
+		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
+	}
 
 	const maxAccountSwitches = 3
 	const maxTotalSwitches = 10
@@ -213,7 +217,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	for {
 		// Select account supporting the requested model
 		log.Printf("[OpenAI Handler] Selecting account: groupID=%v model=%s", apiKey.GroupID, reqModel)
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
 		if err != nil {
 			log.Printf("[OpenAI Handler] SelectAccount failed: %v", err)
 			if len(failedAccountIDs) == 0 {
@@ -480,6 +484,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	sessionHash := h.gatewayService.GenerateSessionHash(c, reqBody)
+	selectionCtx := c.Request.Context()
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
+		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
+	}
 
 	const maxAccountSwitches = 3
 	const maxTotalSwitches = 10
@@ -491,7 +499,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 
 	for {
 		log.Printf("[OpenAI CC Handler] Selecting account: groupID=%v model=%s", apiKey.GroupID, reqModel)
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
 		if err != nil {
 			log.Printf("[OpenAI CC Handler] SelectAccount failed: %v", err)
 			if len(failedAccountIDs) == 0 {
@@ -579,6 +587,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		var result *service.OpenAIForwardResult
 		if account.Platform == service.PlatformKiro {
 			result, err = h.kiroGatewayService.ForwardChatCompletions(c.Request.Context(), c, account, body)
+		} else if account.IsGrok() {
+			// Grok exposes a native Chat Completions endpoint. Preserve the
+			// client's Chat semantics instead of forcing every OAuth request
+			// through a lossy Chat→Responses conversion. Responses-shaped
+			// compatibility requests still use the existing bridge.
+			if _, hasMessages := reqBody["messages"]; hasMessages {
+				result, err = h.gatewayService.ForwardChatCompletions(c.Request.Context(), c, account, body)
+			} else {
+				result, err = h.gatewayService.ForwardChatCompletionsViaResponses(c.Request.Context(), c, account, body, reqStream)
+			}
 		} else if account.Type == service.AccountTypeOAuth {
 			result, err = h.gatewayService.ForwardChatCompletionsViaResponses(c.Request.Context(), c, account, body, reqStream)
 		} else {

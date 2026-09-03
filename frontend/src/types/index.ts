@@ -251,7 +251,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro' | 'grok'
 
 export type SubscriptionType = 'standard' | 'subscription'
 
@@ -424,7 +424,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro' | 'grok'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -591,6 +591,12 @@ export interface AntigravityModelQuota {
 
 export interface AccountUsageInfo {
   updated_at: string | null
+  source?: string
+  error?: string
+  error_code?: string
+  needs_reauth?: boolean
+  is_forbidden?: boolean
+  forbidden_type?: string
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null
   seven_day_sonnet: UsageProgress | null
@@ -602,6 +608,19 @@ export interface AccountUsageInfo {
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
   kiro_credits?: KiroCreditsInfo | null
+  grok_request_quota?: GrokQuotaWindow | null
+  grok_token_quota?: GrokQuotaWindow | null
+  grok_retry_after_seconds?: number | null
+  grok_entitlement_status?: string
+  grok_quota_snapshot_state?: string
+  grok_local_usage?: WindowStats | null
+}
+
+export interface GrokQuotaWindow {
+  limit?: number
+  remaining?: number
+  reset_unix?: number
+  reset_at?: string
 }
 
 // Kiro credits information

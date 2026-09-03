@@ -254,6 +254,49 @@ func TestConvertClaudeToResponses_ReasoningForcedXHigh(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeToResponsesConvertsToolChoice(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+		"tool_choice": {"type": "tool", "name": "lookup"}
+	}`)
+
+	responsesBody, _, err := ConvertClaudeToResponses(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var req map[string]any
+	if err := json.Unmarshal(responsesBody, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	choice, _ := req["tool_choice"].(map[string]any)
+	if choice["type"] != "function" || choice["name"] != "lookup" || choice["function"] != nil {
+		t.Fatalf("tool_choice = %#v, want flat Responses function choice", req["tool_choice"])
+	}
+}
+
+func TestConvertClaudeToResponses_PreservesMaxTokens(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-opus-4-6",
+		"max_tokens": 2048,
+		"messages": [{"role": "user", "content": "hello"}]
+	}`)
+
+	responsesBody, _, err := ConvertClaudeToResponses(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var req map[string]any
+	if err := json.Unmarshal(responsesBody, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req["max_output_tokens"] != float64(2048) {
+		t.Fatalf("max_output_tokens = %v, want 2048", req["max_output_tokens"])
+	}
+}
+
 func TestConvertClaudeToOpenAI_ToolUseMessages(t *testing.T) {
 	body := []byte(`{
 		"model": "claude-sonnet-4-20250514",

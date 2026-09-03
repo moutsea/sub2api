@@ -23,6 +23,12 @@
   <svg v-else-if="platform === 'kiro'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
     <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
   </svg>
+  <!-- Grok/xAI logo mark -->
+  <svg v-else-if="platform === 'grok'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M4 18 18 4" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M8 5h11v11" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M5 6l13 13" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

@@ -62,6 +62,8 @@ security:
     upstream_hosts:
       - "api.openai.com"
       - "api.anthropic.com"
+      - "api.x.ai"
+      - "cli-chat-proxy.grok.com"
       - "api.kimi.com"
       - "open.bigmodel.cn"
       - "api.minimaxi.com"

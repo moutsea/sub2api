@@ -184,6 +184,8 @@ const defaultClientTab = computed(() => {
       return 'gemini'
     case 'antigravity':
       return 'claude'
+    case 'grok':
+      return 'grok'
     default:
       return 'claude'
   }
@@ -281,6 +283,13 @@ const clientTabs = computed((): TabConfig[] => {
         { id: 'gemini', label: t('keys.useKeyModal.cliTabs.geminiCli'), icon: SparkleIcon },
         { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
       ]
+    case 'grok':
+      return [
+        { id: 'grok', label: t('keys.useKeyModal.cliTabs.grokCli'), icon: TerminalIcon },
+        { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
+        { id: 'codex', label: t('keys.useKeyModal.cliTabs.codexCli'), icon: TerminalIcon },
+        { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
+      ]
     default:
       return [
         { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
@@ -320,6 +329,12 @@ const platformDescription = computed(() => {
       return t('keys.useKeyModal.gemini.description')
     case 'antigravity':
       return t('keys.useKeyModal.antigravity.description')
+    case 'grok':
+      return activeClientTab.value === 'claude'
+        ? t('keys.useKeyModal.grok.claudeDescription')
+        : activeClientTab.value === 'codex'
+          ? t('keys.useKeyModal.grok.codexDescription')
+          : t('keys.useKeyModal.grok.description')
     default:
       return t('keys.useKeyModal.description')
   }
@@ -337,6 +352,14 @@ const platformNote = computed(() => {
       return activeClientTab.value === 'claude'
         ? t('keys.useKeyModal.antigravity.claudeNote')
         : t('keys.useKeyModal.antigravity.geminiNote')
+    case 'grok':
+      return activeClientTab.value === 'claude'
+        ? t('keys.useKeyModal.grok.claudeNote')
+        : activeClientTab.value === 'codex'
+          ? t('keys.useKeyModal.grok.codexNote')
+          : activeTab.value === 'windows'
+            ? t('keys.useKeyModal.grok.noteWindows')
+            : t('keys.useKeyModal.grok.note')
     default:
       return t('keys.useKeyModal.note')
   }
@@ -394,6 +417,8 @@ const currentFiles = computed((): FileConfig[] => {
           generateOpenCodeConfig('antigravity-claude', antigravityBase, apiKey, 'opencode.json (Claude)'),
           generateOpenCodeConfig('antigravity-gemini', antigravityGeminiBase, apiKey, 'opencode.json (Gemini)')
         ]
+      case 'grok':
+        return [generateOpenCodeConfig('grok', apiBase, apiKey)]
       default:
         return [generateOpenCodeConfig('openai', apiBase, apiKey)]
     }
@@ -409,6 +434,14 @@ const currentFiles = computed((): FileConfig[] => {
         return [generateGeminiCliContent(`${baseUrl}/antigravity`, apiKey)]
       }
       return generateAnthropicFiles(`${baseUrl}/antigravity`, apiKey)
+    case 'grok':
+      if (activeClientTab.value === 'claude') {
+        return generateGrokClaudeFiles(baseUrl, apiKey)
+      }
+      if (activeClientTab.value === 'codex') {
+        return generateGrokCodexFiles(baseUrl, apiKey)
+      }
+      return generateGrokFiles(baseUrl, apiKey)
     default:
       return generateAnthropicFiles(baseUrl, apiKey)
   }
@@ -485,6 +518,96 @@ ${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model
   }
 
   return { path, content, highlighted }
+}
+
+function generateGrokFiles(baseUrl: string, apiKey: string): FileConfig[] {
+  const isWindows = activeTab.value === 'cmd' || activeTab.value === 'powershell'
+  const configDir = isWindows ? '%userprofile%\\.grok' : '~/.grok'
+  const configContent = `[models]
+default = "grok"
+web_search = "grok"
+
+[model."grok"]
+model = "grok-4.3"
+base_url = "${baseUrl}"
+name = "Grok 4.3"
+api_key = "${apiKey}"
+api_backend = "responses"
+context_window = 1000000`
+
+  return [{
+    path: `${configDir}/config.toml`,
+    content: configContent,
+    hint: t('keys.useKeyModal.grok.configTomlHint')
+  }]
+}
+
+function generateGrokClaudeFiles(baseUrl: string, apiKey: string): FileConfig[] {
+  const model = 'grok-4.3'
+  let path: string
+  let content: string
+  switch (activeTab.value) {
+    case 'unix':
+      path = 'Terminal'
+      content = `export ANTHROPIC_BASE_URL="${baseUrl}"
+export ANTHROPIC_AUTH_TOKEN="${apiKey}"
+export ANTHROPIC_MODEL="${model}"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="${model}"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="${model}"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="${model}"
+export CLAUDE_CODE_SUBAGENT_MODEL="${model}"`
+      break
+    case 'cmd':
+      path = 'Command Prompt'
+      content = `set ANTHROPIC_BASE_URL=${baseUrl}
+set ANTHROPIC_AUTH_TOKEN=${apiKey}
+set ANTHROPIC_MODEL=${model}
+set ANTHROPIC_DEFAULT_OPUS_MODEL=${model}
+set ANTHROPIC_DEFAULT_SONNET_MODEL=${model}
+set ANTHROPIC_DEFAULT_HAIKU_MODEL=${model}
+set CLAUDE_CODE_SUBAGENT_MODEL=${model}`
+      break
+    case 'powershell':
+      path = 'PowerShell'
+      content = `$env:ANTHROPIC_BASE_URL="${baseUrl}"
+$env:ANTHROPIC_AUTH_TOKEN="${apiKey}"
+$env:ANTHROPIC_MODEL="${model}"
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL="${model}"
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL="${model}"
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL="${model}"
+$env:CLAUDE_CODE_SUBAGENT_MODEL="${model}"`
+      break
+    default:
+      path = 'Terminal'
+      content = ''
+  }
+  return [{ path, content }]
+}
+
+function generateGrokCodexFiles(baseUrl: string, apiKey: string): FileConfig[] {
+  const isWindows = activeTab.value === 'cmd' || activeTab.value === 'powershell'
+  const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
+  const configContent = `model_provider = "sub2api_grok"
+model = "grok-4.3"
+model_reasoning_effort = "high"
+network_access = "enabled"
+disable_response_storage = true
+
+[model_providers.sub2api_grok]
+name = "Sub2API Grok"
+base_url = "${baseUrl}"
+wire_api = "responses"
+env_key = "SUB2API_API_KEY"`
+  const shellPath = activeTab.value === 'cmd' ? 'Command Prompt' : activeTab.value === 'powershell' ? 'PowerShell' : 'Terminal'
+  const shellContent = activeTab.value === 'cmd'
+    ? `set SUB2API_API_KEY=${apiKey}`
+    : activeTab.value === 'powershell'
+      ? `$env:SUB2API_API_KEY="${apiKey}"`
+      : `export SUB2API_API_KEY="${apiKey}"`
+  return [
+    { path: `${configDir}/config.toml`, content: configContent, hint: t('keys.useKeyModal.grok.codexConfigTomlHint') },
+    { path: shellPath, content: shellContent }
+  ]
 }
 
 function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
@@ -648,6 +771,18 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'claude-sonnet-4-5-thinking': { name: 'Claude Sonnet 4.5 Thinking' },
     'claude-sonnet-4-5': { name: 'Claude Sonnet 4.5' }
   }
+  const grokModels = {
+    'grok-4.6': { name: 'Grok 4.6' },
+    'grok-4.5': { name: 'Grok 4.5' },
+    'grok-4.3': { name: 'Grok 4.3' },
+    'grok-build-0.1': { name: 'Grok Build 0.1' },
+    'grok-composer-2.5-fast': { name: 'Grok Composer 2.5 Fast' },
+    'grok-3-mini': { name: 'Grok 3 Mini' },
+    'grok-3-mini-fast': { name: 'Grok 3 Mini Fast' },
+    'grok-4.20-0309-reasoning': { name: 'Grok 4.20 Reasoning' },
+    'grok-4.20-0309-non-reasoning': { name: 'Grok 4.20 Non Reasoning' },
+    'grok-4.20-multi-agent-0309': { name: 'Grok 4.20 Multi Agent' }
+  }
 
   if (platform === 'gemini') {
     provider[platform].npm = '@ai-sdk/google'
@@ -664,6 +799,9 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     provider[platform].models = antigravityGeminiModels
   } else if (platform === 'openai') {
     provider[platform].models = openaiModels
+  } else if (platform === 'grok') {
+    provider[platform].npm = '@ai-sdk/openai'
+    provider[platform].models = grokModels
   }
 
   const agent =

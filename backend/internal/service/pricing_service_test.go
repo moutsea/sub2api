@@ -1,6 +1,9 @@
 package service
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testing.T) {
 	svc := &PricingService{
@@ -45,6 +48,65 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 			}
 		})
 	}
+
+}
+
+func TestPricingServiceGetModelPricing_Gemini38StaticFallback(t *testing.T) {
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}
+
+	for _, model := range []string{
+		"gemini-3.8-flash",
+		"gemini/gemini-3.8-flash",
+		"vertex_ai/gemini-3.8-flash",
+		"models/gemini-3.8-flash",
+	} {
+		t.Run(model, func(t *testing.T) {
+			pricing := svc.GetModelPricing(model)
+			if pricing == nil {
+				t.Fatalf("expected pricing for %q", model)
+			}
+			if pricing.InputCostPerToken != 7.5e-07 || pricing.OutputCostPerToken != 3.75e-06 {
+				t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputCostPerToken, pricing.OutputCostPerToken, 7.5e-07, 3.75e-06)
+			}
+			if pricing.CacheReadInputTokenCost != 7.5e-08 {
+				t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadInputTokenCost, 7.5e-08)
+			}
+		})
+	}
+}
+
+func TestBillingServiceGetModelPricing_Gemini38FallbackWhenDynamicMissing(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+
+	for _, model := range []string{
+		"gemini-3.8-flash",
+		"gemini/gemini-3.8-flash",
+		"vertex_ai/gemini-3.8-flash",
+		"models/gemini-3.8-flash",
+	} {
+		t.Run(model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(model)
+			if err != nil {
+				t.Fatalf("expected pricing for %q, got error %v", model, err)
+			}
+			if pricing.InputPricePerToken != 7.5e-07 || pricing.OutputPricePerToken != 3.75e-06 {
+				t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputPricePerToken, pricing.OutputPricePerToken, 7.5e-07, 3.75e-06)
+			}
+		})
+	}
+
+	cost, err := svc.CalculateCost("gemini-3.8-flash", UsageTokens{
+		InputTokens:     100,
+		OutputTokens:    10,
+		CacheReadTokens: 30,
+	}, 1)
+	if err != nil {
+		t.Fatalf("expected Gemini 3.8 cost, got error %v", err)
+	}
+	wantTotal := float64(100)*7.5e-07 + float64(10)*3.75e-06 + float64(30)*7.5e-08
+	if cost.TotalCost != wantTotal {
+		t.Fatalf("total cost = %v, want %v", cost.TotalCost, wantTotal)
+	}
 }
 
 func TestPricingServiceMatchOpenAIModel_FallsBackToNearestPricedModel(t *testing.T) {
@@ -82,6 +144,7 @@ func TestPricingServiceMatchOpenAIModel_FallsBackToNearestPricedModel(t *testing
 			}
 		})
 	}
+
 }
 
 func TestBillingServiceGetModelPricing_UsesGPTFallbackInsteadOfClaudeForUnknownOpenAI(t *testing.T) {
@@ -98,6 +161,62 @@ func TestBillingServiceGetModelPricing_UsesGPTFallbackInsteadOfClaudeForUnknownO
 	}
 	if pricing.OutputPricePerToken != 30e-06 {
 		t.Fatalf("output pricing = %v, want %v", pricing.OutputPricePerToken, 30e-06)
+	}
+}
+
+func TestBillingServiceGetModelPricing_GrokFallbacks(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+
+	tests := []struct {
+		model  string
+		input  float64
+		output float64
+	}{
+		{model: "grok", input: 2e-6, output: 6e-6},
+		{model: "grok-latest", input: 2e-6, output: 6e-6},
+		{model: "grok-4.20-0309-reasoning", input: 1.25e-6, output: 2.5e-6},
+		{model: "grok-future-1", input: 2e-6, output: 6e-6},
+		{model: "grok-4.5", input: 2e-6, output: 6e-6},
+		{model: "grok-4.6-20260901", input: 2e-6, output: 6e-6},
+		{model: "grok-build", input: 1e-6, output: 2e-6},
+		{model: "grok-composer", input: 1e-6, output: 2e-6},
+		{model: "grok-composer-2.5-fast", input: 1e-6, output: 2e-6},
+		{model: "composer-2.5", input: 1e-6, output: 2e-6},
+		{model: "xai/grok-composer-2.5-fast", input: 1e-6, output: 2e-6},
+		{model: "x-ai/composer-2.5", input: 1e-6, output: 2e-6},
+		{model: "grok/grok-build", input: 1e-6, output: 2e-6},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(tt.model)
+			if err != nil {
+				t.Fatalf("GetModelPricing(%q): %v", tt.model, err)
+			}
+			if pricing.InputPricePerToken != tt.input || pricing.OutputPricePerToken != tt.output {
+				t.Fatalf("pricing = %#v, want input=%v output=%v", pricing, tt.input, tt.output)
+			}
+		})
+	}
+
+	longContext, err := svc.CalculateCost("grok-4.5", UsageTokens{InputTokens: 200000, OutputTokens: 1}, 1)
+	if err != nil {
+		t.Fatalf("CalculateCost(grok-4.5): %v", err)
+	}
+	if longContext.InputCost < 0.799 || longContext.InputCost > 0.801 {
+		t.Fatalf("long-context input cost = %v, want 0.8", longContext.InputCost)
+	}
+}
+
+func TestBillingServiceIsModelSupported_GrokProviderPrefixes(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+	for _, model := range []string{"grok-4.6", "xai/grok-4.6", "x-ai/grok-4.6", "grok/grok-4.6"} {
+		if !svc.IsModelSupported(model) {
+			t.Fatalf("IsModelSupported(%q) = false, want true", model)
+		}
+	}
+	if svc.IsModelSupported("xai/llama-4") {
+		t.Fatal("unknown provider model should remain unsupported")
 	}
 }
 
@@ -492,6 +611,31 @@ func TestBillingServiceCalculateCostWithServiceTier_UsesGPT54LongContextPricing(
 	}
 	if cost.TotalCost != wantTotal {
 		t.Fatalf("total cost = %v, want %v", cost.TotalCost, wantTotal)
+	}
+}
+
+func TestBillingServiceLongContextCacheCreationOnlyAffectsGrok(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"gpt-5.4": {
+			InputCostPerToken: 1e-6, OutputCostPerToken: 2e-6, CacheCreationInputTokenCost: 3e-6,
+			LongContextInputTokenThreshold: 200000, LongContextInputCostMultiplier: 2, LongContextOutputCostMultiplier: 2,
+		},
+	}})
+	tokens := UsageTokens{InputTokens: 100000, CacheCreationTokens: 120000, OutputTokens: 1}
+	gptCost, err := svc.CalculateCost("gpt-5.4", tokens, 1)
+	if err != nil {
+		t.Fatalf("GPT cost error = %v", err)
+	}
+	if math.Abs(gptCost.InputCost-100000e-6) > 1e-12 || math.Abs(gptCost.OutputCost-2e-6) > 1e-12 || gptCost.CacheCreationCost != 0 {
+		t.Fatalf("GPT cost = %#v, cache creation should not trigger long-context pricing", gptCost)
+	}
+
+	grokCost, err := svc.CalculateCost("grok-4.6", UsageTokens{InputTokens: 100000, CacheCreationTokens: 100001, OutputTokens: 1}, 1)
+	if err != nil {
+		t.Fatalf("Grok cost error = %v", err)
+	}
+	if grokCost.InputCost <= 100000*2e-6 || grokCost.OutputCost <= 2e-6 {
+		t.Fatalf("Grok cost = %#v, cache creation should trigger long-context pricing", grokCost)
 	}
 }
 

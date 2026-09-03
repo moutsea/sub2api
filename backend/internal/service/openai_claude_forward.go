@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,6 +42,37 @@ func (s *OpenAIGatewayService) forwardClaudeViaChatCompletions(ctx context.Conte
 	if err != nil {
 		return nil, fmt.Errorf("convert claude to openai: %w", err)
 	}
+	grokCacheKey := ""
+	if account.IsGrok() {
+		grokModel := resolveGrokRequestModel(account, originalModel)
+		if modelErr := grokTextModelValidationError(grokModel); modelErr != nil {
+			writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", modelErr.Error())
+			return nil, modelErr
+		}
+		openaiBody, err = patchGrokClaudeCompatModel(openaiBody, grokModel)
+		if err != nil {
+			return nil, fmt.Errorf("patch Grok model: %w", err)
+		}
+		openaiBody, err = applyGrokPromptCacheKey(openaiBody, c, body, grokModel)
+		if err != nil {
+			return nil, fmt.Errorf("apply Grok prompt cache key: %w", err)
+		}
+		var grokRequest map[string]any
+		if err := json.Unmarshal(openaiBody, &grokRequest); err != nil {
+			return nil, fmt.Errorf("parse Grok chat body: %w", err)
+		}
+		if apiKey := getAPIKeyFromGinContext(c); apiKey != nil && apiKey.ID > 0 {
+			if cacheKey, ok := grokRequest["prompt_cache_key"].(string); ok {
+				grokCacheKey = strings.TrimSpace(cacheKey)
+			}
+		}
+		delete(grokRequest, "prompt_cache_key")
+		normalizeGrokChatReasoning(grokRequest, grokModel)
+		openaiBody, err = json.Marshal(grokRequest)
+		if err != nil {
+			return nil, fmt.Errorf("serialize Grok chat body: %w", err)
+		}
+	}
 	// High-frequency model mapping log is intentionally muted to reduce noise.
 	// log.Printf("%s model=%s→%s stream=%v", prefix, originalModel, kiro.GetOpenAIModelID(originalModel), wantStream)
 
@@ -49,7 +83,12 @@ func (s *OpenAIGatewayService) forwardClaudeViaChatCompletions(ctx context.Conte
 	}
 
 	// 3. Build upstream request to OpenAI Chat Completions
-	upstreamReq, err := s.buildChatCompletionsRequest(ctx, c, account, openaiBody, token)
+	requestCtx, releaseRequestCtx := ctx, func() {}
+	if account.IsGrok() && !wantStream {
+		requestCtx, releaseRequestCtx = grokUpstreamContext(ctx, false)
+	}
+	defer releaseRequestCtx()
+	upstreamReq, err := s.buildChatCompletionsRequest(requestCtx, c, account, openaiBody, token, grokCacheKey)
 	if err != nil {
 		return nil, err
 	}
@@ -63,29 +102,61 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 	startTime := time.Now()
 	prefix := fmt.Sprintf("[openai-claude-compat] account=%s(%d) type=oauth", account.Name, account.ID)
 	estimatedInputTokens := estimateClaudeRequestInputTokens(body)
+	wantStream := true
 
 	// 1. Convert Claude request → OpenAI Responses API format
 	responsesBody, originalModel, err := kiro.ConvertClaudeToResponses(body)
 	if err != nil {
 		return nil, fmt.Errorf("convert claude to responses: %w", err)
 	}
+	if account.IsGrok() {
+		grokModel := resolveGrokRequestModel(account, originalModel)
+		if modelErr := grokTextModelValidationError(grokModel); modelErr != nil {
+			writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", modelErr.Error())
+			return nil, modelErr
+		}
+		responsesBody, err = patchGrokResponsesBody(responsesBody, grokModel)
+		if err != nil {
+			return nil, fmt.Errorf("patch Grok model: %w", err)
+		}
+		// Claude Messages defaults to a non-streaming response. The OpenAI
+		// OAuth path intentionally remains streaming-only, while xAI's public
+		// Responses API supports both modes.
+		wantStream = claudeMessagesRequestWantsStream(body)
+		var grokRequest map[string]any
+		if err := json.Unmarshal(responsesBody, &grokRequest); err != nil {
+			return nil, fmt.Errorf("parse Grok responses body: %w", err)
+		}
+		grokRequest["stream"] = wantStream
+		normalizeGrokResponsesReasoning(grokRequest, grokModel)
+		responsesBody, err = json.Marshal(grokRequest)
+		if err != nil {
+			return nil, fmt.Errorf("serialize Grok responses body: %w", err)
+		}
+		responsesBody, err = applyGrokPromptCacheKey(responsesBody, c, body, grokModel)
+		if err != nil {
+			return nil, fmt.Errorf("apply Grok prompt cache key: %w", err)
+		}
+	}
 
-	// 2. Apply codex OAuth transform (model normalization, store/stream, etc.)
+	// 2. Apply the OpenAI OAuth transform only for OpenAI accounts. Grok speaks
+	// the public Responses protocol and must retain its xAI model and payload.
 	//    Preserve the original Claude system prompt — do NOT let applyCodexOAuthTransform
 	//    overwrite instructions with OpenCode/Codex headers.
 	var reqBody map[string]any
 	if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 		return nil, fmt.Errorf("parse responses body: %w", err)
 	}
-	origInstructions, _ := reqBody["instructions"].(string)
-	codexResult := applyCodexOAuthTransform(reqBody)
-	// Restore the original Claude system prompt that was set by ConvertClaudeToResponses.
-	if origInstructions != "" {
-		reqBody["instructions"] = origInstructions
+	promptCacheKey := ""
+	if account.Platform == PlatformOpenAI {
+		origInstructions, _ := reqBody["instructions"].(string)
+		codexResult := applyCodexOAuthTransform(reqBody)
+		if origInstructions != "" {
+			reqBody["instructions"] = origInstructions
+		}
+		ensureResponsesReasoning(reqBody)
+		promptCacheKey = codexResult.PromptCacheKey
 	}
-	// Keep a stable fallback so Claude-compat requests can still emit reasoning events
-	// even when upstream transforms or variant request paths omit reasoning.
-	ensureResponsesReasoning(reqBody)
 	// Re-serialize after transform
 	responsesBody, err = json.Marshal(reqBody)
 	if err != nil {
@@ -102,14 +173,34 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 	}
 
 	// 4. Build upstream request using standard OAuth path (chatgpt.com)
-	promptCacheKey := codexResult.PromptCacheKey
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
+	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, wantStream, promptCacheKey, false)
 	if err != nil {
 		return nil, err
 	}
 
 	// 5. Send request and handle response (Responses API SSE → Claude SSE)
-	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, responsesBody, originalModel, true, startTime, prefix, estimatedInputTokens, true)
+	return s.doClaudeCompatRequest(ctx, c, account, upstreamReq, responsesBody, originalModel, wantStream, startTime, prefix, estimatedInputTokens, true)
+}
+
+func claudeMessagesRequestWantsStream(body []byte) bool {
+	var request struct {
+		Stream *bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil || request.Stream == nil {
+		return false
+	}
+	return *request.Stream
+}
+
+func patchGrokClaudeCompatModel(body []byte, model string) ([]byte, error) {
+	var request map[string]any
+	if err := json.Unmarshal(body, &request); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(model) != "" {
+		request["model"] = model
+	}
+	return json.Marshal(request)
 }
 
 // doClaudeCompatRequest sends the upstream request and handles the response, converting back to Claude format.
@@ -133,7 +224,44 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 	// 	c.Set(OpsUpstreamRequestBodyKey, string(upstreamBody))
 	// }
 
+	if account.IsGrok() {
+		s.applyGrokRequestJitter(ctx)
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	if err == nil && isResponsesAPI && account.IsGrok() && resp != nil && resp.Body != nil &&
+		(resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity) {
+		statusCode := resp.StatusCode
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		if isGrokReplayDecodeError(statusCode, responseBody) {
+			if retryBody, changed := stripGrokReplayEncryptedContent(upstreamBody); changed {
+				upstreamBody = retryBody
+				retryToken, _, tokenErr := s.GetAccessToken(ctx, account)
+				if tokenErr != nil {
+					return nil, tokenErr
+				}
+				requestCtx, releaseRequestCtx := detachUpstreamContext(ctx)
+				retryReq, buildErr := buildGrokResponsesRequest(requestCtx, c, account, upstreamBody, retryToken, account.GetGrokBaseURL())
+				releaseRequestCtx()
+				if buildErr != nil {
+					return nil, fmt.Errorf("build Grok replay retry request: %w", buildErr)
+				}
+				s.applyGrokRequestJitter(ctx)
+				if retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency); retryErr == nil {
+					if retryResp == nil || retryResp.Body == nil {
+						return nil, errors.New("Grok replay retry returned an empty response")
+					}
+					resp = retryResp
+				} else {
+					return nil, retryErr
+				}
+			} else {
+				resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+			}
+		} else {
+			resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+		}
+	}
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
@@ -148,11 +276,27 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 		writeClaudeError(c, http.StatusBadGateway, "api_error", "Upstream request failed")
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
+	if resp == nil || resp.Body == nil {
+		err := errors.New("upstream request returned an empty response")
+		writeClaudeError(c, http.StatusBadGateway, "api_error", "Upstream request failed")
+		return nil, err
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Handle error responses
 	if resp.StatusCode >= 400 {
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if account.IsGrok() {
+			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
+				if s.rateLimitService != nil {
+					s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				}
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))}
+			}
+		} else if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -181,6 +325,9 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 		}
 		return s.handleClaudeCompatErrorResponse(resp, c, account)
 	}
+	if account.IsGrok() {
+		s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+	}
 
 	// Handle success response
 	var inputTokens, outputTokens int
@@ -188,16 +335,33 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 	var firstTokenMs *int
 
 	if isResponsesAPI {
-		// Responses API always streams
-		result, err := s.handleClaudeCompatResponsesStream(resp, c, startTime, originalModel, estimatedInputTokens)
-		if err != nil {
-			return nil, err
+		if wantStream {
+			if account.IsGrok() {
+				maxLineSize := defaultMaxLineSize
+				if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+					maxLineSize = s.cfg.Gateway.MaxLineSize
+				}
+				resp.Body = newGrokResponsesPingFilterBody(resp.Body, account, maxLineSize)
+			}
+			result, err := s.handleClaudeCompatResponsesStream(resp, c, startTime, originalModel, estimatedInputTokens)
+			if err != nil {
+				return nil, err
+			}
+			inputTokens = result.inputTokens
+			outputTokens = result.outputTokens
+			cacheCreationInputTokens = result.cacheCreationInputTokens
+			cacheReadInputTokens = result.cacheReadInputTokens
+			firstTokenMs = result.firstTokenMs
+		} else {
+			result, err := s.handleClaudeCompatResponsesNonStreamResponse(resp, c, originalModel)
+			if err != nil {
+				return nil, err
+			}
+			inputTokens = result.inputTokens
+			outputTokens = result.outputTokens
+			cacheCreationInputTokens = result.cacheCreationInputTokens
+			cacheReadInputTokens = result.cacheReadInputTokens
 		}
-		inputTokens = result.inputTokens
-		outputTokens = result.outputTokens
-		cacheCreationInputTokens = result.cacheCreationInputTokens
-		cacheReadInputTokens = result.cacheReadInputTokens
-		firstTokenMs = result.firstTokenMs
 	} else if wantStream {
 		result, err := s.handleClaudeCompatStreamResponse(resp, c, startTime, originalModel, estimatedInputTokens)
 		if err != nil {
@@ -224,19 +388,58 @@ func (s *OpenAIGatewayService) doClaudeCompatRequest(
 
 	log.Printf("%s status=ok input=%d output=%d duration=%v", prefix, inputTokens, outputTokens, time.Since(startTime))
 
+	resultModel := originalModel
+	if account.IsGrok() {
+		var upstreamRequest map[string]any
+		if err := json.Unmarshal(upstreamBody, &upstreamRequest); err == nil {
+			if model, ok := upstreamRequest["model"].(string); ok && strings.TrimSpace(model) != "" {
+				resultModel = strings.TrimSpace(model)
+			}
+		}
+	}
+
 	return &ForwardResult{
-		RequestID: resp.Header.Get("x-request-id"),
+		RequestID: firstNonEmptyGrokHeader(resp.Header, "x-request-id", "xai-request-id"),
 		Usage: ClaudeUsage{
 			InputTokens:              inputTokens,
 			OutputTokens:             outputTokens,
 			CacheCreationInputTokens: cacheCreationInputTokens,
 			CacheReadInputTokens:     cacheReadInputTokens,
 		},
-		Model:        originalModel,
-		Stream:       wantStream || isResponsesAPI,
+		Model:        resultModel,
+		Stream:       wantStream,
 		Duration:     time.Since(startTime),
 		FirstTokenMs: firstTokenMs,
 	}, nil
+}
+
+// handleClaudeCompatResponsesNonStreamResponse converts a regular Responses
+// API JSON response into a Claude Messages JSON response. This is used for
+// Grok OAuth requests that explicitly disable streaming.
+func (s *OpenAIGatewayService) handleClaudeCompatResponsesNonStreamResponse(resp *http.Response, c *gin.Context, originalModel string) (*claudeCompatResult, error) {
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	ccBody, ccUsage := convertResponsesJSONToCC(respBody, originalModel, resp.Header.Get("x-request-id"))
+	if ccUsage == nil {
+		return nil, fmt.Errorf("convert response: invalid Responses API response")
+	}
+	claudeBody, usage, err := kiro.ConvertOpenAIResponseToClaude(ccBody, originalModel)
+	if err != nil {
+		return nil, fmt.Errorf("convert response to Claude: %w", err)
+	}
+	if s.cfg != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", claudeBody)
+	result := &claudeCompatResult{
+		inputTokens:              usage.InputTokens,
+		outputTokens:             usage.OutputTokens,
+		cacheCreationInputTokens: usage.CacheCreationInputTokens,
+		cacheReadInputTokens:     usage.CacheReadInputTokens,
+	}
+	return result, nil
 }
 
 // claudeCompatResult holds parsed usage from response handling.
@@ -316,6 +519,16 @@ func (s *OpenAIGatewayService) handleClaudeCompatStreamResponse(resp *http.Respo
 		_, _ = c.Writer.WriteString(events)
 		c.Writer.Flush()
 	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		writeClaudeStreamError(c, "api_error", "Failed to read upstream stream")
+		return &claudeCompatResult{
+			inputTokens:              converter.InputTokens(),
+			outputTokens:             converter.OutputTokens(),
+			cacheCreationInputTokens: converter.CacheCreationInputTokens(),
+			cacheReadInputTokens:     converter.CacheReadInputTokens(),
+			firstTokenMs:             firstTokenMs,
+		}, fmt.Errorf("read upstream stream: %w", scanErr)
+	}
 
 	// Send message_stop
 	_, _ = c.Writer.WriteString(converter.BuildMessageStop())
@@ -353,7 +566,7 @@ func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Resp
 	// Responses API SSE format: "event: xxx\ndata: {...}\n\n"
 	var currentEventType string
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 
 		// Parse event type
 		if strings.HasPrefix(line, "event:") {
@@ -366,11 +579,26 @@ func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Resp
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || currentEventType == "" {
+		if data == "" {
+			currentEventType = ""
 			continue
 		}
+		if data == "[DONE]" {
+			break
+		}
 
-		events := converter.ConvertResponsesEvent(currentEventType, []byte(data))
+		// Most Responses providers send both event: and data.type, but the
+		// latter is sufficient and is common in proxy-normalized SSE streams.
+		// Prefer the payload type when present and fall back to event: otherwise.
+		eventType := currentEventType
+		var payload map[string]any
+		if json.Unmarshal([]byte(data), &payload) == nil {
+			if payloadType, ok := payload["type"].(string); ok && strings.TrimSpace(payloadType) != "" {
+				eventType = strings.TrimSpace(payloadType)
+			}
+		}
+
+		events := converter.ConvertResponsesEvent(eventType, []byte(data))
 		currentEventType = "" // Reset for next event
 
 		if events == "" {
@@ -384,6 +612,16 @@ func (s *OpenAIGatewayService) handleClaudeCompatResponsesStream(resp *http.Resp
 
 		_, _ = c.Writer.WriteString(events)
 		c.Writer.Flush()
+	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		writeClaudeStreamError(c, "api_error", "Failed to read upstream stream")
+		return &claudeCompatResult{
+			inputTokens:              converter.InputTokens(),
+			outputTokens:             converter.OutputTokens(),
+			cacheCreationInputTokens: converter.CacheCreationInputTokens(),
+			cacheReadInputTokens:     converter.CacheReadInputTokens(),
+			firstTokenMs:             firstTokenMs,
+		}, fmt.Errorf("read upstream stream: %w", scanErr)
 	}
 
 	// Send message_stop
@@ -516,6 +754,26 @@ func writeClaudeError(c *gin.Context, status int, errType, message string) {
 			"message": message,
 		},
 	})
+}
+
+func writeClaudeStreamError(c *gin.Context, errType, message string) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	data, err := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]string{
+			"type":    errType,
+			"message": message,
+		},
+	})
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", data)
+	if flusher, ok := c.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 // generateShortID generates a short random ID for message IDs using crypto/rand.

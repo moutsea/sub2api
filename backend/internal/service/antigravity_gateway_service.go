@@ -24,11 +24,11 @@ import (
 )
 
 const (
-	antigravityStickySessionTTL    = time.Hour
-	antigravityMaxRetries          = 3
-	antigravityRetryBaseDelay      = 1 * time.Second
-	antigravityRetryMaxDelay       = 16 * time.Second
-	antigravityDefaultProjectID    = "bamboo-precept-lgxtn"
+	antigravityStickySessionTTL = time.Hour
+	antigravityMaxRetries       = 3
+	antigravityRetryBaseDelay   = 1 * time.Second
+	antigravityRetryMaxDelay    = 16 * time.Second
+	antigravityDefaultProjectID = "bamboo-precept-lgxtn"
 )
 
 // isAntigravityConnectionError 判断是否为连接错误（网络超时、DNS 失败、连接拒绝）
@@ -2433,7 +2433,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	var firstTokenMs *int
 	var last map[string]any
 	var lastWithParts map[string]any
-	var lastUsageMetadata map[string]any // 单独追踪 usageMetadata，因为它通常在最后一个 chunk 中
+	var lastUsageMetadata map[string]any     // 单独追踪 usageMetadata，因为它通常在最后一个 chunk 中
 	var collectedImageParts []map[string]any // 收集所有包含图片的 parts
 	var collectedTextParts []string          // 收集所有文本片段
 

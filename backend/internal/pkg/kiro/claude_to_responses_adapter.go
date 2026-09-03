@@ -28,6 +28,11 @@ func ConvertClaudeToResponses(body []byte) (responsesBody []byte, originalModel 
 	responsesReq["stream"] = true
 	responsesReq["store"] = false
 
+	// Claude's max_tokens maps directly to the Responses API output limit.
+	if maxTokens, ok := positiveJSONInt(req["max_tokens"]); ok {
+		responsesReq["max_output_tokens"] = maxTokens
+	}
+
 	// Build input array from system + messages
 	var input []any
 
@@ -59,7 +64,7 @@ func ConvertClaudeToResponses(body []byte) (responsesBody []byte, originalModel 
 
 	// tool_choice
 	if tc := req["tool_choice"]; tc != nil {
-		if converted := convertClaudeToolChoiceToOpenAI(tc); converted != nil {
+		if converted := convertClaudeToolChoiceToResponses(tc); converted != nil {
 			responsesReq["tool_choice"] = converted
 		}
 	}
@@ -69,6 +74,77 @@ func ConvertClaudeToResponses(body []byte) (responsesBody []byte, originalModel 
 		return nil, "", fmt.Errorf("marshal responses request: %w", err)
 	}
 	return responsesBody, originalModel, nil
+}
+
+func convertClaudeToolChoiceToResponses(value any) any {
+	m, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch choiceType, _ := m["type"].(string); choiceType {
+	case "auto":
+		return "auto"
+	case "any":
+		return "required"
+	case "none":
+		return "none"
+	case "tool":
+		if name, ok := m["name"].(string); ok && strings.TrimSpace(name) != "" {
+			return map[string]any{"type": "function", "name": name}
+		}
+	}
+	return nil
+}
+
+func positiveJSONInt(value any) (int, bool) {
+	var number int
+	switch value := value.(type) {
+	case float64:
+		number = int(value)
+		if float64(number) != value {
+			return 0, false
+		}
+	case float32:
+		number = int(value)
+		if float32(number) != value {
+			return 0, false
+		}
+	case int:
+		number = value
+	case int8:
+		number = int(value)
+	case int16:
+		number = int(value)
+	case int32:
+		number = int(value)
+	case int64:
+		number = int(value)
+	case uint:
+		number = int(value)
+	case uint8:
+		number = int(value)
+	case uint16:
+		number = int(value)
+	case uint32:
+		number = int(value)
+	case uint64:
+		if uint64(int(value)) != value {
+			return 0, false
+		}
+		number = int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, false
+		}
+		number = int(parsed)
+		if int64(number) != parsed {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	return number, number > 0
 }
 
 // convertClaudeMessagesToResponsesInput converts Claude messages to Responses API input items.

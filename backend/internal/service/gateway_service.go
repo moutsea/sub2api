@@ -25,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/tidwall/gjson"
@@ -1215,6 +1216,9 @@ func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform 
 	if account == nil {
 		return false
 	}
+	if platform == PlatformGrok && account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey {
+		return false
+	}
 	if useMixed {
 		if account.Platform == platform {
 			return true
@@ -1642,7 +1646,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
 					// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
-					if err == nil && s.isAccountInGroup(account, groupID) && account.Platform == platform && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
+					if err == nil && s.isAccountInGroup(account, groupID) && s.isAccountAllowedForPlatform(account, platform, false) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
 						if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 							log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
 						}
@@ -1746,7 +1750,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
 				// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
-				if err == nil && s.isAccountInGroup(account, groupID) && account.Platform == platform && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
+				if err == nil && s.isAccountInGroup(account, groupID) && s.isAccountAllowedForPlatform(account, platform, false) && account.IsSchedulableForModel(requestedModel) && (requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) && s.isAccountQuotaAvailable(account) {
 					if err := s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL); err != nil {
 						log.Printf("refresh session ttl failed: session=%s err=%v", sessionHash, err)
 					}
@@ -2118,6 +2122,9 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	}
 	if account.Platform == PlatformKiro {
 		return IsKiroModelSupportedByAccount(account, requestedModel)
+	}
+	if account.Platform == PlatformGrok {
+		return isGrokModelSupportedByAccount(account, requestedModel)
 	}
 	if account.Platform == PlatformOpenAI {
 		// OpenAI 平台在混合调度中接收 claude-* 请求，通过协议转换支持
@@ -4805,6 +4812,13 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 			for _, model := range kiro.DefaultModelIDs() {
 				modelSet[model] = struct{}{}
 			}
+			continue
+		}
+		if acc.Platform == PlatformGrok {
+			hasAnyMapping = true
+			for _, model := range xai.DefaultModelIDs() {
+				modelSet[model] = struct{}{}
+			}
 		}
 	}
 
@@ -4818,6 +4832,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	for model := range modelSet {
 		models = append(models, model)
 	}
+	sort.Strings(models)
 
 	return models
 }

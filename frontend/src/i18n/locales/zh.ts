@@ -542,6 +542,7 @@ export default {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',
         codexCli: 'Codex CLI',
+        grokCli: 'Grok CLI',
         opencode: 'OpenCode',
       },
       antigravity: {
@@ -555,6 +556,17 @@ export default {
         description: '将以下环境变量添加到您的终端配置文件或直接在终端中运行，以配置 Gemini CLI 访问。',
         modelComment: '如果你有 Gemini 3 权限可以填：gemini-3-pro-preview',
         note: '这些环境变量将在当前终端会话中生效。如需永久配置，请将其添加到 ~/.bashrc、~/.zshrc 或相应的配置文件中。',
+      },
+      grok: {
+        description: '使用 OpenAI 兼容的 Responses API 配置 Grok CLI。',
+        claudeDescription: '通过 Messages 兼容接口配置 Claude Code 使用 Grok。',
+        codexDescription: '通过 Responses API 配置 Codex CLI 使用 Grok。',
+        configTomlHint: '如果 ~/.grok 目录不存在，请先创建，然后将内容保存为 config.toml。',
+        codexConfigTomlHint: '如果 ~/.codex 目录不存在，请先创建，然后将内容保存为 config.toml。',
+        note: 'Grok CLI 配置使用 Responses API 和当前 API 密钥。',
+        noteWindows: 'Windows 用户请在用户目录下创建 .grok 文件夹，并将内容保存为 config.toml。',
+        claudeNote: '这些变量会将 Claude Code 指向 Grok Messages 兼容接口。',
+        codexNote: 'Codex provider 配置通过 SUB2API_API_KEY 环境变量读取 API 密钥。',
       },
       opencode: {
         title: 'OpenCode 配置示例',
@@ -1151,7 +1163,8 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
-        kiro: 'Kiro'
+        kiro: 'Kiro',
+        grok: 'Grok'
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -1409,7 +1422,8 @@ export default {
         anthropic: 'Anthropic',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
-        kiro: 'Kiro'
+        kiro: 'Kiro',
+        grok: 'Grok'
       },
       types: {
         oauth: 'OAuth',
@@ -1418,6 +1432,7 @@ export default {
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
         antigravityOauth: 'Antigravity OAuth',
+        grokOauth: 'Grok OAuth',
         kiroRefreshToken: 'AWS CodeWhisperer Refresh Token',
         api_key: 'API Key',
         cookie: 'Cookie'
@@ -1485,7 +1500,11 @@ export default {
         gemini3Pro: 'G3P',
         gemini3Flash: 'G3F',
         gemini3Image: 'G3I',
-        claude45: 'C4.5'
+        claude45: 'C4.5',
+        grokRequests: '请求',
+        grokTokens: 'Token',
+        grokRetryAfter: '{time} 后重试',
+        grokUnknown: '首次上游响应后显示配额'
       },
       tier: {
         free: 'Free',
@@ -1616,6 +1635,10 @@ export default {
           invalidValue: '请求头值包含非法字符或长度超限',
           tooManyEntries: '请求头数量不能超过 64 个'
         }
+      },
+      grok: {
+        baseUrlHint: '留空使用官方 xAI API（https://api.x.ai/v1）。',
+        apiKeyHint: '您的 xAI API Key（以 xai- 开头）。'
       },
       modelRestriction: '模型限制（可选）',
       modelWhitelist: '模型白名单',
@@ -1825,6 +1848,25 @@ export default {
           failedToGenerateUrl: '生成 Antigravity 授权链接失败',
           missingExchangeParams: '缺少 code / session_id / state',
           failedToExchangeCode: 'Antigravity 授权码兑换失败'
+        },
+        grok: {
+          title: 'Grok 账号授权',
+          followSteps: '请按照以下步骤授权您的 xAI/Grok 账号：',
+          step1GenerateUrl: '生成 xAI 授权链接',
+          generateAuthUrl: '生成授权链接',
+          step2OpenUrl: '在浏览器中打开链接并完成授权',
+          openUrlDesc: '在新标签页中打开授权链接，登录 xAI 并授权 API 访问。',
+          importantNotice: '当浏览器跳转到本地 callback URL 后，请复制完整 URL 或 code 参数回填到这里。',
+          step3EnterCode: '输入授权链接或 Code',
+          authCodeDesc: '授权完成后，粘贴 callback URL 或授权码：',
+          authCode: '授权链接或 Code',
+          authCodePlaceholder: '粘贴 callback URL 或 code 值',
+          authCodeHint: '支持完整 callback URL、查询字符串或裸 code。',
+          failedToGenerateUrl: '生成 Grok 授权链接失败',
+          missingExchangeParams: '缺少授权码、state 或 OAuth 会话',
+          failedToExchangeCode: 'Grok 授权码兑换失败',
+          pleaseEnterRefreshToken: '请输入 Refresh Token',
+          failedToValidateRT: '验证 Grok Refresh Token 失败'
         }
 	      },
       // Gemini specific (platform-wide)
@@ -2065,6 +2107,7 @@ export default {
       openaiAccount: 'OpenAI 账号',
       geminiAccount: 'Gemini 账号',
       antigravityAccount: 'Antigravity 账号',
+      grokAccount: 'Grok 账号',
       inputMethod: '输入方式',
       reAuthorizedSuccess: '账号重新授权成功',
       // Test Modal

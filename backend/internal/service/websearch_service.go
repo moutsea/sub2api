@@ -33,16 +33,16 @@ type SearXNGResult struct {
 
 // WebSearchToolResult represents web_search tool result (Anthropic format)
 type WebSearchToolResult struct {
-	Type    string               `json:"type"` // "web_search_tool_result"
+	Type    string                `json:"type"` // "web_search_tool_result"
 	Results []WebSearchResultItem `json:"results"`
 }
 
 // WebSearchResultItem represents a search result item
 type WebSearchResultItem struct {
-	URL             string `json:"url"`
-	Title           string `json:"title"`
+	URL              string `json:"url"`
+	Title            string `json:"title"`
 	EncryptedContent string `json:"encrypted_content,omitempty"`
-	PageContent     string `json:"page_content,omitempty"`
+	PageContent      string `json:"page_content,omitempty"`
 }
 
 var globalWebSearchService *WebSearchService

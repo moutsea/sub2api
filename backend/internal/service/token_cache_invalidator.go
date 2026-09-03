@@ -50,6 +50,8 @@ func (c *CompositeTokenCacheInvalidator) InvalidateToken(ctx context.Context, ac
 		cacheKeys = append(cacheKeys, "ag:account:"+accountIDStr)
 	case PlatformOpenAI:
 		cacheKeys = append(cacheKeys, OpenAITokenCacheKey(account))
+	case PlatformGrok:
+		cacheKeys = append(cacheKeys, GrokTokenCacheKey(account))
 	case PlatformAnthropic:
 		cacheKeys = append(cacheKeys, ClaudeTokenCacheKey(account))
 	default:

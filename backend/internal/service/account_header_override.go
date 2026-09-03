@@ -60,7 +60,10 @@ var blockedHeaderOverrideNames = map[string]struct{}{
 }
 
 func (a *Account) IsHeaderOverrideEligible() bool {
-	return a != nil && a.IsOpenAIApiKey()
+	// OpenAI API keys and Grok credentials both target OpenAI-compatible
+	// upstreams. OAuth Grok requests are eligible as well because the xAI CLI
+	// identity headers are re-applied after overrides by the request builder.
+	return a != nil && (a.IsOpenAIApiKey() || a.IsGrok())
 }
 
 func (a *Account) IsHeaderOverrideEnabled() bool {

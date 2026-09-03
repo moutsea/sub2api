@@ -461,7 +461,7 @@ func (s *OpsService) executeClientRetry(ctx context.Context, reqType opsRetryReq
 			return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: "retry failed after exhausting account failovers"}
 		}
 
-		selection, selErr := s.selectAccountForRetry(ctx, reqType, groupID, model, excluded)
+		selection, selErr := s.selectAccountForRetry(ctx, reqType, errorLog.Platform, groupID, model, excluded)
 		if selErr != nil {
 			return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: selErr.Error()}
 		}
@@ -503,14 +503,33 @@ func (s *OpsService) executeClientRetry(ctx context.Context, reqType opsRetryReq
 	}
 }
 
-func (s *OpsService) selectAccountForRetry(ctx context.Context, reqType opsRetryRequestType, groupID *int64, model string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
+func (s *OpsService) selectAccountForRetry(ctx context.Context, reqType opsRetryRequestType, platform string, groupID *int64, model string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
 	switch reqType {
 	case opsRetryTypeOpenAI:
 		if s.openAIGatewayService == nil {
 			return nil, fmt.Errorf("openai gateway service not available")
 		}
+		if platform == PlatformGrok {
+			ctx = WithOpenAIRequestPlatform(ctx, PlatformGrok)
+		}
 		return s.openAIGatewayService.SelectAccountWithLoadAwareness(ctx, groupID, "", model, excludedIDs)
 	case opsRetryTypeGeminiV1B, opsRetryTypeMessages:
+		if platform == PlatformGrok {
+			if s.openAIGatewayService == nil {
+				return nil, fmt.Errorf("openai gateway service not available")
+			}
+			return s.openAIGatewayService.SelectAccountWithLoadAwareness(
+				WithOpenAIRequestPlatform(ctx, PlatformGrok), groupID, "", model, excludedIDs,
+			)
+		}
+		if platform == PlatformOpenAI {
+			if s.openAIGatewayService == nil {
+				return nil, fmt.Errorf("openai gateway service not available")
+			}
+			// Keep the historical unscoped OpenAI/Kiro pool. Kiro accounts can
+			// still be attached to an OpenAI group and must remain retry targets.
+			return s.openAIGatewayService.SelectAccountWithLoadAwareness(ctx, groupID, "", model, excludedIDs)
+		}
 		if s.gatewayService == nil {
 			return nil, fmt.Errorf("gateway service not available")
 		}
@@ -577,6 +596,11 @@ func (s *OpsService) executeWithAccount(ctx context.Context, reqType opsRetryReq
 		}
 	case opsRetryTypeMessages:
 		switch account.Platform {
+		case PlatformOpenAI, PlatformGrok:
+			if s.openAIGatewayService == nil {
+				return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: "openai gateway service not available"}
+			}
+			_, err = s.openAIGatewayService.ForwardAsClaudeMessages(ctx, c, account, body)
 		case PlatformAntigravity:
 			if s.antigravityGatewayService == nil {
 				return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: "antigravity gateway service not available"}

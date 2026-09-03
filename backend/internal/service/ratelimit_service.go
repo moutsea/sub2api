@@ -74,6 +74,13 @@ func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvali
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) (shouldDisable bool) {
+	// Grok uses a shared xAI entitlement/pool. Its 401/402/403 responses can be
+	// request-, quota-, or deployment-scoped and must never permanently disable
+	// the credential through the generic account error policy.
+	if account != nil && account.IsGrok() {
+		return s.handleGrokUpstreamError(ctx, account, statusCode, headers, responseBody)
+	}
+
 	// Apikey accounts (Kiro / OpenAI): never enter cooldown or get disabled.
 	// These accounts may point to an upstream pool; all errors are treated as transient.
 	isApiKeyPool := (account.IsKiro() && account.IsKiroApiKey()) || (account.IsOpenAI() && account.IsOpenAIApiKey())

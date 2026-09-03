@@ -68,6 +68,13 @@ type AccountRepository interface {
 	BulkUpdate(ctx context.Context, ids []int64, updates AccountBulkUpdate) (int64, error)
 }
 
+// AccountTelemetryRepository contains passive account metadata writes that do
+// not affect schedulability and therefore must not invalidate scheduler
+// snapshots.
+type AccountTelemetryRepository interface {
+	UpdateGrokUsageSnapshot(ctx context.Context, id int64, snapshot any) error
+}
+
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {
@@ -352,6 +359,9 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		return nil
 	case PlatformGemini:
 		// TODO: 测试Gemini API凭证
+		return nil
+	case PlatformGrok:
+		// Grok account connectivity is exercised by AccountTestService.
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)

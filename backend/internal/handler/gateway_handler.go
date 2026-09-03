@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -225,6 +226,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	selectionCtx := c.Request.Context()
+	if platform == service.PlatformGrok {
+		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
+	}
 
 	if platform == service.PlatformGemini {
 		const maxAccountSwitches = 3
@@ -387,7 +392,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		// 选择支持该模型的账号
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, failedAccountIDs, parsedReq.MetadataUserID)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionKey, reqModel, failedAccountIDs, parsedReq.MetadataUserID)
 		if err != nil {
 			if len(failedAccountIDs) == 0 {
 				if isModelNotSupportedErr(err) {
@@ -481,6 +486,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				result, err = h.kiroGatewayService.ForwardWithWebSearch(c.Request.Context(), c, account, body, claudeReq)
 			}
 		case service.PlatformOpenAI:
+			result, err = h.openAIGatewayService.ForwardAsClaudeMessages(c.Request.Context(), c, account, body)
+		case service.PlatformGrok:
 			result, err = h.openAIGatewayService.ForwardAsClaudeMessages(c.Request.Context(), c, account, body)
 		default:
 			result, err = h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
@@ -579,8 +586,13 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		platform = apiKey.Group.Platform
 	}
 
-	// Get available models from account configurations (without platform filter)
-	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, "")
+	// Grok shares the OpenAI-compatible endpoint but has a separate model
+	// catalog. Preserve the historical mixed OpenAI/Kiro list for other groups.
+	modelPlatform := ""
+	if platform == service.PlatformGrok {
+		modelPlatform = platform
+	}
+	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, modelPlatform)
 
 	if len(availableModels) > 0 {
 		// Build model list from whitelist
@@ -601,11 +613,16 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	// Fallback to default models
-	if platform == "openai" {
+	if platform == service.PlatformOpenAI {
 		c.JSON(http.StatusOK, gin.H{
 			"object": "list",
 			"data":   openai.DefaultModels,
 		})
+		return
+	}
+
+	if platform == service.PlatformGrok {
+		c.JSON(http.StatusOK, gin.H{"object": "list", "data": xai.DefaultModels()})
 		return
 	}
 
@@ -828,6 +845,16 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	_, ok = middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		return
+	}
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
+		c.JSON(http.StatusNotFound, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "not_found_error",
+				"message": "count_tokens is not supported for Grok groups",
+			},
+		})
 		return
 	}
 

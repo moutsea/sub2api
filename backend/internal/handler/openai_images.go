@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -45,14 +46,23 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		return
 	}
 
-	setOpsRequestContext(c, "", false, body)
-
 	parsed, err := h.gatewayService.ParseOpenAIImagesRequest(c, body)
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
+		if !parsed.ExplicitModel {
+			parsed.Model = "grok-imagine-image-quality"
+		} else if !xai.IsGrokImagineModel(parsed.Model) {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Grok image requests require a Grok Imagine model")
+			return
+		}
+	} else if xai.IsGrokImagineModel(parsed.Model) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Grok image models require a Grok group")
+		return
+	}
 	if parsed.Multipart {
 		setOpsRequestContext(c, parsed.Model, parsed.Stream, nil)
 	} else {
@@ -118,9 +128,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	lastFailoverStatus := 0
 	lastFailoverMsg := ""
 
+	selectionCtx := c.Request.Context()
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
+		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
+	}
+
 	for {
 		log.Printf("[OpenAI Images Handler] Selecting account: groupID=%v model=%s capability=%s", apiKey.GroupID, parsed.Model, parsed.RequiredCapability)
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, parsed.Model, failedAccountIDs)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, parsed.Model, failedAccountIDs)
 		if err != nil {
 			log.Printf("[OpenAI Images Handler] SelectAccount failed: %v", err)
 			if len(failedAccountIDs) == 0 {

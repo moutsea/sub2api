@@ -19,11 +19,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
@@ -36,6 +38,40 @@ const (
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
 )
+
+type openAIRequestPlatformContextKey struct{}
+
+// WithOpenAIRequestPlatform scopes OpenAI-compatible account selection to a
+// concrete channel. Grok uses this when it shares the OpenAI protocol routes;
+// leaving the value unset preserves the historical OpenAI/Kiro mixed pool.
+func WithOpenAIRequestPlatform(ctx context.Context, platform string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, openAIRequestPlatformContextKey{}, strings.TrimSpace(platform))
+}
+
+func openAIRequestPlatform(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	platform, _ := ctx.Value(openAIRequestPlatformContextKey{}).(string)
+	return strings.TrimSpace(platform)
+}
+
+func openAIAccountMatchesRequestPlatform(ctx context.Context, account *Account) bool {
+	if account == nil || !isOpenAICompatAccount(account) {
+		return false
+	}
+	platform := openAIRequestPlatform(ctx)
+	if platform != "" {
+		return account.Platform == platform
+	}
+	// The unscoped pool is the historical OpenAI/Kiro compatibility pool.
+	// Grok must be selected only for an explicitly Grok-scoped request; its
+	// Responses and quota semantics are not interchangeable with OpenAI/Kiro.
+	return account.Platform == PlatformOpenAI || account.Platform == PlatformKiro
+}
 
 // openaiSSEDataRe matches SSE data lines with optional whitespace after colon.
 // Some upstream APIs return non-standard "data:" without space (should be "data: ").
@@ -51,18 +87,33 @@ var openaiAllowedHeaders = map[string]bool{
 	"session_id":      true,
 }
 
+const grokMaxNonStreamingBodySize = 10 << 20
+
 func isOpenAICompatModelSupportedByAccount(account *Account, requestedModel string) bool {
+	if account == nil || !isOpenAICompatAccount(account) {
+		return false
+	}
+	if account.Platform == PlatformGrok && account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey {
+		return false
+	}
 	if requestedModel == "" {
 		return true
 	}
-	if account != nil && account.Platform == PlatformKiro {
+	if account.Platform == PlatformKiro {
 		return IsKiroModelSupportedByAccount(account, requestedModel)
 	}
-	return account != nil && account.IsModelSupported(requestedModel)
+	if account.Platform == PlatformGrok {
+		return isGrokModelSupportedByAccount(account, requestedModel)
+	}
+	return account.IsModelSupported(requestedModel)
 }
 
 func isOpenAICompatPlatform(platform string) bool {
-	return platform == PlatformOpenAI || platform == PlatformKiro
+	return platform == PlatformOpenAI || platform == PlatformKiro || platform == PlatformGrok
+}
+
+func isOpenAICompatAccount(account *Account) bool {
+	return account != nil && isOpenAICompatPlatform(account.Platform)
 }
 
 func (s *OpenAIGatewayService) listOpenAICompatAccountsForModelCheck(ctx context.Context, groupID *int64) ([]Account, error) {
@@ -76,7 +127,7 @@ func (s *OpenAIGatewayService) listOpenAICompatAccountsForModelCheck(ctx context
 		}
 		candidates := make([]Account, 0, len(all))
 		for i := range all {
-			if isOpenAICompatPlatform(all[i].Platform) {
+			if openAIAccountMatchesRequestPlatform(ctx, &all[i]) {
 				candidates = append(candidates, all[i])
 			}
 		}
@@ -84,7 +135,11 @@ func (s *OpenAIGatewayService) listOpenAICompatAccountsForModelCheck(ctx context
 	}
 
 	candidates := make([]Account, 0)
-	for _, platform := range []string{PlatformOpenAI, PlatformKiro} {
+	platforms := []string{PlatformOpenAI, PlatformKiro}
+	if requested := openAIRequestPlatform(ctx); requested == PlatformGrok {
+		platforms = []string{PlatformGrok}
+	}
+	for _, platform := range platforms {
 		accounts, err := s.accountRepo.ListByPlatform(ctx, platform)
 		if err != nil {
 			return nil, err
@@ -168,11 +223,14 @@ type OpenAIGatewayService struct {
 	httpUpstream        HTTPUpstream
 	deferredService     *DeferredService
 	openAITokenProvider *OpenAITokenProvider
+	grokTokenProvider   *GrokTokenProvider
 	toolCorrector       *CodexToolCorrector
 	tempAPIKeyRepo      TempAPIKeyRepository
 	usageCache          *UsageCache
 	apiKeyRepo          APIKeyRepository
 	apiKeyCacheInval    APIKeyAuthCacheInvalidator
+	grokSnapshotMu      sync.Mutex
+	grokSnapshotWrites  map[int64]grokSnapshotWriteState
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -191,6 +249,7 @@ func NewOpenAIGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
 	tempAPIKeyRepo TempAPIKeyRepository,
 	usageCache *UsageCache,
 	apiKeyRepo APIKeyRepository,
@@ -211,11 +270,13 @@ func NewOpenAIGatewayService(
 		httpUpstream:        httpUpstream,
 		deferredService:     deferredService,
 		openAITokenProvider: openAITokenProvider,
+		grokTokenProvider:   grokTokenProvider,
 		toolCorrector:       NewCodexToolCorrector(),
 		tempAPIKeyRepo:      tempAPIKeyRepo,
 		usageCache:          usageCache,
 		apiKeyRepo:          apiKeyRepo,
 		apiKeyCacheInval:    apiKeyCacheInval,
+		grokSnapshotWrites:  make(map[int64]grokSnapshotWriteState),
 	}
 }
 
@@ -341,8 +402,8 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
-				if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) && isOpenAICompatModelSupportedByAccount(account, requestedModel) &&
-					(s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
+				if err == nil && account.IsSchedulable() && openAIAccountMatchesRequestPlatform(ctx, account) && isOpenAICompatModelSupportedByAccount(account, requestedModel) &&
+					(account.Platform == PlatformGrok || s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
 					// Refresh sticky session TTL
 					_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
 					return account, nil
@@ -362,6 +423,9 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 	var quotaFallback *Account // 额度已满的最优候选，作为后备
 	for i := range accounts {
 		acc := &accounts[i]
+		if !openAIAccountMatchesRequestPlatform(ctx, acc) {
+			continue
+		}
 		if _, excluded := excludedIDs[acc.ID]; excluded {
 			continue
 		}
@@ -375,7 +439,7 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 			continue
 		}
 		// Check OpenAI quota availability — soft filter with fallback
-		if s.usageCache != nil && !s.usageCache.IsOpenAIQuotaAvailable(acc.ID) {
+		if acc.Platform != PlatformGrok && s.usageCache != nil && !s.usageCache.IsOpenAIQuotaAvailable(acc.ID) {
 			// Track best quota-exhausted account as fallback
 			if quotaFallback == nil || acc.Priority < quotaFallback.Priority {
 				quotaFallback = acc
@@ -500,9 +564,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash)
 		if err == nil && accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
-			if err == nil && account.IsSchedulable() && (account.IsOpenAI() || account.Platform == PlatformKiro) &&
+			if err == nil && account.IsSchedulable() && openAIAccountMatchesRequestPlatform(ctx, account) &&
 				isOpenAICompatModelSupportedByAccount(account, requestedModel) &&
-				(s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
+				(account.Platform == PlatformGrok || s.usageCache == nil || s.usageCache.IsOpenAIQuotaAvailable(accountID)) {
 				result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 				if err == nil && result.Acquired {
 					_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
@@ -534,6 +598,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	var quotaExhaustedFallback []*Account // 额度已满的账号作为后备
 	for i := range accounts {
 		acc := &accounts[i]
+		if !openAIAccountMatchesRequestPlatform(ctx, acc) {
+			continue
+		}
 		if isExcluded(acc.ID) {
 			continue
 		}
@@ -547,7 +614,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			continue
 		}
 		// 软过滤：额度已满的账号放入 fallback 列表
-		if s.usageCache != nil && !s.usageCache.IsOpenAIQuotaAvailable(acc.ID) {
+		if acc.Platform != PlatformGrok && s.usageCache != nil && !s.usageCache.IsOpenAIQuotaAvailable(acc.ID) {
 			quotaExhaustedFallback = append(quotaExhaustedFallback, acc)
 			continue
 		}
@@ -797,6 +864,9 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	// Query both OpenAI and Kiro platform accounts.
 	// Kiro accounts support OpenAI-compatible Chat Completions via format conversion.
 	platforms := []string{PlatformOpenAI, PlatformKiro}
+	if platform := openAIRequestPlatform(ctx); platform == PlatformGrok {
+		platforms = []string{PlatformGrok}
+	}
 
 	var allAccounts []Account
 	for _, platform := range platforms {
@@ -804,6 +874,9 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		var err error
 		if s.schedulerSnapshot != nil {
 			accounts, _, err = s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
+			if err == nil && len(accounts) == 0 && platform == PlatformGrok && s.accountRepo != nil {
+				accounts, err = s.listSchedulableGrokAccountsFromDB(ctx, groupID)
+			}
 		} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 			accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 		} else if groupID != nil {
@@ -817,6 +890,16 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		allAccounts = append(allAccounts, accounts...)
 	}
 	return allAccounts, nil
+}
+
+func (s *OpenAIGatewayService) listSchedulableGrokAccountsFromDB(ctx context.Context, groupID *int64) ([]Account, error) {
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+		return s.accountRepo.ListSchedulableByPlatform(ctx, PlatformGrok)
+	}
+	if groupID != nil && *groupID > 0 {
+		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformGrok)
+	}
+	return s.accountRepo.ListSchedulableByPlatform(ctx, PlatformGrok)
 }
 
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
@@ -849,6 +932,33 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 
 // GetAccessToken gets the access token for an OpenAI account
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
+	if account == nil {
+		return "", "", errors.New("account is nil")
+	}
+	if account.IsGrok() {
+		if account.Type == AccountTypeAPIKey {
+			apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+			if apiKey == "" {
+				return "", "", errors.New("api_key not found in credentials")
+			}
+			return apiKey, "apikey", nil
+		}
+		if account.Type != AccountTypeOAuth {
+			return "", "", fmt.Errorf("unsupported Grok account type: %s", account.Type)
+		}
+		if s.grokTokenProvider != nil {
+			token, err := s.grokTokenProvider.GetAccessToken(ctx, account)
+			if err != nil {
+				return "", "", err
+			}
+			return token, "oauth", nil
+		}
+		token := strings.TrimSpace(account.GetGrokAccessToken())
+		if token == "" {
+			return "", "", errors.New("access_token not found in credentials")
+		}
+		return token, "oauth", nil
+	}
 	switch account.Type {
 	case AccountTypeOAuth:
 		// 使用 TokenProvider 获取缓存的 token
@@ -886,6 +996,9 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
+	if s == nil || resp == nil || resp.Body == nil || s.rateLimitService == nil {
+		return
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
@@ -903,6 +1016,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// Extract model and stream from parsed body
 	reqModel, _ := reqBody["model"].(string)
 	reqStream, _ := reqBody["stream"].(bool)
+	if account != nil && account.IsGrok() {
+		return s.forwardGrokResponses(ctx, c, account, body, reqModel, reqStream, startTime)
+	}
 	serviceTier := extractOpenAIServiceTier(reqBody)
 	promptCacheKey := ""
 	if v, ok := reqBody["prompt_cache_key"].(string); ok {
@@ -1054,29 +1170,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// Handle max_output_tokens based on platform and account type
-	if !isCodexCLI {
-		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
-			switch account.Platform {
-			case PlatformOpenAI:
-				// For OpenAI API Key, remove max_output_tokens (not supported)
-				// For OpenAI OAuth (Responses API), keep it (supported)
-				if account.Type == AccountTypeAPIKey {
-					delete(reqBody, "max_output_tokens")
-					bodyModified = true
-				}
-			case PlatformAnthropic:
-				// For Anthropic (Claude), convert to max_tokens
-				delete(reqBody, "max_output_tokens")
-				if _, hasMaxTokens := reqBody["max_tokens"]; !hasMaxTokens {
-					reqBody["max_tokens"] = maxOutputTokens
-				}
-				bodyModified = true
-			case PlatformGemini:
-				// For Gemini, remove (will be handled by Gemini-specific transform)
-				delete(reqBody, "max_output_tokens")
-				bodyModified = true
-			default:
-				// For unknown platforms, remove to be safe
+	if !isCodexCLI && account.Platform == PlatformOpenAI {
+		if _, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
+			// For OpenAI API Key, remove max_output_tokens (not supported).
+			// OAuth accounts use the Responses API and keep it.
+			if account.Type == AccountTypeAPIKey {
 				delete(reqBody, "max_output_tokens")
 				bodyModified = true
 			}
@@ -1108,7 +1206,12 @@ retryWithFallbackModel:
 	}
 
 	// Build upstream request
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
+	requestCtx, releaseRequestCtx := ctx, func() {}
+	if account.IsGrok() && !reqStream {
+		requestCtx, releaseRequestCtx = grokUpstreamContext(ctx, false)
+	}
+	defer releaseRequestCtx()
+	upstreamReq, err := s.buildUpstreamRequest(requestCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 	if err != nil {
 		return nil, err
 	}
@@ -1145,6 +1248,14 @@ retryWithFallbackModel:
 			},
 		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil || resp.Body == nil {
+		err := errors.New("upstream request returned an empty response")
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"type":    "upstream_error",
+			"message": "Upstream request failed",
+		}})
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1285,27 +1396,43 @@ retryWithFallbackModel:
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
 	// Determine target URL based on account type
 	var targetURL string
-	switch account.Type {
-	case AccountTypeOAuth:
-		// OAuth accounts use ChatGPT internal API
-		targetURL = chatgptCodexURL
-	case AccountTypeAPIKey:
-		// API Key accounts use Platform API or custom base URL
-		baseURL := account.GetOpenAIBaseURL()
-		if baseURL == "" {
-			targetURL = openaiPlatformAPIURL
-		} else {
-			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if account.IsGrok() {
+		baseURL := account.GetGrokBaseURL()
+		if s.cfg != nil {
+			normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
 				return nil, err
 			}
-			targetURL = validatedURL + "/responses"
+			baseURL = normalizedBaseURL
 		}
-	default:
-		targetURL = openaiPlatformAPIURL
+		targetURL = xai.BuildResponsesURL(baseURL)
+	} else {
+		switch account.Type {
+		case AccountTypeOAuth:
+			// OAuth accounts use ChatGPT internal API
+			targetURL = chatgptCodexURL
+		case AccountTypeAPIKey:
+			// API Key accounts use Platform API or custom base URL
+			baseURL := account.GetOpenAIBaseURL()
+			if baseURL == "" {
+				targetURL = openaiPlatformAPIURL
+			} else {
+				validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+				if err != nil {
+					return nil, err
+				}
+				targetURL = validatedURL + "/responses"
+			}
+		default:
+			targetURL = openaiPlatformAPIURL
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	requestCtx := ctx
+	if account.IsGrok() && isStream {
+		requestCtx, _ = detachUpstreamContext(ctx)
+	}
+	req, err := http.NewRequestWithContext(requestCtx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -1313,8 +1440,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// Set authentication header
 	req.Header.Set("authorization", "Bearer "+token)
 
-	// Set headers specific to OAuth accounts (ChatGPT internal API)
-	if account.Type == AccountTypeOAuth {
+	// Set headers specific to OpenAI OAuth accounts (ChatGPT internal API).
+	// Grok OAuth also uses OAuth credentials, but targets the public xAI API.
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
 		// Required: set Host for ChatGPT API (must use req.Host, not Header.Set)
 		req.Host = "chatgpt.com"
 		// Required: set chatgpt-account-id header
@@ -1323,17 +1451,35 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
 	}
+	if account.IsGrok() {
+		if isStream {
+			req.Header.Set("accept", "text/event-stream")
+		} else {
+			req.Header.Set("accept", "application/json")
+		}
+		if account.IsGrokOAuth() {
+			xai.ApplyCLIProxyHeaders(req)
+		}
+	}
 
 	// Whitelist passthrough headers
-	for key, values := range c.Request.Header {
-		lowerKey := strings.ToLower(key)
-		if openaiAllowedHeaders[lowerKey] {
-			for _, v := range values {
-				req.Header.Add(key, v)
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			lowerKey := strings.ToLower(key)
+			if account.IsGrokOAuth() && lowerKey == "user-agent" {
+				continue
+			}
+			if account.IsGrok() && (lowerKey == "session_id" || lowerKey == "conversation_id") {
+				continue
+			}
+			if openaiAllowedHeaders[lowerKey] {
+				for _, v := range values {
+					req.Header.Add(key, v)
+				}
 			}
 		}
 	}
-	if account.Type == AccountTypeOAuth {
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		if isCodexCLI {
 			req.Header.Set("originator", "codex_cli_rs")
@@ -1347,9 +1493,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		}
 	}
 
-	// Apply custom User-Agent if configured
+	// Apply custom User-Agent if configured. Grok OAuth must keep its CLI
+	// identity headers final; forwarding a client/configured UA can make the xAI
+	// CLI gateway reject an otherwise valid OAuth request.
 	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
+	if customUA != "" && !account.IsGrokOAuth() {
 		req.Header.Set("user-agent", customUA)
 	}
 
@@ -1358,6 +1506,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		req.Header.Set("content-type", "application/json")
 	}
 	account.ApplyHeaderOverrides(req.Header)
+	if account.IsGrokOAuth() {
+		xai.ApplyCLIProxyHeaders(req)
+	}
 
 	return req, nil
 }
@@ -1584,7 +1735,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	defer close(done)
 
 	streamInterval := time.Duration(0)
-	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+	configuredStreamInterval := 0
+	if s.cfg != nil {
+		configuredStreamInterval = s.cfg.Gateway.StreamDataIntervalTimeout
+	}
+	streamInterval = resolveGrokStreamIdleTimeout(configuredStreamInterval, account)
+	if streamInterval == 0 && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
 		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
 	// 仅监控上游数据间隔超时，不被下游写入阻塞影响
@@ -1627,30 +1783,60 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	responseModel := clientVisibleOpenAIModel(originalModel, mappedModel)
+	currentEventType := ""
 	processLine := func(line string) error {
 		lastDataAt = time.Now()
+		trimmedLine := strings.TrimSpace(line)
+		if account != nil && account.IsGrok() && strings.HasPrefix(trimmedLine, "event:") {
+			currentEventType = strings.TrimSpace(strings.TrimPrefix(trimmedLine, "event:"))
+			return nil
+		}
 
 		if openaiSSEDataRe.MatchString(line) {
 			line = s.sanitizeOpenAISSELine(line, mappedModel, responseModel, injectedInstructions)
 			data := openaiSSEDataRe.ReplaceAllString(line, "")
-
-			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEData(data); corrected {
-				data = correctedData
-				line = "data: " + correctedData
+			if account != nil && account.IsGrok() && currentEventType != "" && data != "" && data != "[DONE]" {
+				var payload map[string]any
+				if json.Unmarshal([]byte(data), &payload) == nil {
+					if payloadType, _ := payload["type"].(string); strings.TrimSpace(payloadType) == "" {
+						payload["type"] = currentEventType
+						if encoded, err := json.Marshal(payload); err == nil {
+							data = string(encoded)
+							line = "data: " + data
+						}
+					}
+				}
 			}
-
-			if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
-				sendErrorEvent("write_failed")
-				return err
+			currentEventType = ""
+			payloads := [][]byte{[]byte(data)}
+			if account != nil && account.IsGrok() {
+				var restoreErr error
+				payloads, restoreErr = restoreGrokResponsesClientToolStreamPayload(c, []byte(data))
+				if restoreErr != nil {
+					return restoreErr
+				}
 			}
-			flusher.Flush()
+			for _, payload := range payloads {
+				if len(payload) == 0 {
+					continue
+				}
+				outputData := string(payload)
+				if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEData(outputData); corrected {
+					outputData = correctedData
+				}
+				if _, err := fmt.Fprintf(w, "data: %s\n", outputData); err != nil {
+					sendErrorEvent("write_failed")
+					return err
+				}
+				flusher.Flush()
 
-			if firstTokenMs == nil && data != "" && data != "[DONE]" {
-				ms := int(time.Since(startTime).Milliseconds())
-				firstTokenMs = &ms
+				if firstTokenMs == nil && outputData != "" && outputData != "[DONE]" {
+					ms := int(time.Since(startTime).Milliseconds())
+					firstTokenMs = &ms
+				}
+				imageCounter.AddSSEData([]byte(outputData))
+				s.parseSSEUsage(outputData, usage, account != nil && account.IsGrok())
 			}
-			imageCounter.AddSSEData([]byte(data))
-			s.parseSSEUsage(data, usage)
 			return nil
 		}
 
@@ -1671,6 +1857,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
+			if account != nil && account.IsGrok() {
+				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, grokStreamIdleFailoverError(account, streamInterval)
+			}
 			return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, preErr
 		case preErr != nil:
 			if errors.Is(preErr, bufio.ErrTooLong) {
@@ -1730,6 +1919,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
+			if account != nil && account.IsGrok() {
+				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, grokStreamIdleFailoverError(account, streamInterval)
+			}
 			return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
@@ -1811,16 +2003,16 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 	return body
 }
 
-func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
-	s.parseSSEUsageBytes([]byte(data), usage)
+func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage, independentReasoning ...bool) {
+	s.parseSSEUsageBytes([]byte(data), usage, independentReasoning...)
 }
 
-func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage) {
+func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage, independentReasoning ...bool) {
 	if usage == nil || len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 		return
 	}
 
-	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data, independentReasoning...); ok {
 		usage.InputTokens = parsedUsage.InputTokens
 		usage.OutputTokens = parsedUsage.OutputTokens
 		usage.CacheCreationInputTokens = parsedUsage.CacheCreationInputTokens
@@ -1835,19 +2027,31 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel, injectedInstructions string) (*OpenAIUsage, error) {
-	body, err := io.ReadAll(resp.Body)
+	reader := io.Reader(resp.Body)
+	if account != nil && account.IsGrok() {
+		reader = io.LimitReader(resp.Body, grokMaxNonStreamingBodySize+1)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
+	if account != nil && account.IsGrok() && len(body) > grokMaxNonStreamingBodySize {
+		return nil, fmt.Errorf("Grok non-streaming response exceeds %d bytes", grokMaxNonStreamingBodySize)
+	}
 
-	if account.Type == AccountTypeOAuth {
+	if account != nil && (account.Type == AccountTypeOAuth || account.IsGrok()) {
 		bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
 		if isEventStreamResponse(resp.Header) || bodyLooksLikeSSE {
 			return s.handleOAuthSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel, injectedInstructions)
 		}
 	}
+	if account != nil && account.IsGrok() {
+		if restored, restoreErr := restoreGrokResponsesClientToolPayload(c, body); restoreErr == nil {
+			body = restored
+		}
+	}
 
-	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
+	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body, account != nil && account.IsGrok())
 	if !usageOK {
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
@@ -1862,7 +2066,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	body = s.replaceModelInResponseBody(body, mappedModel, responseModel)
 	applyOpenAIImageOutputAccountingFromJSON(usage, body)
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.cfg != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	}
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -1897,7 +2103,12 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(ctx context.Context, resp *h
 
 	usage := &OpenAIUsage{}
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if account != nil && account.IsGrok() {
+			if restored, restoreErr := restoreGrokResponsesClientToolPayload(c, finalResponse); restoreErr == nil {
+				finalResponse = restored
+			}
+		}
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse, account != nil && account.IsGrok()); parsed {
 			*usage = parsedUsage
 		}
 		if serviceTier, present := extractOpenAIServiceTierFromJSON(finalResponse); present {
@@ -1910,12 +2121,14 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(ctx context.Context, resp *h
 		body = s.correctToolCallsInResponseBody(body)
 		applyOpenAIImageOutputAccountingFromJSON(usage, body)
 	} else {
-		usage = s.parseSSEUsageFromBody(bodyText)
+		usage = s.parseSSEUsageFromBody(bodyText, account != nil && account.IsGrok())
 		bodyText = s.sanitizeOpenAISSEBody(bodyText, mappedModel, clientVisibleOpenAIModel(originalModel, mappedModel), injectedInstructions)
 		body = []byte(bodyText)
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.cfg != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	}
 
 	contentType := "application/json; charset=utf-8"
 	if !ok {
@@ -2053,12 +2266,12 @@ func (s *OpenAIGatewayService) stripInjectedInstructionsFromResponseBody(body []
 	return newBody
 }
 
-func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
+func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string, independentReasoning ...bool) *OpenAIUsage {
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	forEachOpenAISSEDataPayload(body, func(data []byte) {
 		imageCounter.AddSSEData(data)
-		s.parseSSEUsageBytes(data, usage)
+		s.parseSSEUsageBytes(data, usage, independentReasoning...)
 	})
 	applyOpenAIImageOutputAccounting(usage, imageCounter)
 	return usage
@@ -2733,9 +2946,16 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 	serviceTier := extractOpenAIServiceTier(reqBody)
 	originalModel := reqModel
 	bodyModified := false
+	grokCacheKey := ""
 
 	// Model mapping only
 	mappedModel := account.GetMappedModel(reqModel)
+	if account.IsGrok() {
+		mappedModel = resolveGrokRequestModel(account, reqModel)
+		if err := validateGrokTextModel(c, mappedModel); err != nil {
+			return nil, err
+		}
+	}
 	if mappedModel != reqModel {
 		log.Printf("[OpenAI CC] Model mapping applied: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
 		reqBody["model"] = mappedModel
@@ -2746,6 +2966,43 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 	for _, unsupportedField := range []string{"context_management"} {
 		if _, exists := reqBody[unsupportedField]; exists {
 			delete(reqBody, unsupportedField)
+			bodyModified = true
+		}
+	}
+
+	if account.IsGrok() {
+		// xAI only returns the terminal usage chunk when requested explicitly.
+		// Always enable it for streamed API-key requests so billing does not
+		// silently record zero tokens for otherwise valid responses.
+		if reqStream {
+			streamOptions, ok := reqBody["stream_options"].(map[string]any)
+			if !ok || streamOptions == nil {
+				streamOptions = make(map[string]any)
+				reqBody["stream_options"] = streamOptions
+			}
+			if includeUsage, ok := streamOptions["include_usage"].(bool); !ok || !includeUsage {
+				streamOptions["include_usage"] = true
+				bodyModified = true
+			}
+		}
+		if normalizeGrokChatReasoning(reqBody, mappedModel) {
+			bodyModified = true
+		}
+		cacheBody, err := applyGrokPromptCacheKey(body, c, body, mappedModel)
+		if err != nil {
+			return nil, fmt.Errorf("apply Grok prompt cache key: %w", err)
+		}
+		var cacheRequest map[string]any
+		if err := json.Unmarshal(cacheBody, &cacheRequest); err != nil {
+			return nil, fmt.Errorf("parse Grok cache request: %w", err)
+		}
+		if apiKey := getAPIKeyFromGinContext(c); apiKey != nil && apiKey.ID > 0 {
+			if cacheKey, ok := cacheRequest["prompt_cache_key"].(string); ok {
+				grokCacheKey = strings.TrimSpace(cacheKey)
+			}
+		}
+		if _, exists := reqBody["prompt_cache_key"]; exists {
+			delete(reqBody, "prompt_cache_key")
 			bodyModified = true
 		}
 	}
@@ -2763,7 +3020,12 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		return nil, err
 	}
 
-	upstreamReq, err := s.buildChatCompletionsRequest(ctx, c, account, body, token)
+	requestCtx, releaseRequestCtx := ctx, func() {}
+	if account.IsGrok() && !reqStream {
+		requestCtx, releaseRequestCtx = grokUpstreamContext(ctx, false)
+	}
+	defer releaseRequestCtx()
+	upstreamReq, err := s.buildChatCompletionsRequest(requestCtx, c, account, body, token, grokCacheKey)
 	if err != nil {
 		return nil, err
 	}
@@ -2777,6 +3039,9 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		c.Set(OpsUpstreamRequestBodyKey, string(body))
 	}
 
+	if account.IsGrok() {
+		s.applyGrokRequestJitter(ctx)
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -2797,10 +3062,29 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
+	if resp == nil || resp.Body == nil {
+		err := errors.New("upstream request returned an empty response")
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"type":    "upstream_error",
+			"message": "Upstream request failed",
+		}})
+		return nil, err
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if account.IsGrok() {
+			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
+				if s.rateLimitService != nil {
+					s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				}
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))}
+			}
+		} else if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -2835,6 +3119,13 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 	needModelReplace := originalModel != mappedModel
 
 	if reqStream {
+		if account.IsGrok() {
+			maxLineSize := defaultMaxLineSize
+			if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+				maxLineSize = s.cfg.Gateway.MaxLineSize
+			}
+			resp.Body = newGrokResponsesPingFilterBody(resp.Body, account, maxLineSize)
+		}
 		streamResult, err := s.handleCCStreamingResponse(resp, c, account, startTime, needModelReplace, mappedModel, originalModel)
 		if err != nil {
 			return nil, err
@@ -2842,21 +3133,29 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
 	} else {
-		usage, err = s.handleCCNonStreamingResponse(resp, c, needModelReplace, mappedModel, originalModel)
+		usage, err = s.handleCCNonStreamingResponse(resp, c, account, needModelReplace, mappedModel, originalModel)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	// Check rate limit headers for API Key accounts
-	if account.Type == AccountTypeAPIKey {
+	// Check OpenAI rate-limit headers only for native OpenAI API-key accounts.
+	// Grok uses xAI quota headers and must not populate the OpenAI quota cache.
+	if account.IsOpenAI() && account.Type == AccountTypeAPIKey {
 		s.checkOpenAIRateLimitHeaders(account.ID, resp.Header)
+	}
+	if account.IsGrok() {
+		s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+	}
+	resultModel := originalModel
+	if account.IsGrok() {
+		resultModel = mappedModel
 	}
 
 	return &OpenAIForwardResult{
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        *usage,
-		Model:        originalModel,
+		Model:        resultModel,
 		ServiceTier:  resolvedServiceTier(usage, serviceTier),
 		Stream:       reqStream,
 		Duration:     time.Since(startTime),
@@ -2864,45 +3163,73 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 	}, nil
 }
 
-func (s *OpenAIGatewayService) buildChatCompletionsRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string) (*http.Request, error) {
+func (s *OpenAIGatewayService) buildChatCompletionsRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, grokCacheKeys ...string) (*http.Request, error) {
 	var targetURL string
-	switch account.Type {
-	case AccountTypeOAuth:
-		// OAuth accounts use ChatGPT internal API (same as native path)
-		targetURL = chatgptCodexURL
-	case AccountTypeAPIKey:
-		baseURL := account.GetCredential("base_url")
-		if baseURL == "" {
-			targetURL = "https://api.openai.com/v1/chat/completions"
-		} else {
-			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if account.IsGrok() {
+		baseURL := account.GetGrokBaseURL()
+		if s.cfg != nil {
+			normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
 				return nil, err
 			}
-			targetURL = validatedURL + "/chat/completions"
+			baseURL = normalizedBaseURL
 		}
-	default:
-		targetURL = "https://api.openai.com/v1/chat/completions"
+		targetURL = xai.BuildChatCompletionsURL(baseURL)
+	} else {
+		switch account.Type {
+		case AccountTypeOAuth:
+			// OAuth accounts use ChatGPT internal API (same as native path)
+			targetURL = chatgptCodexURL
+		case AccountTypeAPIKey:
+			baseURL := account.GetCredential("base_url")
+			if baseURL == "" {
+				targetURL = "https://api.openai.com/v1/chat/completions"
+			} else {
+				validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+				if err != nil {
+					return nil, err
+				}
+				targetURL = validatedURL + "/chat/completions"
+			}
+		default:
+			targetURL = "https://api.openai.com/v1/chat/completions"
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	requestCtx := ctx
+	streamRequest := false
+	var streamBody struct {
+		Stream bool `json:"stream"`
+	}
+	if json.Unmarshal(body, &streamBody) == nil {
+		streamRequest = streamBody.Stream
+	}
+	if account.IsGrok() && streamRequest {
+		requestCtx, _ = detachUpstreamContext(ctx)
+	}
+	req, err := http.NewRequestWithContext(requestCtx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	for key, values := range c.Request.Header {
-		lowerKey := strings.ToLower(key)
-		if openaiAllowedHeaders[lowerKey] {
-			for _, v := range values {
-				req.Header.Add(key, v)
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			lowerKey := strings.ToLower(key)
+			if account.IsGrok() && (lowerKey == "session_id" || lowerKey == "conversation_id") {
+				continue
+			}
+			if openaiAllowedHeaders[lowerKey] {
+				for _, v := range values {
+					req.Header.Add(key, v)
+				}
 			}
 		}
 	}
 
 	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
+	if customUA != "" && !account.IsGrokOAuth() {
 		req.Header.Set("User-Agent", customUA)
 	}
 
@@ -2910,6 +3237,12 @@ func (s *OpenAIGatewayService) buildChatCompletionsRequest(ctx context.Context, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	account.ApplyHeaderOverrides(req.Header)
+	if account.IsGrokOAuth() {
+		xai.ApplyCLIProxyHeaders(req)
+	}
+	if account.IsGrok() && len(grokCacheKeys) > 0 {
+		applyGrokCacheHeaders(req.Header, grokCacheKeys[0])
+	}
 
 	return req, nil
 }
@@ -2970,7 +3303,12 @@ func (s *OpenAIGatewayService) handleCCStreamingResponse(resp *http.Response, c 
 	defer close(done)
 
 	streamInterval := time.Duration(0)
-	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+	configuredStreamInterval := 0
+	if s.cfg != nil {
+		configuredStreamInterval = s.cfg.Gateway.StreamDataIntervalTimeout
+	}
+	streamInterval = resolveGrokStreamIdleTimeout(configuredStreamInterval, account)
+	if streamInterval == 0 && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
 		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
 	var intervalTicker *time.Ticker
@@ -3028,7 +3366,7 @@ func (s *OpenAIGatewayService) handleCCStreamingResponse(resp *http.Response, c 
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseCCUsage(data, usage)
+			s.parseCCUsage(data, usage, account != nil && account.IsGrok())
 			return nil
 		}
 
@@ -3049,6 +3387,9 @@ func (s *OpenAIGatewayService) handleCCStreamingResponse(resp *http.Response, c 
 				s.rateLimitService.HandleStreamTimeout(c.Request.Context(), account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
+			if account != nil && account.IsGrok() {
+				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, grokStreamIdleFailoverError(account, streamInterval)
+			}
 			return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, preErr
 		case preErr != nil:
 			if errors.Is(preErr, bufio.ErrTooLong) {
@@ -3107,6 +3448,9 @@ func (s *OpenAIGatewayService) handleCCStreamingResponse(resp *http.Response, c 
 				s.rateLimitService.HandleStreamTimeout(c.Request.Context(), account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
+			if account != nil && account.IsGrok() {
+				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, grokStreamIdleFailoverError(account, streamInterval)
+			}
 			return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
@@ -3121,14 +3465,21 @@ func (s *OpenAIGatewayService) handleCCStreamingResponse(resp *http.Response, c 
 	}
 }
 
-func (s *OpenAIGatewayService) handleCCNonStreamingResponse(resp *http.Response, c *gin.Context, needModelReplace bool, mappedModel, originalModel string) (*OpenAIUsage, error) {
-	body, err := io.ReadAll(resp.Body)
+func (s *OpenAIGatewayService) handleCCNonStreamingResponse(resp *http.Response, c *gin.Context, account *Account, needModelReplace bool, mappedModel, originalModel string) (*OpenAIUsage, error) {
+	reader := io.Reader(resp.Body)
+	if account != nil && account.IsGrok() {
+		reader = io.LimitReader(resp.Body, grokMaxNonStreamingBodySize+1)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
+	if account != nil && account.IsGrok() && len(body) > grokMaxNonStreamingBodySize {
+		return nil, fmt.Errorf("Grok non-streaming response exceeds %d bytes", grokMaxNonStreamingBodySize)
+	}
 
 	usage := &OpenAIUsage{}
-	s.parseCCUsage(string(body), usage)
+	s.parseCCUsage(string(body), usage, account != nil && account.IsGrok())
 
 	if needModelReplace {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
@@ -3151,8 +3502,12 @@ func (s *OpenAIGatewayService) handleCCNonStreamingResponse(resp *http.Response,
 
 // parseCCUsage parses Chat Completions usage from a JSON string into OpenAIUsage.
 // Works for both streaming (last chunk with usage) and non-streaming responses.
-func (s *OpenAIGatewayService) parseCCUsage(data string, usage *OpenAIUsage) {
+func (s *OpenAIGatewayService) parseCCUsage(data string, usage *OpenAIUsage, independentReasoning ...bool) {
 	if data == "" || data == "[DONE]" {
+		return
+	}
+	if parsed, ok := extractOpenAIUsageFromJSONBytes([]byte(data), independentReasoning...); ok {
+		*usage = parsed
 		return
 	}
 	var resp struct {
@@ -3188,20 +3543,74 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 	modelFallbackAttempted := false // OAuth 模型回退标记
 	injectedInstructions := ""
 
-	// Convert CC request to Responses API format
+	// Convert CC request to Responses API format. Some Grok-compatible clients
+	// send a Responses-shaped body through this endpoint; preserve that body
+	// instead of dropping its input field during CC conversion.
 	responsesBody := convertCCRequestToResponses(ccReqBody)
+	if account.IsGrok() {
+		if _, hasInput := ccReqBody["input"]; hasInput {
+			responsesBody = make(map[string]any, len(ccReqBody))
+			for key, value := range ccReqBody {
+				responsesBody[key] = value
+			}
+		}
+	}
+	if account.IsGrok() {
+		// Preserve the client's stream preference. xAI Responses supports both
+		// JSON and SSE; forcing SSE breaks non-streaming Chat Completions callers.
+		responsesBody["stream"] = wantStream
+		responsesBody["store"] = false
+	}
 	serviceTier := extractOpenAIServiceTier(responsesBody)
 
 	// Apply model mapping
 	mappedModel := account.GetMappedModel(originalModel)
+	if account.IsGrok() {
+		mappedModel = resolveGrokRequestModel(account, originalModel)
+		if err := validateGrokTextModel(c, mappedModel); err != nil {
+			return nil, err
+		}
+	}
 	if mappedModel != originalModel {
 		log.Printf("[OpenAI CC→Responses] Model mapping applied: %s -> %s (account: %s)", originalModel, mappedModel, account.Name)
 		responsesBody["model"] = mappedModel
 	}
+	if account.IsGrok() {
+		// The generic CC→Responses converter intentionally copies only fields
+		// shared by OpenAI Responses. Preserve Grok's optional reasoning effort
+		// before applying xAI-specific capability normalization.
+		if value, exists := ccReqBody["reasoning_effort"]; exists {
+			responsesBody["reasoning_effort"] = value
+		} else if value, exists := ccReqBody["reasoningEffort"]; exists {
+			responsesBody["reasoningEffort"] = value
+		} else if value, exists := ccReqBody["reasoning"]; exists {
+			responsesBody["reasoning"] = value
+		}
+		normalizeGrokResponsesReasoning(responsesBody, mappedModel)
+		encodedBody, err := json.Marshal(responsesBody)
+		if err != nil {
+			return nil, fmt.Errorf("serialize Grok Responses body: %w", err)
+		}
+		clearGrokResponsesClientToolMapping(c)
+		encodedBody, _, err = patchGrokResponsesBodyWithClientTools(encodedBody, mappedModel)
+		if err != nil {
+			return nil, fmt.Errorf("sanitize Grok Responses body: %w", err)
+		}
+		if err := json.Unmarshal(encodedBody, &responsesBody); err != nil {
+			return nil, fmt.Errorf("parse sanitized Grok Responses body: %w", err)
+		}
+		encodedBody, err = applyGrokPromptCacheKey(encodedBody, c, body, mappedModel)
+		if err != nil {
+			return nil, fmt.Errorf("apply Grok prompt cache key: %w", err)
+		}
+		if err := json.Unmarshal(encodedBody, &responsesBody); err != nil {
+			return nil, fmt.Errorf("parse Grok cache request: %w", err)
+		}
+	}
 
 	// Apply OAuth transform (store=false, stream=true, model normalization, tool normalization, instructions, input filtering)
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent"))
-	if !isCodexCLI {
+	if !isCodexCLI && account.Platform == PlatformOpenAI {
 		codexResult := applyCodexOAuthTransform(responsesBody)
 		if codexResult.NormalizedModel != "" {
 			mappedModel = codexResult.NormalizedModel
@@ -3209,7 +3618,7 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 		if codexResult.InjectedInstructions != "" {
 			injectedInstructions = codexResult.InjectedInstructions
 		}
-	} else {
+	} else if account.Platform == PlatformOpenAI {
 		// For Codex CLI, still need store=false and stream=true for OAuth
 		responsesBody["store"] = false
 		responsesBody["stream"] = true
@@ -3226,13 +3635,15 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 	}
 
 	// OAuth 账号走 ChatGPT internal API，该端点不再接受带 -codex 后缀的模型名。
-	if model, ok := responsesBody["model"].(string); ok {
-		stripped := stripCodexModelSuffix(model)
-		if stripped != model {
-			log.Printf("[OpenAI CC→Responses] Strip -codex suffix for OAuth: %s -> %s (account: %s, isCodexCLI: %v)",
-				model, stripped, account.Name, isCodexCLI)
-			responsesBody["model"] = stripped
-			mappedModel = stripped
+	if account.Platform == PlatformOpenAI {
+		if model, ok := responsesBody["model"].(string); ok {
+			stripped := stripCodexModelSuffix(model)
+			if stripped != model {
+				log.Printf("[OpenAI CC→Responses] Strip -codex suffix for OAuth: %s -> %s (account: %s, isCodexCLI: %v)",
+					model, stripped, account.Name, isCodexCLI)
+				responsesBody["model"] = stripped
+				mappedModel = stripped
+			}
 		}
 	}
 
@@ -3262,7 +3673,12 @@ retryWithCCFallbackModel:
 	if v, ok := responsesBody["prompt_cache_key"].(string); ok {
 		promptCacheKey = strings.TrimSpace(v)
 	}
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, convertedBody, token, true, promptCacheKey, isCodexCLI)
+	requestCtx, releaseRequestCtx := ctx, func() {}
+	if account.IsGrok() && !wantStream {
+		requestCtx, releaseRequestCtx = grokUpstreamContext(ctx, false)
+	}
+	defer releaseRequestCtx()
+	upstreamReq, err := s.buildUpstreamRequest(requestCtx, c, account, convertedBody, token, !account.IsGrok() || wantStream, promptCacheKey, isCodexCLI)
 	if err != nil {
 		return nil, err
 	}
@@ -3277,6 +3693,9 @@ retryWithCCFallbackModel:
 	}
 
 	// Send request
+	if account.IsGrok() {
+		s.applyGrokRequestJitter(ctx)
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -3297,10 +3716,31 @@ retryWithCCFallbackModel:
 		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
+	if resp == nil || resp.Body == nil {
+		err := errors.New("upstream request returned an empty response")
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"type":    "upstream_error",
+			"message": "Upstream request failed",
+		}})
+		return nil, err
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Handle error response
 	if resp.StatusCode >= 400 {
+		if account.IsGrok() {
+			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
+				if s.rateLimitService != nil {
+					s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				}
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, Message: sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))}
+			}
+			return s.handleErrorResponse(ctx, resp, c, account)
+		}
 		if resp.StatusCode == http.StatusBadRequest {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
@@ -3380,6 +3820,13 @@ retryWithCCFallbackModel:
 
 	responseModel := clientVisibleOpenAIModel(originalModel, mappedModel)
 	if wantStream {
+		if account.IsGrok() {
+			maxLineSize := defaultMaxLineSize
+			if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+				maxLineSize = s.cfg.Gateway.MaxLineSize
+			}
+			resp.Body = newGrokResponsesPingFilterBody(resp.Body, account, maxLineSize)
+		}
 		streamResult, err := s.handleCCViaResponsesStreamingResponse(ctx, resp, c, account, startTime, responseModel)
 		if err != nil {
 			return nil, err
@@ -3393,15 +3840,23 @@ retryWithCCFallbackModel:
 		}
 	}
 
-	// Extract and save Codex usage snapshot from response headers
-	if snapshot := extractCodexUsageHeaders(resp.Header); snapshot != nil {
+	// Persist the provider-specific quota snapshot from xAI. OpenAI OAuth
+	// accounts continue to use the Codex usage headers.
+	if account.IsGrok() {
+		s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+	} else if snapshot := extractCodexUsageHeaders(resp.Header); snapshot != nil {
 		s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+	}
+
+	resultModel := originalModel
+	if account.IsGrok() {
+		resultModel = mappedModel
 	}
 
 	return &OpenAIForwardResult{
 		RequestID:    resp.Header.Get("x-request-id"),
 		Usage:        *usage,
-		Model:        originalModel,
+		Model:        resultModel,
 		ServiceTier:  resolvedServiceTier(usage, serviceTier),
 		Stream:       wantStream,
 		Duration:     time.Since(startTime),
@@ -3431,8 +3886,9 @@ func (s *OpenAIGatewayService) handleCCViaResponsesStreamingResponse(ctx context
 		return nil, errors.New("streaming not supported")
 	}
 
-	converter := newResponsesToCCStreamConverter(originalModel)
+	converter := newResponsesToCCStreamConverter(originalModel, account != nil && account.IsGrok())
 	var firstTokenMs *int
+	var currentEventType string
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -3468,7 +3924,12 @@ func (s *OpenAIGatewayService) handleCCViaResponsesStreamingResponse(ctx context
 	defer close(done)
 
 	streamInterval := time.Duration(0)
-	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+	configuredStreamInterval := 0
+	if s.cfg != nil {
+		configuredStreamInterval = s.cfg.Gateway.StreamDataIntervalTimeout
+	}
+	streamInterval = resolveGrokStreamIdleTimeout(configuredStreamInterval, account)
+	if streamInterval == 0 && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
 		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
 	var intervalTicker *time.Ticker
@@ -3509,13 +3970,35 @@ func (s *OpenAIGatewayService) handleCCViaResponsesStreamingResponse(ctx context
 	processLine := func(line string) error {
 		lastDataAt = time.Now()
 
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "event:") {
+			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			return nil
+		}
 		if !openaiSSEDataRe.MatchString(line) {
 			return nil
 		}
 		data := openaiSSEDataRe.ReplaceAllString(line, "")
 		if data == "" || data == "[DONE]" {
+			currentEventType = ""
 			return nil
 		}
+
+		// Some Responses-compatible upstreams put the event name only in the
+		// SSE `event:` field and omit `type` from the JSON payload. The converter
+		// consumes the payload type, so restore it before conversion.
+		if currentEventType != "" {
+			var payload map[string]any
+			if json.Unmarshal([]byte(data), &payload) == nil {
+				if payloadType, _ := payload["type"].(string); strings.TrimSpace(payloadType) == "" {
+					payload["type"] = currentEventType
+					if encoded, err := json.Marshal(payload); err == nil {
+						data = string(encoded)
+					}
+				}
+			}
+		}
+		currentEventType = ""
 
 		if firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())
@@ -3542,6 +4025,9 @@ func (s *OpenAIGatewayService) handleCCViaResponsesStreamingResponse(ctx context
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
+			if account != nil && account.IsGrok() {
+				return &openaiStreamingResult{usage: converter.usage, firstTokenMs: firstTokenMs}, grokStreamIdleFailoverError(account, streamInterval)
+			}
 			return &openaiStreamingResult{usage: converter.usage, firstTokenMs: firstTokenMs}, preErr
 		case preErr != nil:
 			if errors.Is(preErr, bufio.ErrTooLong) {
@@ -3600,6 +4086,9 @@ func (s *OpenAIGatewayService) handleCCViaResponsesStreamingResponse(ctx context
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
+			if account != nil && account.IsGrok() {
+				return &openaiStreamingResult{usage: converter.usage, firstTokenMs: firstTokenMs}, grokStreamIdleFailoverError(account, streamInterval)
+			}
 			return &openaiStreamingResult{usage: converter.usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
@@ -3617,9 +4106,16 @@ func (s *OpenAIGatewayService) handleCCViaResponsesStreamingResponse(ctx context
 // handleCCViaResponsesNonStreamingResponse reads the full upstream Responses API SSE,
 // extracts the final response, converts it to CC format, and writes JSON to the client.
 func (s *OpenAIGatewayService) handleCCViaResponsesNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, responseModel, injectedInstructions string) (*OpenAIUsage, error) {
-	body, err := io.ReadAll(resp.Body)
+	reader := io.Reader(resp.Body)
+	if account != nil && account.IsGrok() {
+		reader = io.LimitReader(resp.Body, grokMaxNonStreamingBodySize+1)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
+	}
+	if account != nil && account.IsGrok() && len(body) > grokMaxNonStreamingBodySize {
+		return nil, fmt.Errorf("Grok non-streaming response exceeds %d bytes", grokMaxNonStreamingBodySize)
 	}
 
 	// The upstream always returns SSE for OAuth; extract the final response JSON.
@@ -3634,11 +4130,32 @@ func (s *OpenAIGatewayService) handleCCViaResponsesNonStreamingResponse(ctx cont
 			bodyText,
 		)
 	}
+
+	// Grok's Responses endpoint returns a regular JSON document when stream is
+	// disabled. Convert it directly instead of passing the Responses shape
+	// through to a Chat Completions client.
+	var responseObject map[string]any
+	if json.Unmarshal(body, &responseObject) == nil {
+		if _, hasOutput := responseObject["output"]; hasOutput {
+			ccBody, usage := convertResponsesJSONToCC(body, responseModel, resp.Header.Get("x-request-id"), account != nil && account.IsGrok())
+			if account != nil && account.IsGrok() {
+				if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(body, true); parsed {
+					usage = &parsedUsage
+				}
+			}
+			if s.cfg != nil {
+				responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+			}
+			c.Data(http.StatusOK, "application/json; charset=utf-8", ccBody)
+			return usage, nil
+		}
+	}
+
 	finalResponse, ok := extractCodexFinalResponse(bodyText, injectedInstructions)
 
 	if !ok {
 		// Fallback: try to parse usage from SSE body
-		usage := s.parseSSEUsageFromBody(bodyText)
+		usage := s.parseSSEUsageFromBody(bodyText, account != nil && account.IsGrok())
 		// Return the raw body as-is (best effort)
 		if s.cfg != nil {
 			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
@@ -3648,7 +4165,12 @@ func (s *OpenAIGatewayService) handleCCViaResponsesNonStreamingResponse(ctx cont
 	}
 
 	// Convert the Responses API JSON to CC format
-	ccBody, usage := convertResponsesJSONToCC(finalResponse, responseModel, resp.Header.Get("x-request-id"))
+	ccBody, usage := convertResponsesJSONToCC(finalResponse, responseModel, resp.Header.Get("x-request-id"), account != nil && account.IsGrok())
+	if account != nil && account.IsGrok() {
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse, true); parsed {
+			usage = &parsedUsage
+		}
+	}
 
 	if s.cfg != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)

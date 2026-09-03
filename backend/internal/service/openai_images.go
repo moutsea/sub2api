@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upscale"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -53,6 +54,7 @@ const (
 	openAIImageBackendUserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	openAIImageRequirementsDiff        = "0fffff"
 	openAIImageConversationPollTimeout = 180 * time.Second
+	openAIImageMaxUploadPartSize       = 20 << 20
 )
 
 var openAIRealImageFileIDRe = regexp.MustCompile(`\bfile_00000000[a-f0-9]{24}\b`)
@@ -92,6 +94,8 @@ type OpenAIImagesRequest struct {
 	NativeOptions      []string
 	RequiredCapability OpenAIImagesCapability
 	Uploads            []OpenAIImagesUpload
+	MaskImageURL       string
+	MaskUpload         *OpenAIImagesUpload
 	Upscale            string
 	ReferenceImages    []string
 	Body               []byte
@@ -209,7 +213,16 @@ func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
 	}
 	req.ReferenceImages = append(req.ReferenceImages, extractOpenAIImageJSONReferenceInputs(body)...)
 	req.ReferenceImages = dedupeStrings(req.ReferenceImages)
-	req.HasMask = gjson.GetBytes(body, "mask").Exists()
+	if mask := gjson.GetBytes(body, "mask"); mask.Exists() {
+		req.HasMask = true
+		if mask.Type == gjson.String {
+			req.MaskImageURL = strings.TrimSpace(mask.String())
+		} else if maskURL := strings.TrimSpace(mask.Get("image_url").String()); maskURL != "" {
+			req.MaskImageURL = maskURL
+		} else if maskURL := strings.TrimSpace(mask.Get("url").String()); maskURL != "" {
+			req.MaskImageURL = maskURL
+		}
+	}
 	for _, path := range []string{
 		"background",
 		"quality",
@@ -298,10 +311,13 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 			continue
 		}
 
-		data, err := io.ReadAll(part)
+		data, err := io.ReadAll(io.LimitReader(part, openAIImageMaxUploadPartSize+1))
 		_ = part.Close()
 		if err != nil {
 			return fmt.Errorf("read multipart field %s: %w", name, err)
+		}
+		if len(data) > openAIImageMaxUploadPartSize {
+			return fmt.Errorf("multipart field %s exceeds %d bytes", name, openAIImageMaxUploadPartSize)
 		}
 
 		fileName := strings.TrimSpace(part.FileName())
@@ -309,6 +325,11 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 			partContentType := strings.TrimSpace(part.Header.Get("Content-Type"))
 			if name == "mask" && len(data) > 0 {
 				req.HasMask = true
+				width, height := parseOpenAIImageDimensions(partContentType, data)
+				req.MaskUpload = &OpenAIImagesUpload{
+					FieldName: name, FileName: fileName, ContentType: partContentType,
+					Data: data, Width: width, Height: height,
+				}
 			}
 			if name == "image" || strings.HasPrefix(name, "image[") {
 				width, height := parseOpenAIImageDimensions(partContentType, data)
@@ -350,6 +371,9 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 				return fmt.Errorf("n must be a positive integer")
 			}
 			req.N = n
+		case "mask":
+			req.MaskImageURL = value
+			req.HasMask = value != ""
 		default:
 			if isOpenAINativeImageOption(name) && value != "" {
 				recordOpenAINativeImageOption(req, name)
@@ -671,6 +695,12 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	if account == nil {
+		return nil, fmt.Errorf("image account is required")
+	}
+	if account != nil && account.IsGrok() {
+		return s.forwardGrokImages(ctx, c, account, body, parsed)
+	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed)
@@ -987,7 +1017,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 		heartbeat.stop()
 		heartbeat = nil
 	}
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.cfg != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	}
 
 	if upscaleMode != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		body = applyUpscaleToB64Response(body, upscaleMode)
@@ -1100,7 +1132,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	c *gin.Context,
 	startTime time.Time,
 ) (OpenAIUsage, int, *int, error) {
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.cfg != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	}
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "text/event-stream"
@@ -1152,17 +1186,18 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	return usage, imageCount, firstTokenMs, nil
 }
 
-func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+func extractOpenAIUsageFromJSONBytes(body []byte, independentReasoning ...bool) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
-	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "usage")); ok {
+	includeReasoning := len(independentReasoning) > 0 && independentReasoning[0]
+	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "usage"), includeReasoning); ok {
 		return usage, true
 	}
-	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"))
+	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"), includeReasoning)
 }
 
-func openAIUsageFromGJSON(usage gjson.Result) (OpenAIUsage, bool) {
+func openAIUsageFromGJSON(usage gjson.Result, includeIndependentReasoning bool) (OpenAIUsage, bool) {
 	if !usage.Exists() || !usage.IsObject() {
 		return OpenAIUsage{}, false
 	}
@@ -1173,6 +1208,15 @@ func openAIUsageFromGJSON(usage gjson.Result) (OpenAIUsage, bool) {
 	outputTokens := usage.Get("output_tokens").Int()
 	if outputTokens == 0 {
 		outputTokens = usage.Get("completion_tokens").Int()
+	}
+	reasoningTokens := usage.Get("completion_tokens_details.reasoning_tokens").Int()
+	if reasoningTokens == 0 {
+		reasoningTokens = usage.Get("output_tokens_details.reasoning_tokens").Int()
+	}
+	if includeIndependentReasoning && reasoningTokens > 0 {
+		outputTokens = xai.IncludeIndependentReasoningTokens(
+			inputTokens, outputTokens, usage.Get("total_tokens").Int(), reasoningTokens,
+		)
 	}
 	cacheReadTokens := usage.Get("input_tokens_details.cached_tokens").Int()
 	if cacheReadTokens == 0 {

@@ -286,6 +286,31 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulable(t *testing.T)
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_SelectsUnmappedGrokAPIKey(t *testing.T) {
+	groupID := int64(1)
+	account := Account{
+		ID:          11,
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "grok-test-key"},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+	}
+	ctx := WithOpenAIRequestPlatform(context.Background(), PlatformGrok)
+	selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "grok-4.6", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.Account.ID != account.ID {
+		t.Fatalf("selection = %#v, want Grok account %d", selection, account.ID)
+	}
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurrencyService(t *testing.T) {
 	now := time.Now()
 	resetAt := now.Add(10 * time.Minute)
@@ -691,6 +716,47 @@ func TestOpenAIHandleCCViaResponsesNonStreamingResponse_RebuildsMissingOutput(t 
 	}
 }
 
+func TestOpenAIHandleCCViaResponsesNonStreamingResponse_ConvertsJSONResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	body := []byte(`{"id":"resp_grok","model":"grok-4.3","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":5}}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	usage, err := svc.handleCCViaResponsesNonStreamingResponse(context.Background(), resp, c, &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}, "grok", "")
+	if err != nil {
+		t.Fatalf("handleCCViaResponsesNonStreamingResponse error: %v", err)
+	}
+	if usage == nil || usage.InputTokens != 12 || usage.OutputTokens != 3 || usage.CacheReadInputTokens != 5 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal CC response: %v", err)
+	}
+	if _, ok := got["output"]; ok {
+		t.Fatalf("expected Responses output to be converted, got %v", got)
+	}
+	choices, _ := got["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("expected one choice, got %v", got["choices"])
+	}
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if content, _ := message["content"].(string); content != "Hello" {
+		t.Fatalf("expected message content Hello, got %q", content)
+	}
+}
+
 func TestOpenAIStreamingResponse_NormalizesSnapshotModelToStableAlias(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1057,6 +1123,31 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	}
 }
 
+func TestOpenAIBuildUpstreamRequestRejectsDisallowedGrokBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled:       true,
+			UpstreamHosts: []string{"api.x.ai"},
+		}},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	account := &Account{
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"base_url": "https://evil.example/v1"},
+	}
+
+	_, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte("{}"), "token", true, "", false)
+	if err == nil || !strings.Contains(err.Error(), "invalid base_url") {
+		t.Fatalf("expected disallowed Grok base_url error, got %v", err)
+	}
+}
+
 func TestOpenAIBuildUpstreamRequestAppliesAccountHeaderOverrides(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -1148,5 +1239,38 @@ func TestOpenAIValidateUpstreamBaseURLEnabledEnforcesAllowlist(t *testing.T) {
 	}
 	if _, err := svc.validateUpstreamBaseURL("https://evil.com"); err == nil {
 		t.Fatalf("expected non-allowlisted host to fail")
+	}
+}
+
+func TestHandleCCViaResponsesStreamingResponseUsesSSEEventTypeWhenPayloadOmitsType(t *testing.T) {
+	body := strings.Join([]string{
+		"event: response.created",
+		`data: {"response":{"id":"resp_event_only"}}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"delta":"hello"}`,
+		"",
+		"event: response.completed",
+		`data: {"response":{"usage":{"input_tokens":3,"output_tokens":2}}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	svc := &OpenAIGatewayService{}
+	result, err := svc.handleCCViaResponsesStreamingResponse(context.Background(), resp, c, &Account{Platform: PlatformGrok}, time.Now(), "grok-4.5")
+	if err != nil {
+		t.Fatalf("handleCCViaResponsesStreamingResponse returned error: %v", err)
+	}
+	if result.usage.InputTokens != 3 || result.usage.OutputTokens != 2 {
+		t.Fatalf("usage = %#v, want input=3 output=2", result.usage)
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"hello"`) {
+		t.Fatalf("event-only SSE payload was not converted: %s", recorder.Body.String())
 	}
 }

@@ -4,7 +4,60 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
+
+func positiveJSONInt(value any) (int, bool) {
+	var number int
+	switch value := value.(type) {
+	case float64:
+		number = int(value)
+		if float64(number) != value {
+			return 0, false
+		}
+	case float32:
+		number = int(value)
+		if float32(number) != value {
+			return 0, false
+		}
+	case int:
+		number = value
+	case int8:
+		number = int(value)
+	case int16:
+		number = int(value)
+	case int32:
+		number = int(value)
+	case int64:
+		number = int(value)
+	case uint:
+		number = int(value)
+	case uint8:
+		number = int(value)
+	case uint16:
+		number = int(value)
+	case uint32:
+		number = int(value)
+	case uint64:
+		if uint64(int(value)) != value {
+			return 0, false
+		}
+		number = int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, false
+		}
+		number = int(parsed)
+		if int64(number) != parsed {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	return number, number > 0
+}
 
 // convertCCRequestToResponses converts a Chat Completions request body to Responses API format.
 // Returns the converted body and the extracted original model name.
@@ -100,19 +153,90 @@ func convertCCRequestToResponses(ccReqBody map[string]any) map[string]any {
 		responsesBody["input"] = input
 	}
 
+	// Chat Completions uses max_tokens (or the newer max_completion_tokens),
+	// while Responses expects max_output_tokens.
+	maxTokens, hasMaxTokens := positiveJSONInt(ccReqBody["max_tokens"])
+	if maxCompletionTokens, ok := positiveJSONInt(ccReqBody["max_completion_tokens"]); ok {
+		maxTokens, hasMaxTokens = maxCompletionTokens, true
+	}
+	if hasMaxTokens {
+		responsesBody["max_output_tokens"] = maxTokens
+	}
+
 	// Copy model
 	if model, ok := ccReqBody["model"].(string); ok {
 		responsesBody["model"] = model
 	}
 
 	// Copy supported fields directly
-	for _, key := range []string{"temperature", "top_p", "tools", "tool_choice", "prompt_cache_key", "service_tier"} {
+	for _, key := range []string{"temperature", "top_p", "prompt_cache_key", "service_tier"} {
 		if v, ok := ccReqBody[key]; ok {
 			responsesBody[key] = v
 		}
 	}
+	if tools, ok := ccReqBody["tools"]; ok {
+		if converted := convertCCToolsToResponses(tools); converted != nil {
+			responsesBody["tools"] = converted
+		}
+	}
+	if toolChoice, ok := ccReqBody["tool_choice"]; ok {
+		if converted := convertCCToolChoiceToResponses(toolChoice); converted != nil {
+			responsesBody["tool_choice"] = converted
+		}
+	}
 
 	return responsesBody
+}
+
+func convertCCToolsToResponses(value any) []any {
+	tools, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	converted := make([]any, 0, len(tools))
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType != "function" {
+			converted = append(converted, tool)
+			continue
+		}
+		fn, _ := tool["function"].(map[string]any)
+		if fn == nil {
+			continue
+		}
+		responsesTool := map[string]any{"type": "function"}
+		for _, key := range []string{"name", "description", "parameters", "strict"} {
+			if v, exists := fn[key]; exists {
+				responsesTool[key] = v
+			}
+		}
+		converted = append(converted, responsesTool)
+	}
+	return converted
+}
+
+func convertCCToolChoiceToResponses(value any) any {
+	switch choice := value.(type) {
+	case string:
+		switch choice {
+		case "auto", "none", "required":
+			return choice
+		}
+	case map[string]any:
+		if choiceType, _ := choice["type"].(string); choiceType == "function" {
+			if fn, ok := choice["function"].(map[string]any); ok {
+				if name, ok := fn["name"].(string); ok && strings.TrimSpace(name) != "" {
+					return map[string]any{"type": "function", "name": name}
+				}
+			}
+		}
+		return choice
+	}
+	return nil
 }
 
 // extractContentText extracts plain text from CC content (string or array).
@@ -181,7 +305,7 @@ func convertCCContentToResponses(content any, role string) any {
 
 // convertResponsesJSONToCC converts a Responses API final JSON (from response.completed)
 // to Chat Completions format.
-func convertResponsesJSONToCC(responsesBody []byte, originalModel, requestID string) ([]byte, *OpenAIUsage) {
+func convertResponsesJSONToCC(responsesBody []byte, originalModel, requestID string, independentReasoning ...bool) ([]byte, *OpenAIUsage) {
 	var resp map[string]any
 	if err := json.Unmarshal(responsesBody, &resp); err != nil {
 		return responsesBody, nil
@@ -265,6 +389,7 @@ func convertResponsesJSONToCC(responsesBody []byte, originalModel, requestID str
 
 	// Build usage
 	usage := &OpenAIUsage{}
+	includeIndependentReasoning := len(independentReasoning) > 0 && independentReasoning[0]
 	ccUsage := map[string]any{
 		"prompt_tokens":     0,
 		"completion_tokens": 0,
@@ -273,6 +398,20 @@ func convertResponsesJSONToCC(responsesBody []byte, originalModel, requestID str
 	if respUsage, ok := resp["usage"].(map[string]any); ok {
 		inputTokens := jsonInt(respUsage["input_tokens"])
 		outputTokens := jsonInt(respUsage["output_tokens"])
+		if includeIndependentReasoning {
+			reasoningTokens := 0
+			if details, ok := respUsage["output_tokens_details"].(map[string]any); ok {
+				reasoningTokens = jsonInt(details["reasoning_tokens"])
+			}
+			if reasoningTokens == 0 {
+				if details, ok := respUsage["completion_tokens_details"].(map[string]any); ok {
+					reasoningTokens = jsonInt(details["reasoning_tokens"])
+				}
+			}
+			if reasoningTokens > 0 {
+				outputTokens = int(xai.IncludeIndependentReasoningTokens(int64(inputTokens), int64(outputTokens), int64(jsonInt(respUsage["total_tokens"])), int64(reasoningTokens)))
+			}
+		}
 		usage.InputTokens = inputTokens
 		usage.OutputTokens = outputTokens
 
@@ -320,18 +459,22 @@ func convertResponsesJSONToCC(responsesBody []byte, originalModel, requestID str
 // responsesToCCStreamConverter is a stateful converter that transforms
 // Responses API SSE events into Chat Completions SSE chunks.
 type responsesToCCStreamConverter struct {
-	responseID    string
-	originalModel string
-	toolCallIndex int
-	hasToolCalls  bool
-	usage         *OpenAIUsage
-	started       bool
+	responseID                  string
+	originalModel               string
+	toolCallIndex               int
+	hasToolCalls                bool
+	toolCallMap                 map[string]int
+	usage                       *OpenAIUsage
+	started                     bool
+	includeIndependentReasoning bool
 }
 
-func newResponsesToCCStreamConverter(originalModel string) *responsesToCCStreamConverter {
+func newResponsesToCCStreamConverter(originalModel string, independentReasoning ...bool) *responsesToCCStreamConverter {
 	return &responsesToCCStreamConverter{
-		originalModel: originalModel,
-		usage:         &OpenAIUsage{},
+		originalModel:               originalModel,
+		toolCallMap:                 make(map[string]int),
+		usage:                       &OpenAIUsage{},
+		includeIndependentReasoning: len(independentReasoning) > 0 && independentReasoning[0],
 	}
 }
 
@@ -388,6 +531,7 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 			return nil
 		}
 		callID, _ := item["call_id"].(string)
+		itemID, _ := item["id"].(string)
 		name, _ := item["name"].(string)
 
 		tc := map[string]any{
@@ -400,6 +544,12 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 			},
 		}
 		conv.hasToolCalls = true
+		if strings.TrimSpace(callID) != "" {
+			conv.toolCallMap[callID] = conv.toolCallIndex
+		}
+		if strings.TrimSpace(itemID) != "" {
+			conv.toolCallMap[itemID] = conv.toolCallIndex
+		}
 		conv.toolCallIndex++
 		return conv.makeChunks(map[string]any{
 			"tool_calls": []any{tc},
@@ -410,8 +560,17 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 		if delta == "" {
 			return nil
 		}
-		// Use the current tool call index - 1 (the last added tool call)
 		idx := conv.toolCallIndex - 1
+		if itemID, ok := event["item_id"].(string); ok {
+			if mapped, found := conv.toolCallMap[itemID]; found {
+				idx = mapped
+			}
+		}
+		if callID, ok := event["call_id"].(string); ok {
+			if mapped, found := conv.toolCallMap[callID]; found {
+				idx = mapped
+			}
+		}
 		if idx < 0 {
 			idx = 0
 		}
@@ -425,7 +584,7 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 			"tool_calls": []any{tc},
 		}, nil)
 
-	case "response.completed":
+	case "response.completed", "response.done":
 		// Extract usage from the completed response
 		if response, ok := event["response"].(map[string]any); ok {
 			if rawServiceTier, ok := response["service_tier"].(string); ok {
@@ -435,6 +594,20 @@ func (conv *responsesToCCStreamConverter) convertEvent(data string) []string {
 			if respUsage, ok := response["usage"].(map[string]any); ok {
 				conv.usage.InputTokens = jsonInt(respUsage["input_tokens"])
 				conv.usage.OutputTokens = jsonInt(respUsage["output_tokens"])
+				if conv.includeIndependentReasoning {
+					reasoningTokens := 0
+					if details, ok := respUsage["output_tokens_details"].(map[string]any); ok {
+						reasoningTokens = jsonInt(details["reasoning_tokens"])
+					}
+					if reasoningTokens == 0 {
+						if details, ok := respUsage["completion_tokens_details"].(map[string]any); ok {
+							reasoningTokens = jsonInt(details["reasoning_tokens"])
+						}
+					}
+					if reasoningTokens > 0 {
+						conv.usage.OutputTokens = int(xai.IncludeIndependentReasoningTokens(int64(conv.usage.InputTokens), int64(conv.usage.OutputTokens), int64(jsonInt(respUsage["total_tokens"])), int64(reasoningTokens)))
+					}
+				}
 				if details, ok := respUsage["input_tokens_details"].(map[string]any); ok {
 					conv.usage.CacheReadInputTokens = jsonInt(details["cached_tokens"])
 				}

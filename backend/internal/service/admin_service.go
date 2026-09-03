@@ -818,6 +818,12 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if input == nil {
+		return nil, errors.New("account input is required")
+	}
+	if err := validateAccountPlatformType(input.Platform, input.Type); err != nil {
+		return nil, err
+	}
 	// For Kiro accounts, check if refresh_token already exists (skip for apikey type)
 	if input.Platform == PlatformKiro {
 		authType, _ := input.Credentials["auth_type"].(string)
@@ -921,6 +927,14 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	return account, nil
 }
 
+func validateAccountPlatformType(platform, accountType string) error {
+	if strings.EqualFold(strings.TrimSpace(platform), PlatformGrok) &&
+		accountType != AccountTypeOAuth && accountType != AccountTypeAPIKey {
+		return fmt.Errorf("unsupported Grok account type: %s (only oauth and apikey are supported)", accountType)
+	}
+	return nil
+}
+
 // fetchKiroIdCProfileArn refreshes the IdC access token and fetches the real
 // profileArn via ListAvailableProfiles. It is best-effort: any failure returns
 // an empty string so the caller can fall back to the Builder ID default ARN.
@@ -980,9 +994,17 @@ func (s *adminServiceImpl) fetchKiroIdCProfileArn(ctx context.Context, input *Cr
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
+	if input == nil {
+		return nil, errors.New("account input is required")
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if input.Type != "" {
+		if err := validateAccountPlatformType(account.Platform, input.Type); err != nil {
+			return nil, err
+		}
 	}
 
 	if input.Name != "" {

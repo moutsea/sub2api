@@ -7,15 +7,15 @@ import (
 )
 
 type User struct {
-	ID            int64
-	Email         string
-	Username      string
-	Notes         string
-	PasswordHash  string
-	Role          string
-	Balance       float64
-	Concurrency   int
-	Status        string
+	ID                int64
+	Email             string
+	Username          string
+	Notes             string
+	PasswordHash      string
+	Role              string
+	Balance           float64
+	Concurrency       int
+	Status            string
 	AllowedGroups     []int64
 	AllowedGroupRates map[int64]*float64 // Per-group custom rate_multiplier overrides (groupID -> rate, nil = use group default)
 	TokenVersion      int64              // Incremented on password change to invalidate existing tokens

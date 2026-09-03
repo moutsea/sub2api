@@ -1120,6 +1120,47 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	return nil
 }
 
+// UpdateGrokUsageSnapshot persists provider quota telemetry without publishing
+// an account_changed scheduler event. The nested merge preserves dimensions
+// that are absent from a later response's headers.
+func (r *accountRepository) UpdateGrokUsageSnapshot(ctx context.Context, id int64, snapshot any) error {
+	if snapshot == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(
+		ctx,
+		`UPDATE accounts
+		 SET extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object(
+			 'grok_usage_snapshot',
+			 CASE
+				 WHEN jsonb_typeof(extra->'grok_usage_snapshot') = 'object'
+				 THEN extra->'grok_usage_snapshot' || $1::jsonb
+				 ELSE $1::jsonb
+			 END
+		 ), updated_at = NOW()
+		 WHERE id = $2 AND deleted_at IS NULL`,
+		payload, id,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	return nil
+}
+
 func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil

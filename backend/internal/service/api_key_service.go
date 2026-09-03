@@ -368,7 +368,12 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			if apiKey.IsQuotaExceeded() {
 				log.Printf("[QuotaDebug] source=cache api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
 					apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
-					func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+					func() float64 {
+						if apiKey.QuotaLimitUSD != nil {
+							return *apiKey.QuotaLimitUSD
+						}
+						return -1
+					}())
 			}
 			return apiKey, nil
 		}
@@ -389,7 +394,12 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			if apiKey.IsQuotaExceeded() {
 				log.Printf("[QuotaDebug] source=singleflight api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
 					apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
-					func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+					func() float64 {
+						if apiKey.QuotaLimitUSD != nil {
+							return *apiKey.QuotaLimitUSD
+						}
+						return -1
+					}())
 			}
 			return apiKey, nil
 		}
@@ -405,7 +415,12 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			if apiKey.IsQuotaExceeded() {
 				log.Printf("[QuotaDebug] source=db_fresh api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
 					apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
-					func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+					func() float64 {
+						if apiKey.QuotaLimitUSD != nil {
+							return *apiKey.QuotaLimitUSD
+						}
+						return -1
+					}())
 			}
 			return apiKey, nil
 		}
@@ -428,7 +443,12 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 	if apiKey.IsQuotaExceeded() {
 		log.Printf("[QuotaDebug] source=db_fallback api_key_id=%d used=%.6f limit_nil=%v limit=%.6f",
 			apiKey.ID, apiKey.QuotaUsedUSD, apiKey.QuotaLimitUSD == nil,
-			func() float64 { if apiKey.QuotaLimitUSD != nil { return *apiKey.QuotaLimitUSD }; return -1 }())
+			func() float64 {
+				if apiKey.QuotaLimitUSD != nil {
+					return *apiKey.QuotaLimitUSD
+				}
+				return -1
+			}())
 	}
 	return apiKey, nil
 }

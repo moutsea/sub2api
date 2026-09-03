@@ -546,6 +546,7 @@ export default {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',
         codexCli: 'Codex CLI',
+        grokCli: 'Grok CLI',
         opencode: 'OpenCode',
       },
       antigravity: {
@@ -559,6 +560,17 @@ export default {
         description: 'Add the following environment variables to your terminal profile or run directly in terminal to configure Gemini CLI access.',
         modelComment: 'If you have Gemini 3 access, you can use: gemini-3-pro-preview',
         note: 'These environment variables will be active in the current terminal session. For permanent configuration, add them to ~/.bashrc, ~/.zshrc, or the appropriate configuration file.',
+      },
+      grok: {
+        description: 'Configure Grok CLI with the OpenAI-compatible Responses API.',
+        claudeDescription: 'Configure Claude Code to use Grok through the Messages compatibility endpoint.',
+        codexDescription: 'Configure Codex CLI to use Grok through the Responses API.',
+        configTomlHint: 'Create the ~/.grok directory if it does not exist, then save this as config.toml.',
+        codexConfigTomlHint: 'Create the ~/.codex directory if it does not exist, then save this as config.toml.',
+        note: 'The Grok CLI configuration uses the Responses API and the selected API key.',
+        noteWindows: 'On Windows, create the .grok directory under your user profile and save config.toml there.',
+        claudeNote: 'These variables configure Claude Code to use the Grok Messages compatibility endpoint.',
+        codexNote: 'The API key is provided through SUB2API_API_KEY for the Codex provider configuration.',
       },
       opencode: {
         title: 'OpenCode Example',
@@ -1105,7 +1117,8 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
-        kiro: 'Kiro'
+        kiro: 'Kiro',
+        grok: 'Grok'
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -1285,7 +1298,8 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
-        kiro: 'Kiro'
+        kiro: 'Kiro',
+        grok: 'Grok'
       },
       types: {
         oauth: 'OAuth',
@@ -1294,6 +1308,7 @@ export default {
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
         antigravityOauth: 'Antigravity OAuth',
+        grokOauth: 'Grok OAuth',
         kiroRefreshToken: 'AWS CodeWhisperer Refresh Token'
       },
       status: {
@@ -1481,6 +1496,10 @@ export default {
           invalidValue: 'Header value contains invalid characters or is too long',
           tooManyEntries: 'No more than 64 headers are allowed'
         }
+      },
+      grok: {
+        baseUrlHint: 'Leave default for the official xAI API (https://api.x.ai/v1).',
+        apiKeyHint: 'Your xAI API key (starts with xai-).'
       },
       modelRestriction: 'Model Restriction (Optional)',
       modelWhitelist: 'Model Whitelist',
@@ -1707,6 +1726,25 @@ export default {
           failedToGenerateUrl: 'Failed to generate Antigravity auth URL',
           missingExchangeParams: 'Missing code, session ID, or state',
           failedToExchangeCode: 'Failed to exchange Antigravity auth code'
+        },
+        grok: {
+          title: 'Grok Account Authorization',
+          followSteps: 'Follow these steps to authorize your xAI/Grok account:',
+          step1GenerateUrl: 'Generate the xAI authorization URL',
+          generateAuthUrl: 'Generate Auth URL',
+          step2OpenUrl: 'Open the URL in your browser and complete authorization',
+          openUrlDesc: 'Open the authorization URL in a new tab, sign in to xAI, and authorize API access.',
+          importantNotice: 'When the browser reaches the local callback URL, copy the full URL or the code query parameter back here.',
+          step3EnterCode: 'Enter Authorization URL or Code',
+          authCodeDesc: 'After authorization, paste the callback URL or authorization code below.',
+          authCode: 'Authorization URL or Code',
+          authCodePlaceholder: 'Paste the callback URL or code value',
+          authCodeHint: 'Full callback URLs, query strings, and bare codes are accepted.',
+          failedToGenerateUrl: 'Failed to generate Grok auth URL',
+          missingExchangeParams: 'Missing authorization code, state, or OAuth session',
+          failedToExchangeCode: 'Failed to exchange Grok authorization code',
+          pleaseEnterRefreshToken: 'Please enter a refresh token',
+          failedToValidateRT: 'Failed to validate Grok refresh token'
         }
 	      },
       // Gemini specific (platform-wide)
@@ -1950,6 +1988,7 @@ export default {
       openaiAccount: 'OpenAI Account',
       geminiAccount: 'Gemini Account',
       antigravityAccount: 'Antigravity Account',
+      grokAccount: 'Grok Account',
       inputMethod: 'Input Method',
       reAuthorizedSuccess: 'Account re-authorized successfully',
       // Test Modal
@@ -2015,7 +2054,11 @@ export default {
         gemini3Pro: 'G3P',
         gemini3Flash: 'G3F',
         gemini3Image: 'G3I',
-        claude45: 'C4.5'
+        claude45: 'C4.5',
+        grokRequests: 'Req',
+        grokTokens: 'Tokens',
+        grokRetryAfter: 'Retry after {time}',
+        grokUnknown: 'Quota is shown after the first upstream response'
       },
       tier: {
         free: 'Free',

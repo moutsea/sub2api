@@ -59,31 +59,31 @@ type BatchUpdateRequest struct {
 
 // TempAPIKeyResponse represents the response for a temp API key
 type TempAPIKeyResponse struct {
-	ID                   int64   `json:"id"`
-	Key                  string  `json:"key"`
-	Name                 string  `json:"name"`
-	GroupID              int64   `json:"group_id"`
-	GroupName            string  `json:"group_name,omitempty"`
-	KeyType              string  `json:"key_type"`
-	TotalQuota           float64 `json:"total_quota"`
-	TotalCost            float64 `json:"total_cost"`
-	DailyQuota           float64 `json:"daily_quota"`
-	CurrentPeriodCost    float64 `json:"current_period_cost"`
-	ValidDays            int     `json:"valid_days"`
-	ActivatedAt          *string `json:"activated_at"`
-	ExpiresAt            *string `json:"expires_at"`
-	DailyLimit           int     `json:"daily_limit"`
-	CurrentPeriodCount   int     `json:"current_period_count"`
-	TotalRequests        int64   `json:"total_requests"`
-	Status               string  `json:"status"`
-	CreatedBy            int64   `json:"created_by"`
-	CreatorEmail         string  `json:"creator_email,omitempty"`
-	CreatedAt            string  `json:"created_at"`
-	UpdatedAt            string  `json:"updated_at"`
-	RemainingRequests    int     `json:"remaining_requests"`
-	IsExpired            bool    `json:"is_expired"`
-	IsActivated          bool    `json:"is_activated"`
-	IsExhausted          bool    `json:"is_exhausted"`
+	ID                 int64   `json:"id"`
+	Key                string  `json:"key"`
+	Name               string  `json:"name"`
+	GroupID            int64   `json:"group_id"`
+	GroupName          string  `json:"group_name,omitempty"`
+	KeyType            string  `json:"key_type"`
+	TotalQuota         float64 `json:"total_quota"`
+	TotalCost          float64 `json:"total_cost"`
+	DailyQuota         float64 `json:"daily_quota"`
+	CurrentPeriodCost  float64 `json:"current_period_cost"`
+	ValidDays          int     `json:"valid_days"`
+	ActivatedAt        *string `json:"activated_at"`
+	ExpiresAt          *string `json:"expires_at"`
+	DailyLimit         int     `json:"daily_limit"`
+	CurrentPeriodCount int     `json:"current_period_count"`
+	TotalRequests      int64   `json:"total_requests"`
+	Status             string  `json:"status"`
+	CreatedBy          int64   `json:"created_by"`
+	CreatorEmail       string  `json:"creator_email,omitempty"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
+	RemainingRequests  int     `json:"remaining_requests"`
+	IsExpired          bool    `json:"is_expired"`
+	IsActivated        bool    `json:"is_activated"`
+	IsExhausted        bool    `json:"is_exhausted"`
 }
 
 // List lists all temp API keys with pagination
@@ -402,27 +402,27 @@ func (h *TempAPIKeyHandler) BatchUpdate(c *gin.Context) {
 // toResponse converts service model to response
 func (h *TempAPIKeyHandler) toResponse(key *service.TempAPIKey) TempAPIKeyResponse {
 	resp := TempAPIKeyResponse{
-		ID:                   key.ID,
-		Key:                  key.Key,
-		Name:                 key.Name,
-		GroupID:              key.GroupID,
-		KeyType:              key.KeyType,
-		TotalQuota:           key.TotalQuotaUSD,
-		TotalCost:            key.TotalCostUSD,
-		DailyQuota:           key.DailyQuotaUSD,
-		CurrentPeriodCost:    key.CurrentPeriodCostUSD,
-		ValidDays:            key.ValidDays,
-		DailyLimit:           key.DailyLimit,
-		CurrentPeriodCount:   key.CurrentPeriodUsed(),
-		TotalRequests:        key.TotalRequests,
-		Status:               key.Status,
-		CreatedBy:            key.CreatedBy,
-		CreatedAt:            key.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:            key.UpdatedAt.UTC().Format(time.RFC3339),
-		RemainingRequests:    key.RemainingRequests(),
-		IsExpired:            key.IsExpired(),
-		IsActivated:          key.IsActivated(),
-		IsExhausted:          key.IsExhausted(),
+		ID:                 key.ID,
+		Key:                key.Key,
+		Name:               key.Name,
+		GroupID:            key.GroupID,
+		KeyType:            key.KeyType,
+		TotalQuota:         key.TotalQuotaUSD,
+		TotalCost:          key.TotalCostUSD,
+		DailyQuota:         key.DailyQuotaUSD,
+		CurrentPeriodCost:  key.CurrentPeriodCostUSD,
+		ValidDays:          key.ValidDays,
+		DailyLimit:         key.DailyLimit,
+		CurrentPeriodCount: key.CurrentPeriodUsed(),
+		TotalRequests:      key.TotalRequests,
+		Status:             key.Status,
+		CreatedBy:          key.CreatedBy,
+		CreatedAt:          key.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:          key.UpdatedAt.UTC().Format(time.RFC3339),
+		RemainingRequests:  key.RemainingRequests(),
+		IsExpired:          key.IsExpired(),
+		IsActivated:        key.IsActivated(),
+		IsExhausted:        key.IsExhausted(),
 	}
 
 	if key.ActivatedAt != nil {

@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -86,6 +87,7 @@ func buildImageDataURL(data []byte) (string, string) {
 type AccountTestService struct {
 	accountRepo               AccountRepository
 	geminiTokenProvider       *GeminiTokenProvider
+	grokTokenProvider         *GrokTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
 	kiroGatewayService        *KiroGatewayService
 	httpUpstream              HTTPUpstream
@@ -96,6 +98,7 @@ type AccountTestService struct {
 func NewAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
+	grokTokenProvider *GrokTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
 	kiroGatewayService *KiroGatewayService,
 	httpUpstream HTTPUpstream,
@@ -104,6 +107,7 @@ func NewAccountTestService(
 	return &AccountTestService{
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
+		grokTokenProvider:         grokTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
 		kiroGatewayService:        kiroGatewayService,
 		httpUpstream:              httpUpstream,
@@ -214,7 +218,120 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testKiroAccountConnection(c, account, modelID)
 	}
 
+	if account.IsGrok() {
+		return s.testGrokAccountConnection(c, account, modelID)
+	}
+
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+// testGrokAccountConnection tests a Grok OAuth or API-key account through the
+// xAI Responses API. Grok exposes an OpenAI-compatible API, so the response
+// stream can use the existing OpenAI SSE parser.
+func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *Account, modelID string) error {
+	ctx := c.Request.Context()
+	if s.httpUpstream == nil {
+		return s.sendErrorAndEnd(c, "HTTP upstream not configured")
+	}
+
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		testModelID = xai.DefaultTextModel
+	}
+	if mapped := strings.TrimSpace(account.GetMappedModel(testModelID)); mapped != "" {
+		testModelID = mapped
+	}
+	testModelID = xai.ResolveModelID(testModelID)
+
+	var authToken string
+	switch account.Type {
+	case AccountTypeOAuth:
+		if s.grokTokenProvider != nil {
+			token, err := s.grokTokenProvider.GetAccessToken(ctx, account)
+			if err != nil {
+				return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to get Grok access token: %s", err.Error()))
+			}
+			authToken = token
+		} else {
+			authToken = strings.TrimSpace(account.GetGrokAccessToken())
+		}
+		if authToken == "" {
+			return s.sendErrorAndEnd(c, "Grok access token is missing")
+		}
+	case AccountTypeAPIKey:
+		authToken = strings.TrimSpace(account.GetCredential("api_key"))
+		if authToken == "" {
+			return s.sendErrorAndEnd(c, "Grok API key is missing")
+		}
+	default:
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported Grok account type: %s", account.Type))
+	}
+
+	baseURL := account.GetGrokBaseURL()
+	if s.cfg != nil {
+		normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err.Error()))
+		}
+		baseURL = normalizedBaseURL
+	}
+	apiURL := xai.BuildResponsesURL(baseURL)
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	payloadBytes, err := json.Marshal(map[string]any{
+		"model":  testModelID,
+		"input":  "hi",
+		"stream": true,
+	})
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Grok test payload")
+	}
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Grok request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("User-Agent", "sub2api-grok/1.0")
+	account.ApplyHeaderOverrides(req.Header)
+	if account.IsGrokOAuth() {
+		xai.ApplyCLIProxyHeaders(req)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API request failed: %s", err.Error()))
+	}
+	if resp == nil || resp.Body == nil {
+		return s.sendErrorAndEnd(c, "Grok Responses API returned an empty response")
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if snapshot := xai.ParseQuotaHeaders(resp.Header, resp.StatusCode); snapshot != nil && s.accountRepo != nil {
+		if telemetryRepo, ok := s.accountRepo.(AccountTelemetryRepository); ok {
+			_ = telemetryRepo.UpdateGrokUsageSnapshot(ctx, account.ID, snapshot)
+		} else {
+			_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokQuotaSnapshotExtraKey: snapshot})
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API returned %d: %s", resp.StatusCode, string(body)))
+	}
+
+	return s.processOpenAIStream(c, resp.Body)
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
@@ -1110,44 +1227,37 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 // processOpenAIStream processes the SSE stream from OpenAI Responses API
 func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
+	currentEventType := ""
 
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-				return nil
-			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+	processData := func(rawData string) (bool, error) {
+		jsonStr := strings.TrimSpace(rawData)
+		if jsonStr == "" {
+			return false, nil
 		}
-
-		line = strings.TrimSpace(line)
-		if line == "" || !sseDataPrefix.MatchString(line) {
-			continue
-		}
-
-		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		if jsonStr == "[DONE]" {
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
+			return true, nil
 		}
 
 		var data map[string]any
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			continue
+			return false, nil
 		}
 
 		eventType, _ := data["type"].(string)
+		if strings.TrimSpace(eventType) == "" {
+			eventType = currentEventType
+		}
 
 		switch eventType {
 		case "response.output_text.delta":
-			// OpenAI Responses API uses "delta" field for text content
+			// OpenAI Responses API uses "delta" field for text content.
 			if delta, ok := data["delta"].(string); ok && delta != "" {
 				s.sendEvent(c, TestEvent{Type: "content", Text: delta})
 			}
-		case "response.completed":
+		case "response.completed", "response.done":
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
+			return true, nil
 		case "error":
 			errorMsg := "Unknown error"
 			if errData, ok := data["error"].(map[string]any); ok {
@@ -1155,7 +1265,35 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 					errorMsg = msg
 				}
 			}
-			return s.sendErrorAndEnd(c, errorMsg)
+			return false, s.sendErrorAndEnd(c, errorMsg)
+		}
+		return false, nil
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line != "" {
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			case sseDataPrefix.MatchString(line):
+				completed, processErr := processData(sseDataPrefix.ReplaceAllString(line, ""))
+				currentEventType = ""
+				if processErr != nil {
+					return processErr
+				}
+				if completed {
+					return nil
+				}
+			}
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				return s.sendErrorAndEnd(c, "Stream ended before completion")
+			}
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
 		}
 	}
 }

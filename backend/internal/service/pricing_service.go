@@ -114,6 +114,20 @@ var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
 	},
 }
 
+var geminiStaticPricingOverrides = map[string]*LiteLLMModelPricing{
+	"gemini-3.8-flash": {
+		InputCostPerToken:               7.5e-07,
+		InputCostPerTokenPriority:       1.35e-06,
+		OutputCostPerToken:              3.75e-06,
+		OutputCostPerTokenPriority:      6.75e-06,
+		CacheReadInputTokenCost:         7.5e-08,
+		CacheReadInputTokenCostPriority: 1.35e-07,
+		LiteLLMProvider:                 "gemini",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
+}
+
 var claudeOpus48EquivalentStaticPricing = &LiteLLMModelPricing{
 	InputCostPerToken:           5e-06,
 	OutputCostPerToken:          25e-06,
@@ -595,6 +609,13 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 		}
 		if pricing, ok := s.pricingData[candidate]; ok {
 			return pricing
+		}
+	}
+
+	for _, candidate := range lookupCandidates {
+		if pricing, ok := geminiStaticPricingOverrides[candidate]; ok {
+			log.Printf("[Pricing] Gemini static pricing matched %s", candidate)
+			return cloneLiteLLMModelPricing(pricing)
 		}
 	}
 

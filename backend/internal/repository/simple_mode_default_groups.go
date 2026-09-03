@@ -18,6 +18,7 @@ func ensureSimpleModeDefaultGroups(ctx context.Context, client *dbent.Client) er
 		service.PlatformAnthropic:   1,
 		service.PlatformOpenAI:      1,
 		service.PlatformGemini:      1,
+		service.PlatformGrok:        1,
 		service.PlatformAntigravity: 2,
 	}
 

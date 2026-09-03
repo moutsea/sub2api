@@ -4,11 +4,11 @@ import "time"
 
 // TempAPIKey represents a temporary API key with expiration and rate limiting
 type TempAPIKey struct {
-	ID        int64
-	Key       string
-	Name      string
-	GroupID   int64
-	Group     *Group
+	ID      int64
+	Key     string
+	Name    string
+	GroupID int64
+	Group   *Group
 
 	// Key 类型
 	KeyType       string  // time_limited（限时限请求数）、quota_only（仅限总额不限时）、time_quota（限时+限每日USD额度）
@@ -16,7 +16,7 @@ type TempAPIKey struct {
 	TotalCostUSD  float64 // 已消费金额（美元），仅 quota_only 类型使用
 
 	// 每日 USD 额度（仅 time_quota 类型使用）
-	DailyQuotaUSD       float64 // 每日 USD 额度上限
+	DailyQuotaUSD        float64 // 每日 USD 额度上限
 	CurrentPeriodCostUSD float64 // 当前周期已消费 USD
 
 	// 有效期设置

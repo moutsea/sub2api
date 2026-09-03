@@ -39,6 +39,8 @@
                 ? 'https://api.openai.com'
                 : account.platform === 'gemini'
                   ? 'https://generativelanguage.googleapis.com'
+                  : account.platform === 'grok'
+                    ? 'https://api.x.ai/v1'
                   : account.platform === 'kiro'
                     ? 'https://my-proxy.example.com'
                     : 'https://api.anthropic.com'
@@ -57,6 +59,8 @@
                 ? 'sk-proj-...'
                 : account.platform === 'gemini'
                   ? 'AIza...'
+                  : account.platform === 'grok'
+                    ? 'xai-...'
                   : 'sk-ant-...'
             "
           />
@@ -986,6 +990,7 @@ const baseUrlHint = computed(() => {
   if (!props.account) return t('admin.accounts.baseUrlHint')
   if (props.account.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
+  if (props.account.platform === 'grok') return t('admin.accounts.grok.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -1132,6 +1137,7 @@ const tempUnschedPresets = computed(() => [
 const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
+  if (props.account?.platform === 'grok') return 'https://api.x.ai/v1'
   if (isKiroAPIKeyAccount(props.account)) {
     const credentials = props.account?.credentials as Record<string, unknown> | undefined
     return typeof credentials?.base_url === 'string' ? credentials.base_url : ''
@@ -1280,7 +1286,9 @@ watch(
             ? 'https://api.openai.com'
             : newAccount.platform === 'gemini'
               ? 'https://generativelanguage.googleapis.com'
-              : newAccount.platform === 'kiro'
+              : newAccount.platform === 'grok'
+                ? 'https://api.x.ai/v1'
+                : newAccount.platform === 'kiro'
                 ? ''
                 : 'https://api.anthropic.com'
         editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
@@ -1325,6 +1333,8 @@ watch(
             ? 'https://api.openai.com'
             : newAccount.platform === 'gemini'
               ? 'https://generativelanguage.googleapis.com'
+              : newAccount.platform === 'grok'
+                ? 'https://api.x.ai/v1'
               : 'https://api.anthropic.com'
         editBaseUrl.value = platformDefaultUrl
         modelRestrictionMode.value = 'whitelist'

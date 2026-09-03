@@ -39,6 +39,7 @@ func NewTokenRefreshService(
 	antigravityOAuthService *AntigravityOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	cfg *config.Config,
+	grokOAuthServices ...*GrokOAuthService,
 ) *TokenRefreshService {
 	s := &TokenRefreshService{
 		accountRepo:      accountRepo,
@@ -53,6 +54,9 @@ func NewTokenRefreshService(
 		NewOpenAITokenRefresher(openaiOAuthService),
 		NewGeminiTokenRefresher(geminiOAuthService),
 		NewAntigravityTokenRefresher(antigravityOAuthService),
+	}
+	if len(grokOAuthServices) > 0 && grokOAuthServices[0] != nil {
+		s.refreshers = append(s.refreshers, NewGrokTokenRefresher(grokOAuthServices[0]))
 	}
 
 	return s
@@ -278,7 +282,7 @@ func (s *TokenRefreshService) recoverErrorAccounts() {
 	defer cancel()
 
 	// Collect error accounts from all OAuth platforms
-	platforms := []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini}
+	platforms := []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformGrok}
 	var errorAccounts []Account
 
 	for _, platform := range platforms {

@@ -78,6 +78,7 @@ func provideCleanup(
 	openaiOAuth *service.OpenAIOAuthService,
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
+	grokOAuth *service.GrokOAuthService,
 	antigravityTokenProvider *service.AntigravityTokenProvider,
 	kiroTokenProvider *service.KiroTokenProvider,
 ) func() {
@@ -103,6 +104,12 @@ func provideCleanup(
 			{"AntigravityTokenProvider", func() error {
 				if antigravityTokenProvider != nil {
 					antigravityTokenProvider.Stop()
+				}
+				return nil
+			}},
+			{"GrokOAuthService", func() error {
+				if grokOAuth != nil {
+					grokOAuth.Stop()
 				}
 				return nil
 			}},

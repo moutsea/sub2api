@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 type UsageLogRepository interface {
@@ -260,6 +261,7 @@ type AntigravityModelQuota struct {
 
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
+	Source             string         `json:"source,omitempty"`
 	UpdatedAt          *time.Time     `json:"updated_at,omitempty"`           // 更新时间
 	FiveHour           *UsageProgress `json:"five_hour"`                      // 5小时窗口
 	SevenDay           *UsageProgress `json:"seven_day,omitempty"`            // 7天窗口
@@ -273,6 +275,23 @@ type UsageInfo struct {
 
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
+
+	// Grok / xAI 被动额度快照
+	GrokRequestQuota       *xai.QuotaWindow `json:"grok_request_quota,omitempty"`
+	GrokTokenQuota         *xai.QuotaWindow `json:"grok_token_quota,omitempty"`
+	GrokRetryAfterSeconds  *int             `json:"grok_retry_after_seconds,omitempty"`
+	GrokEntitlementStatus  string           `json:"grok_entitlement_status,omitempty"`
+	GrokQuotaSnapshotState string           `json:"grok_quota_snapshot_state,omitempty"`
+	GrokLocalUsage         *WindowStats     `json:"grok_local_usage,omitempty"`
+
+	// Shared account status fields used by passive quota providers.
+	SubscriptionTier    string `json:"subscription_tier,omitempty"`
+	SubscriptionTierRaw string `json:"subscription_tier_raw,omitempty"`
+	IsForbidden         bool   `json:"is_forbidden,omitempty"`
+	ForbiddenType       string `json:"forbidden_type,omitempty"`
+	NeedsReauth         bool   `json:"needs_reauth,omitempty"`
+	ErrorCode           string `json:"error_code,omitempty"`
+	Error               string `json:"error,omitempty"`
 
 	// Kiro 积分余额
 	KiroCredits *KiroCreditsInfo `json:"kiro_credits,omitempty"`
@@ -318,6 +337,7 @@ type AccountUsageService struct {
 	geminiQuotaService      *GeminiQuotaService
 	antigravityQuotaFetcher *AntigravityQuotaFetcher
 	kiroTokenProvider       *KiroTokenProvider
+	grokQuotaFetcher        *GrokQuotaFetcher
 	cache                   *UsageCache
 }
 
@@ -338,6 +358,7 @@ func NewAccountUsageService(
 		geminiQuotaService:      geminiQuotaService,
 		antigravityQuotaFetcher: antigravityQuotaFetcher,
 		kiroTokenProvider:       kiroTokenProvider,
+		grokQuotaFetcher:        NewGrokQuotaFetcher(),
 		cache:                   cache,
 	}
 }
@@ -364,6 +385,10 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 	// Kiro 平台：获取积分余额
 	if account.Platform == PlatformKiro {
 		return s.getKiroUsage(ctx, account)
+	}
+
+	if account.Platform == PlatformGrok {
+		return s.getGrokUsage(ctx, account)
 	}
 
 	// 只有oauth类型账号可以通过API获取usage（有profile scope）
@@ -410,6 +435,32 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 
 	// API Key账号不支持usage查询
 	return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
+}
+
+func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	fetcher := s.grokQuotaFetcher
+	if fetcher == nil {
+		fetcher = NewGrokQuotaFetcher()
+	}
+	usage := fetcher.BuildUsageInfo(account)
+	if usage.ErrorCode == "quota_unknown" {
+		usage.GrokQuotaSnapshotState = "unknown_until_first_response"
+	} else {
+		usage.GrokQuotaSnapshotState = "observed"
+	}
+
+	if s.usageLogRepo != nil && account != nil {
+		if stats, err := s.usageLogRepo.GetAccountTodayStats(ctx, account.ID); err == nil && stats != nil {
+			usage.GrokLocalUsage = &WindowStats{
+				Requests:     stats.Requests,
+				Tokens:       stats.Tokens,
+				Cost:         stats.Cost,
+				StandardCost: stats.StandardCost,
+				UserCost:     stats.UserCost,
+			}
+		}
+	}
+	return usage, nil
 }
 
 func (s *AccountUsageService) getGeminiUsage(ctx context.Context, account *Account) (*UsageInfo, error) {

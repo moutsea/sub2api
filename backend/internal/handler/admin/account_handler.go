@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -42,6 +44,7 @@ type AccountHandler struct {
 	openaiOAuthService      *service.OpenAIOAuthService
 	geminiOAuthService      *service.GeminiOAuthService
 	antigravityOAuthService *service.AntigravityOAuthService
+	grokOAuthService        *service.GrokOAuthService
 	rateLimitService        *service.RateLimitService
 	accountUsageService     *service.AccountUsageService
 	accountTestService      *service.AccountTestService
@@ -59,6 +62,7 @@ func NewAccountHandler(
 	openaiOAuthService *service.OpenAIOAuthService,
 	geminiOAuthService *service.GeminiOAuthService,
 	antigravityOAuthService *service.AntigravityOAuthService,
+	grokOAuthService *service.GrokOAuthService,
 	rateLimitService *service.RateLimitService,
 	accountUsageService *service.AccountUsageService,
 	accountTestService *service.AccountTestService,
@@ -74,6 +78,7 @@ func NewAccountHandler(
 		openaiOAuthService:      openaiOAuthService,
 		geminiOAuthService:      geminiOAuthService,
 		antigravityOAuthService: antigravityOAuthService,
+		grokOAuthService:        grokOAuthService,
 		rateLimitService:        rateLimitService,
 		accountUsageService:     accountUsageService,
 		accountTestService:      accountTestService,
@@ -619,6 +624,22 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 		}
 
 		newCredentials = h.antigravityOAuthService.BuildAccountCredentials(tokenInfo)
+		for k, v := range account.Credentials {
+			if _, exists := newCredentials[k]; !exists {
+				newCredentials[k] = v
+			}
+		}
+	} else if account.IsGrokOAuth() {
+		if h.grokOAuthService == nil {
+			response.InternalError(c, "Grok OAuth service not configured")
+			return
+		}
+		tokenInfo, err := h.grokOAuthService.RefreshAccountToken(c.Request.Context(), account)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		newCredentials = h.grokOAuthService.BuildAccountCredentials(tokenInfo)
 		for k, v := range account.Credentials {
 			if _, exists := newCredentials[k]; !exists {
 				newCredentials[k] = v
@@ -1417,6 +1438,49 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 					DisplayName: requestedModel,
 				})
 			}
+		}
+		response.Success(c, models)
+		return
+	}
+
+	// Handle Grok/xAI accounts. An empty model_mapping means the built-in
+	// catalog is available; an explicit mapping limits the requested IDs.
+	if account.IsGrok() {
+		defaultModels := xai.DefaultModels()
+		rawMapping, hasMapping := account.Credentials["model_mapping"]
+		explicitMapping := false
+		switch mapping := rawMapping.(type) {
+		case map[string]any:
+			explicitMapping = len(mapping) > 0
+		case map[string]string:
+			explicitMapping = len(mapping) > 0
+		}
+		if !hasMapping || !explicitMapping {
+			response.Success(c, defaultModels)
+			return
+		}
+
+		mapping := account.GetModelMapping()
+		if len(mapping) == 0 {
+			response.Success(c, defaultModels)
+			return
+		}
+		defaultByID := make(map[string]xai.Model, len(defaultModels))
+		for _, model := range defaultModels {
+			defaultByID[model.ID] = model
+		}
+		models := make([]xai.Model, 0, len(mapping))
+		requestedModels := make([]string, 0, len(mapping))
+		for requestedModel := range mapping {
+			requestedModels = append(requestedModels, requestedModel)
+		}
+		sort.Strings(requestedModels)
+		for _, requestedModel := range requestedModels {
+			if model, ok := defaultByID[requestedModel]; ok {
+				models = append(models, model)
+				continue
+			}
+			models = append(models, xai.Model{ID: requestedModel, Object: "model", OwnedBy: "xai", DisplayName: requestedModel})
 		}
 		response.Success(c, models)
 		return

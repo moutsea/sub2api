@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 // BillingCache defines cache operations for billing service
@@ -38,6 +39,7 @@ type ModelPricing struct {
 	CacheCreation1hPrice           float64 // 1小时缓存创建价格（每百万token）- 仅用于硬编码回退
 	SupportsCacheBreakdown         bool    // 是否支持详细的缓存分类
 	LongContextInputThreshold      int     // 超过阈值后按整次会话提升输入价格
+	LongContextThresholdInclusive  bool    // true 时阈值本身也按长上下文计价
 	LongContextInputMultiplier     float64 // 长上下文整次会话输入倍率
 	LongContextOutputMultiplier    float64 // 长上下文整次会话输出倍率
 }
@@ -237,11 +239,122 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken:     0.03e-6, // $0.03 per MTok
 		SupportsCacheBreakdown:     false,
 	}
+
+	// xAI Grok 4.3 and Grok 4.20 use the same public text-model card:
+	// $1.25 input / $0.20 cached input / $2.50 output per million tokens.
+	s.fallbackPrices["grok-4.3"] = &ModelPricing{
+		InputPricePerToken:            1.25e-6,
+		OutputPricePerToken:           2.5e-6,
+		CacheReadPricePerToken:        0.2e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
+	// Grok 4.5: $2 input / $0.30 cached input / $6 output per million tokens;
+	// long-context requests (>=200K input, including cache tokens) are 2x.
+	s.fallbackPrices["grok-4.5"] = &ModelPricing{
+		InputPricePerToken:            2e-6,
+		OutputPricePerToken:           6e-6,
+		CacheReadPricePerToken:        0.3e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
+	// Grok 4.6: $2 input / $0.50 cached input / $6 output per million tokens;
+	// long-context requests (>=200K input, including cache tokens) are 2x.
+	s.fallbackPrices["grok-4.6"] = &ModelPricing{
+		InputPricePerToken:            2e-6,
+		OutputPricePerToken:           6e-6,
+		CacheReadPricePerToken:        0.5e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
+	s.fallbackPrices["grok-3-mini"] = &ModelPricing{
+		InputPricePerToken: 0.30e-6, OutputPricePerToken: 0.50e-6,
+		CacheReadPricePerToken: 0.075e-6, SupportsCacheBreakdown: false,
+	}
+	s.fallbackPrices["grok-3-mini-fast"] = &ModelPricing{
+		InputPricePerToken: 0.60e-6, OutputPricePerToken: 4e-6,
+		CacheReadPricePerToken: 0.15e-6, SupportsCacheBreakdown: false,
+	}
+	s.fallbackPrices["grok-4.20"] = &ModelPricing{
+		InputPricePerToken:            1.25e-6,
+		OutputPricePerToken:           2.5e-6,
+		CacheReadPricePerToken:        0.2e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
+	// Grok Build 0.1 (including its short aliases):
+	// $1 input / $0.20 cached input / $2 output per million tokens.
+	s.fallbackPrices["grok-build-0.1"] = &ModelPricing{
+		InputPricePerToken:            1e-6,
+		OutputPricePerToken:           2e-6,
+		CacheReadPricePerToken:        0.2e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
+
+	s.fallbackPrices["gemini-3.8-flash"] = &ModelPricing{
+		InputPricePerToken:             7.5e-07,
+		InputPricePerTokenPriority:     1.35e-06,
+		OutputPricePerToken:            3.75e-06,
+		OutputPricePerTokenPriority:    6.75e-06,
+		CacheReadPricePerToken:         7.5e-08,
+		CacheReadPricePerTokenPriority: 1.35e-07,
+		SupportsCacheBreakdown:         false,
+	}
 }
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
-	modelLower := strings.ToLower(model)
+	modelLower := strings.ToLower(strings.TrimSpace(xai.StripProviderPrefix(model)))
+	modelLower = strings.TrimPrefix(modelLower, "models/")
+	if modelLower == "gemini-3.8-flash" || strings.HasSuffix(modelLower, "/gemini-3.8-flash") {
+		return s.fallbackPrices["gemini-3.8-flash"]
+	}
+
+	// Grok is an OpenAI-compatible channel, so its usage is billed by the
+	// model sent in the request rather than by the Claude compatibility name.
+	// Keep this branch ahead of the Claude family checks because Grok model IDs
+	// do not contain Claude family markers.
+	switch {
+	case modelLower == "grok-4.6", modelLower == "grok-4.6-latest", strings.HasPrefix(modelLower, "grok-4.6-"):
+		return s.fallbackPrices["grok-4.6"]
+	case modelLower == "grok-4.5", modelLower == "grok-4.5-latest", strings.HasPrefix(modelLower, "grok-4.5-"):
+		return s.fallbackPrices["grok-4.5"]
+	case modelLower == "grok-3-mini-fast", strings.HasPrefix(modelLower, "grok-3-mini-fast-"):
+		return s.fallbackPrices["grok-3-mini-fast"]
+	case modelLower == "grok-3-mini", strings.HasPrefix(modelLower, "grok-3-mini-"):
+		return s.fallbackPrices["grok-3-mini"]
+	case modelLower == "grok", modelLower == "grok-latest":
+		return s.fallbackPrices["grok-4.6"]
+	case modelLower == "grok-4.3", strings.HasPrefix(modelLower, "grok-4.3-"), modelLower == "grok-4-3", strings.HasPrefix(modelLower, "grok-4-3-"):
+		return s.fallbackPrices["grok-4.3"]
+	case modelLower == "grok-4.20", strings.HasPrefix(modelLower, "grok-4.20-"):
+		return s.fallbackPrices["grok-4.20"]
+	case modelLower == "grok-build", modelLower == "grok-build-latest", modelLower == "grok-build-0.1", strings.HasPrefix(modelLower, "grok-build-0.1-"),
+		modelLower == "grok-composer", modelLower == "grok-composer-2.5-fast", modelLower == "composer-2.5":
+		return s.fallbackPrices["grok-build-0.1"]
+	case strings.HasPrefix(modelLower, "grok-"):
+		// Preserve billing for newly released xAI model IDs until their
+		// provider-specific price is added to the remote catalog. Use the
+		// current default text card rather than an older model's price.
+		log.Printf("[Billing] Unknown Grok model %q using %s fallback pricing", model, xai.DefaultTextModel)
+		return s.fallbackPrices["grok-4.6"]
+	}
 	if !strings.Contains(modelLower, "claude") &&
 		!strings.Contains(modelLower, "opus") &&
 		!strings.Contains(modelLower, "sonnet") &&
@@ -418,7 +531,12 @@ func isOpenAIGPT54Model(model string) bool {
 	return normalizeCodexModel(trimmed) == "gpt-5.4"
 }
 
-func shouldApplySessionLongContextPricing(tokens UsageTokens, pricing *ModelPricing) bool {
+func isGrokBillingModel(model string) bool {
+	model = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
+	return xai.IsGrokModelID(xai.StripProviderPrefix(model))
+}
+
+func shouldApplySessionLongContextPricing(model string, tokens UsageTokens, pricing *ModelPricing) bool {
 	if pricing == nil || pricing.LongContextInputThreshold <= 0 {
 		return false
 	}
@@ -426,13 +544,19 @@ func shouldApplySessionLongContextPricing(tokens UsageTokens, pricing *ModelPric
 		return false
 	}
 	totalInputTokens := tokens.InputTokens + tokens.CacheReadTokens
+	if isGrokBillingModel(model) {
+		totalInputTokens += tokens.CacheCreationTokens + tokens.CacheCreation5mTokens + tokens.CacheCreation1hTokens
+	}
+	if pricing.LongContextThresholdInclusive {
+		return totalInputTokens >= pricing.LongContextInputThreshold
+	}
 	return totalInputTokens > pricing.LongContextInputThreshold
 }
 
 func shouldIgnorePriorityTierForLongContext(model string, tokens UsageTokens, pricing *ModelPricing, serviceTier string) bool {
 	return isOpenAIGPT54Model(model) &&
 		normalizeBillingServiceTier(serviceTier) == "priority" &&
-		shouldApplySessionLongContextPricing(tokens, pricing)
+		shouldApplySessionLongContextPricing(model, tokens, pricing)
 }
 
 // opus46LargeContextThreshold is the input token threshold for opus-4-6 1M pricing.
@@ -455,9 +579,12 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 
 	inputPrice := pricing.InputPricePerToken
 	outputPrice := pricing.OutputPricePerToken
+	cacheCreationPrice := pricing.CacheCreationPricePerToken
 	cacheReadPrice := pricing.CacheReadPricePerToken
 	tierMultiplier := 1.0
-	applyLongContext := shouldApplySessionLongContextPricing(tokens, pricing)
+	longContextInputMultiplier := 1.0
+	applyLongContext := shouldApplySessionLongContextPricing(model, tokens, pricing)
+	isGrokModel := isGrokBillingModel(model)
 
 	if shouldIgnorePriorityTierForLongContext(model, tokens, pricing, serviceTier) {
 		serviceTier = ""
@@ -479,7 +606,13 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 
 	if applyLongContext {
 		if pricing.LongContextInputMultiplier > 0 {
+			if isGrokModel {
+				longContextInputMultiplier = pricing.LongContextInputMultiplier
+			}
 			inputPrice *= pricing.LongContextInputMultiplier
+			if isGrokModel {
+				cacheCreationPrice *= pricing.LongContextInputMultiplier
+			}
 			cacheReadPrice *= pricing.LongContextInputMultiplier
 		}
 		if pricing.LongContextOutputMultiplier > 0 {
@@ -499,11 +632,11 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 	// 计算缓存费用
 	if pricing.SupportsCacheBreakdown && (pricing.CacheCreation5mPrice > 0 || pricing.CacheCreation1hPrice > 0) {
 		// 支持详细缓存分类的模型（5分钟/1小时缓存）
-		breakdown.CacheCreationCost = float64(tokens.CacheCreation5mTokens)/1_000_000*pricing.CacheCreation5mPrice +
-			float64(tokens.CacheCreation1hTokens)/1_000_000*pricing.CacheCreation1hPrice
+		breakdown.CacheCreationCost = float64(tokens.CacheCreation5mTokens)/1_000_000*pricing.CacheCreation5mPrice*longContextInputMultiplier +
+			float64(tokens.CacheCreation1hTokens)/1_000_000*pricing.CacheCreation1hPrice*longContextInputMultiplier
 	} else {
 		// 标准缓存创建价格（per-token）
-		breakdown.CacheCreationCost = float64(tokens.CacheCreationTokens) * pricing.CacheCreationPricePerToken
+		breakdown.CacheCreationCost = float64(tokens.CacheCreationTokens) * cacheCreationPrice
 	}
 
 	breakdown.CacheReadCost = float64(tokens.CacheReadTokens) * cacheReadPrice
@@ -550,11 +683,14 @@ func (s *BillingService) ListSupportedModels() []string {
 // IsModelSupported 检查模型是否支持（现在总是返回true，因为有模糊匹配回退）
 func (s *BillingService) IsModelSupported(model string) bool {
 	// 所有Claude模型都有回退价格支持
-	modelLower := strings.ToLower(model)
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	nativeGrokModel := strings.TrimPrefix(modelLower, "models/")
+	nativeGrokModel = strings.ToLower(strings.TrimSpace(xai.StripProviderPrefix(nativeGrokModel)))
 	return strings.Contains(modelLower, "claude") ||
 		strings.Contains(modelLower, "opus") ||
 		strings.Contains(modelLower, "sonnet") ||
-		strings.Contains(modelLower, "haiku")
+		strings.Contains(modelLower, "haiku") ||
+		xai.IsGrokModelID(nativeGrokModel)
 }
 
 // GetEstimatedCost 估算费用（用于前端展示）
@@ -598,6 +734,15 @@ type ImagePriceConfig struct {
 	Price2K *float64 // 2K 尺寸价格（nil 表示使用默认值）
 	Price4K *float64 // 4K 尺寸价格（nil 表示使用默认值）
 }
+
+const (
+	defaultGrokImagineImagePrice1K        = 0.02
+	defaultGrokImagineImagePrice2K        = 0.02
+	defaultGrokImagineImageQualityPrice1K = 0.05
+	defaultGrokImagineImageQualityPrice2K = 0.07
+	defaultGrokImagineImage20Price1K      = 0.06
+	defaultGrokImagineImage20Price2K      = 0.08
+)
 
 // CalculateImageCost 计算图片生成费用
 // model: 请求的模型名称（用于获取 LiteLLM 默认价格）
@@ -654,6 +799,9 @@ func (s *BillingService) getImageUnitPrice(model string, imageSize string, group
 
 // getDefaultImagePrice 获取 LiteLLM 默认图片价格
 func (s *BillingService) getDefaultImagePrice(model string, imageSize string) float64 {
+	if price, ok := getDefaultGrokImagineImagePrice(model, imageSize); ok {
+		return price
+	}
 	basePrice := 0.0
 
 	// 从 PricingService 获取 output_cost_per_image
@@ -682,6 +830,26 @@ func (s *BillingService) getDefaultImagePrice(model string, imageSize string) fl
 	}
 
 	return basePrice
+}
+
+func getDefaultGrokImagineImagePrice(model string, imageSize string) (float64, bool) {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "grok-imagine-image-2.0":
+		return getGrokImagineImageTierPrice(imageSize, defaultGrokImagineImage20Price1K, defaultGrokImagineImage20Price2K), true
+	case "grok-imagine-image-quality":
+		return getGrokImagineImageTierPrice(imageSize, defaultGrokImagineImageQualityPrice1K, defaultGrokImagineImageQualityPrice2K), true
+	case "grok-imagine", "grok-imagine-image", "grok-imagine-edit":
+		return getGrokImagineImageTierPrice(imageSize, defaultGrokImagineImagePrice1K, defaultGrokImagineImagePrice2K), true
+	default:
+		return 0, false
+	}
+}
+
+func getGrokImagineImageTierPrice(imageSize string, price1K, price2K float64) float64 {
+	if strings.EqualFold(strings.TrimSpace(imageSize), "1K") {
+		return price1K
+	}
+	return price2K
 }
 
 // isOpenAIImageBillingModel checks if the model is an OpenAI image generation model.

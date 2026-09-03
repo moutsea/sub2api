@@ -416,6 +416,21 @@ Antigravity 账户支持可选的**混合调度**功能。开启后，通用端�
 
 > **⚠️ 注意**：Anthropic Claude 和 Antigravity Claude **不能在同一上下文中混合使用**，请通过分组功能做好隔离。
 
+---
+
+## Grok / xAI 支持
+
+Grok 账号使用 xAI 的 OpenAI 兼容接口，支持 OAuth 订阅账号和 API Key 账号。
+
+- 平台标识：`grok`
+- 默认上游：OAuth 使用 `https://cli-chat-proxy.grok.com/v1`，API Key 使用 `https://api.x.ai/v1`
+- 接口：`/v1/responses`、`/v1/chat/completions`，以及通过 `/v1/messages` 提供的 Claude Messages 兼容层
+- 模型：`grok-4.6`、`grok-4.5`、`grok-4.3`、Grok 3 Mini、Composer/Build 和 Grok 4.20 系列，可配置自定义模型映射
+
+Grok OAuth 使用 PKCE 流程，默认通过官方 CLI 代理；可通过 `XAI_OAUTH_CLIENT_ID`、`XAI_OAUTH_SCOPE`、`XAI_OAUTH_REDIRECT_URI`、`XAI_OAUTH_AUTHORIZE_URL` 和 `XAI_OAUTH_TOKEN_URL` 自定义授权参数。转发到自定义的 xAI 兼容上游时，请在账号的 `base_url` 中配置；账号配置优先于进程级默认值。
+
+当 xAI 返回速率限制响应头时，控制台会记录请求/Token 配额；首次收到有效响应前配额显示为未知，同时仍显示 OAuth 和 API Key 账号的本地请求、Token 与费用统计。
+
 
 ### 已知问题
 在 Claude Code 中，无法自动退出Plan Mode。（正常使用原生Claude Api时，Plan 完成后，Claude Code会弹出弹出选项让用户同意或拒绝Plan。） 
