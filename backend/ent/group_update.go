@@ -10,6 +10,7 @@ import (
 
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
+	"entgo.io/ent/dialect/sql/sqljson"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -433,6 +434,18 @@ func (_u *GroupUpdate) SetNillableModelRoutingEnabled(v *bool) *GroupUpdate {
 	if v != nil {
 		_u.SetModelRoutingEnabled(*v)
 	}
+	return _u
+}
+
+// SetSupportedModels sets the "supported_models" field.
+func (_u *GroupUpdate) SetSupportedModels(v []string) *GroupUpdate {
+	_u.mutation.SetSupportedModels(v)
+	return _u
+}
+
+// AppendSupportedModels appends value to the "supported_models" field.
+func (_u *GroupUpdate) AppendSupportedModels(v []string) *GroupUpdate {
+	_u.mutation.AppendSupportedModels(v)
 	return _u
 }
 
@@ -891,6 +904,14 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.SupportedModels(); ok {
+		_spec.SetField(group.FieldSupportedModels, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedSupportedModels(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, group.FieldSupportedModels, value)
+		})
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -1652,6 +1673,18 @@ func (_u *GroupUpdateOne) SetNillableModelRoutingEnabled(v *bool) *GroupUpdateOn
 	return _u
 }
 
+// SetSupportedModels sets the "supported_models" field.
+func (_u *GroupUpdateOne) SetSupportedModels(v []string) *GroupUpdateOne {
+	_u.mutation.SetSupportedModels(v)
+	return _u
+}
+
+// AppendSupportedModels appends value to the "supported_models" field.
+func (_u *GroupUpdateOne) AppendSupportedModels(v []string) *GroupUpdateOne {
+	_u.mutation.AppendSupportedModels(v)
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdateOne) AddAPIKeyIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -2137,6 +2170,14 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.SupportedModels(); ok {
+		_spec.SetField(group.FieldSupportedModels, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedSupportedModels(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, group.FieldSupportedModels, value)
+		})
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{

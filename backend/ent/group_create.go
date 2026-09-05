@@ -321,6 +321,12 @@ func (_c *GroupCreate) SetNillableModelRoutingEnabled(v *bool) *GroupCreate {
 	return _c
 }
 
+// SetSupportedModels sets the "supported_models" field.
+func (_c *GroupCreate) SetSupportedModels(v []string) *GroupCreate {
+	_c.mutation.SetSupportedModels(v)
+	return _c
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_c *GroupCreate) AddAPIKeyIDs(ids ...int64) *GroupCreate {
 	_c.mutation.AddAPIKeyIDs(ids...)
@@ -513,6 +519,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultModelRoutingEnabled
 		_c.mutation.SetModelRoutingEnabled(v)
 	}
+	if _, ok := _c.mutation.SupportedModels(); !ok {
+		v := group.DefaultSupportedModels
+		_c.mutation.SetSupportedModels(v)
+	}
 	return nil
 }
 
@@ -573,6 +583,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.ModelRoutingEnabled(); !ok {
 		return &ValidationError{Name: "model_routing_enabled", err: errors.New(`ent: missing required field "Group.model_routing_enabled"`)}
+	}
+	if _, ok := _c.mutation.SupportedModels(); !ok {
+		return &ValidationError{Name: "supported_models", err: errors.New(`ent: missing required field "Group.supported_models"`)}
 	}
 	return nil
 }
@@ -688,6 +701,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
 		_node.ModelRoutingEnabled = value
+	}
+	if value, ok := _c.mutation.SupportedModels(); ok {
+		_spec.SetField(group.FieldSupportedModels, field.TypeJSON, value)
+		_node.SupportedModels = value
 	}
 	if nodes := _c.mutation.APIKeysIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -1227,6 +1244,18 @@ func (u *GroupUpsert) UpdateModelRoutingEnabled() *GroupUpsert {
 	return u
 }
 
+// SetSupportedModels sets the "supported_models" field.
+func (u *GroupUpsert) SetSupportedModels(v []string) *GroupUpsert {
+	u.Set(group.FieldSupportedModels, v)
+	return u
+}
+
+// UpdateSupportedModels sets the "supported_models" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateSupportedModels() *GroupUpsert {
+	u.SetExcluded(group.FieldSupportedModels)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -1696,6 +1725,20 @@ func (u *GroupUpsertOne) SetModelRoutingEnabled(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateModelRoutingEnabled() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateModelRoutingEnabled()
+	})
+}
+
+// SetSupportedModels sets the "supported_models" field.
+func (u *GroupUpsertOne) SetSupportedModels(v []string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSupportedModels(v)
+	})
+}
+
+// UpdateSupportedModels sets the "supported_models" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateSupportedModels() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSupportedModels()
 	})
 }
 
@@ -2334,6 +2377,20 @@ func (u *GroupUpsertBulk) SetModelRoutingEnabled(v bool) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateModelRoutingEnabled() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateModelRoutingEnabled()
+	})
+}
+
+// SetSupportedModels sets the "supported_models" field.
+func (u *GroupUpsertBulk) SetSupportedModels(v []string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSupportedModels(v)
+	})
+}
+
+// UpdateSupportedModels sets the "supported_models" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateSupportedModels() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSupportedModels()
 	})
 }
 

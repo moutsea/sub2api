@@ -33,6 +33,10 @@ func newGroupRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *groupRep
 }
 
 func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) error {
+	supportedModels := groupIn.SupportedModels
+	if supportedModels == nil {
+		supportedModels = []string{}
+	}
 	builder := r.client.Group.Create().
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
@@ -51,7 +55,8 @@ func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) er
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
 		SetNillableFallbackGroupID(groupIn.FallbackGroupID).
 		SetKiroOpus47Downgrade(groupIn.KiroOpus47Downgrade).
-		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled)
+		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
+		SetSupportedModels(supportedModels)
 
 	// 设置模型路由配置
 	if groupIn.ModelRouting != nil {
@@ -111,6 +116,9 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
 		SetKiroOpus47Downgrade(groupIn.KiroOpus47Downgrade).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled)
+	if groupIn.SupportedModels != nil {
+		builder = builder.SetSupportedModels(groupIn.SupportedModels)
+	}
 
 	// 处理 FallbackGroupID：nil 时清除，否则设置
 	if groupIn.FallbackGroupID != nil {
@@ -133,6 +141,22 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 	groupIn.UpdatedAt = updated.UpdatedAt
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
 		log.Printf("[SchedulerOutbox] enqueue group update failed: group=%d err=%v", groupIn.ID, err)
+	}
+	return nil
+}
+
+func (r *groupRepository) UpdateSupportedModels(ctx context.Context, groupID int64, models []string) error {
+	if models == nil {
+		models = []string{}
+	}
+	_, err := r.client.Group.UpdateOneID(groupID).
+		SetSupportedModels(models).
+		Save(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrGroupNotFound, nil)
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
+		log.Printf("[SchedulerOutbox] enqueue supported models update failed: group=%d err=%v", groupID, err)
 	}
 	return nil
 }

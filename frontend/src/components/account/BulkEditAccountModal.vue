@@ -717,6 +717,7 @@ const allModels = [
   { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
+  { value: 'gpt-6-astra', label: 'GPT-6 Astra' },
   { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
   { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
   { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
@@ -734,6 +735,12 @@ const allModels = [
 
 // Preset mappings (combined Anthropic + OpenAI)
 const presetMappings = [
+  {
+    label: 'GPT-6 Astra',
+    from: 'gpt-6-astra',
+    to: 'gpt-6-astra',
+    color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
+  },
   {
     label: 'Sonnet 5',
     from: 'claude-sonnet-5',

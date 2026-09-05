@@ -76,7 +76,8 @@ type Group struct {
 	FallbackGroupID *int64 `json:"fallback_group_id"`
 
 	// Kiro 平台配置
-	KiroOpus47Downgrade bool `json:"kiro_opus_47_downgrade"`
+	KiroOpus47Downgrade bool     `json:"kiro_opus_47_downgrade"`
+	SupportedModels     []string `json:"supported_models"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

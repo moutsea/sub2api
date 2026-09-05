@@ -285,6 +285,21 @@ const FolderIcon = {
     )
 }
 
+const CubeIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4'
+        })
+      ]
+    )
+}
+
 const CreditCardIcon = {
   render: () =>
     h(
@@ -432,6 +447,7 @@ const userNavItems = computed(() => {
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
     { path: '/recharge', label: t('nav.recharge'), icon: CreditCardIcon },
     { path: '/image-preview', label: t('nav.imagePreview'), icon: SparklesIcon },
+    { path: '/model-plaza', label: t('nav.modelPlaza'), icon: CubeIcon },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
@@ -446,6 +462,7 @@ const personalNavItems = computed(() => {
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
     { path: '/recharge', label: t('nav.recharge'), icon: CreditCardIcon },
     { path: '/image-preview', label: t('nav.imagePreview'), icon: SparklesIcon },
+    { path: '/model-plaza', label: t('nav.modelPlaza'), icon: CubeIcon },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
@@ -463,6 +480,7 @@ const adminNavItems = computed(() => {
       : []),
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
+    { path: '/admin/model-plaza', label: t('nav.modelPlaza'), icon: CubeIcon, hideInSimpleMode: true },
     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },

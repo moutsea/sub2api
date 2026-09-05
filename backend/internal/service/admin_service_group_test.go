@@ -12,10 +12,11 @@ import (
 
 // groupRepoStubForAdmin 用于测试 AdminService 的 GroupRepository Stub
 type groupRepoStubForAdmin struct {
-	created *Group // 记录 Create 调用的参数
-	updated *Group // 记录 Update 调用的参数
-	getByID *Group // GetByID 返回值
-	getErr  error  // GetByID 返回的错误
+	created                       *Group // 记录 Create 调用的参数
+	updated                       *Group // 记录 Update 调用的参数
+	updatedSupportedModelsAtWrite []string
+	getByID                       *Group // GetByID 返回值
+	getErr                        error  // GetByID 返回的错误
 
 	listWithFiltersCalls       int
 	listWithFiltersParams      pagination.PaginationParams
@@ -26,6 +27,8 @@ type groupRepoStubForAdmin struct {
 	listWithFiltersGroups      []Group
 	listWithFiltersResult      *pagination.PaginationResult
 	listWithFiltersErr         error
+	listActiveGroups           []Group
+	listActiveErr              error
 }
 
 func (s *groupRepoStubForAdmin) Create(_ context.Context, g *Group) error {
@@ -35,6 +38,7 @@ func (s *groupRepoStubForAdmin) Create(_ context.Context, g *Group) error {
 
 func (s *groupRepoStubForAdmin) Update(_ context.Context, g *Group) error {
 	s.updated = g
+	s.updatedSupportedModelsAtWrite = append([]string(nil), g.SupportedModels...)
 	return nil
 }
 
@@ -89,7 +93,10 @@ func (s *groupRepoStubForAdmin) ListWithFilters(_ context.Context, params pagina
 }
 
 func (s *groupRepoStubForAdmin) ListActive(_ context.Context) ([]Group, error) {
-	panic("unexpected ListActive call")
+	if s.listActiveErr != nil {
+		return nil, s.listActiveErr
+	}
+	return s.listActiveGroups, nil
 }
 
 func (s *groupRepoStubForAdmin) ListActiveByPlatform(_ context.Context, _ string) ([]Group, error) {
@@ -233,6 +240,23 @@ func TestAdminService_UpdateGroup_PartialImagePricing(t *testing.T) {
 	require.Nil(t, repo.updated.ImagePrice4K)
 }
 
+func TestAdminService_UpdateGroup_DoesNotOverwriteSupportedModelsWhenOmitted(t *testing.T) {
+	existingGroup := &Group{
+		ID:              1,
+		Name:            "existing-group",
+		Platform:        PlatformOpenAI,
+		Status:          StatusActive,
+		SupportedModels: []string{"gpt-6-astra"},
+	}
+	repo := &groupRepoStubForAdmin{getByID: existingGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	updated, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{Description: "updated"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-6-astra"}, updated.SupportedModels)
+	require.Empty(t, repo.updatedSupportedModelsAtWrite)
+}
+
 func TestAdminService_ListGroups_WithSearch(t *testing.T) {
 	// 测试：
 	// 1. search 参数正常传递到 repository 层
@@ -296,6 +320,24 @@ func TestAdminService_ListGroups_WithSearch(t *testing.T) {
 		require.NotNil(t, repo.listWithFiltersIsExclusive)
 		require.True(t, *repo.listWithFiltersIsExclusive)
 	})
+}
+
+func TestAdminService_GetUserGroupRates_IncludesPublicGroupsWithExplicitGroups(t *testing.T) {
+	userRepo := &userRepoStub{user: &User{AllowedGroups: []int64{2}}}
+	groupRepo := &groupRepoStubForAdmin{
+		listActiveGroups: []Group{
+			{ID: 1, Name: "public", RateMultiplier: 1.0, IsExclusive: false},
+			{ID: 2, Name: "exclusive-allowed", RateMultiplier: 1.2, IsExclusive: true},
+			{ID: 3, Name: "exclusive-hidden", RateMultiplier: 1.5, IsExclusive: true},
+		},
+	}
+	svc := &adminServiceImpl{userRepo: userRepo, groupRepo: groupRepo}
+
+	items, err := svc.GetUserGroupRates(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	require.Equal(t, int64(1), items[0].GroupID)
+	require.Equal(t, int64(2), items[1].GroupID)
 }
 
 func TestAdminService_ValidateFallbackGroup_DetectsCycle(t *testing.T) {

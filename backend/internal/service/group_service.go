@@ -154,7 +154,11 @@ func (s *GroupService) Update(ctx context.Context, id int64, req UpdateGroupRequ
 		group.Status = *req.Status
 	}
 
-	if err := s.groupRepo.Update(ctx, group); err != nil {
+	preservedSupportedModels := group.SupportedModels
+	group.SupportedModels = nil
+	err = s.groupRepo.Update(ctx, group)
+	group.SupportedModels = preservedSupportedModels
+	if err != nil {
 		return nil, fmt.Errorf("update group: %w", err)
 	}
 	if s.authCacheInvalidator != nil {

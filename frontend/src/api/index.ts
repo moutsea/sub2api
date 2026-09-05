@@ -17,6 +17,7 @@ export { userAPI } from './user'
 export { paymentsAPI } from './payments'
 export { redeemAPI, type RedeemHistoryItem } from './redeem'
 export { userGroupsAPI } from './groups'
+export { modelPlazaAPI } from './model-plaza'
 
 // Admin APIs
 export { adminAPI } from './admin'

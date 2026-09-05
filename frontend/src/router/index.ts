@@ -88,6 +88,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Key Query'
     }
   },
+  {
+    path: '/model-plaza',
+    name: 'ModelPlaza',
+    component: () => import('@/views/user/ModelPlazaView.vue'),
+    meta: {
+      requiresAuth: false,
+      requiresAdmin: false,
+      title: 'Model Plaza',
+      titleKey: 'modelPlaza.title',
+      descriptionKey: 'modelPlaza.description'
+    }
+  },
 
   // ==================== User Routes ====================
   {
@@ -242,6 +254,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Group Management',
       titleKey: 'admin.groups.title',
       descriptionKey: 'admin.groups.description'
+    }
+  },
+  {
+    path: '/admin/model-plaza',
+    name: 'AdminModelPlaza',
+    component: () => import('@/views/admin/ModelPlazaView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Model Plaza Management',
+      titleKey: 'admin.modelPlaza.title',
+      descriptionKey: 'admin.modelPlaza.description'
     }
   },
   {
@@ -436,6 +460,7 @@ router.beforeEach((to, _from, next) => {
   if (authStore.isSimpleMode) {
     const restrictedPaths = [
       '/admin/groups',
+      '/admin/model-plaza',
       '/admin/subscriptions',
       '/admin/redeem',
       '/subscriptions',

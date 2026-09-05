@@ -111,6 +111,11 @@ func (Group) Fields() []ent.Field {
 		field.Bool("model_routing_enabled").
 			Default(false).
 			Comment("是否启用模型路由配置"),
+
+		field.JSON("supported_models", []string{}).
+			Default([]string{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("渠道支持的模型 ID 列表"),
 	}
 }
 

@@ -27,7 +27,8 @@ const openaiModels = [
   'gpt-5.4', 'gpt-5.4-mini',
   // Codex 系列
   'codex-auto-review',
-  // GPT-5.5 / GPT-5.6 系列
+  // GPT-6 / GPT-5.5 / GPT-5.6 系列
+  'gpt-6-astra',
   'gpt-5.5',
   'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra',
   'chatgpt-4o-latest',
@@ -306,6 +307,7 @@ const kiroOAuthPresetMappings = [
 ]
 
 const openaiPresetMappings = [
+  { label: 'GPT-6 Astra', from: 'gpt-6-astra', to: 'gpt-6-astra', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: 'GPT-4o', from: 'gpt-4o', to: 'gpt-4o', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400' },
   { label: 'GPT-4o Mini', from: 'gpt-4o-mini', to: 'gpt-4o-mini', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
   { label: 'GPT-4.1', from: 'gpt-4.1', to: 'gpt-4.1', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },

@@ -25,6 +25,12 @@ var codexCLIInstructions string
 
 var codexModelMap = map[string]string{
 	"codex-auto-review":          "codex-auto-review",
+	"gpt-6-astra":                "gpt-6-astra",
+	"gpt-6-astra-none":           "gpt-6-astra",
+	"gpt-6-astra-low":            "gpt-6-astra",
+	"gpt-6-astra-medium":         "gpt-6-astra",
+	"gpt-6-astra-high":           "gpt-6-astra",
+	"gpt-6-astra-xhigh":          "gpt-6-astra",
 	"gpt-5.6":                    "gpt-5.6",
 	"gpt-5.6-none":               "gpt-5.6",
 	"gpt-5.6-low":                "gpt-5.6",
@@ -304,6 +310,9 @@ func normalizeCodexModel(model string) string {
 
 	normalized := canonicalizeCodexModelID(modelID)
 
+	if hasOpenAIModelPrefix(normalized, "gpt-6-astra") {
+		return "gpt-6-astra"
+	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.6-sol") {
 		return "gpt-5.6-sol"
 	}
@@ -660,6 +669,7 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 			for key, value := range m {
 				newItem[key] = value
 			}
+			delete(newItem, "call_id")
 			filtered = append(filtered, newItem)
 			continue
 		}
@@ -678,21 +688,16 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 			copied = true
 		}
 
-		if isCodexToolCallItemType(typ) {
-			if callID, ok := m["call_id"].(string); !ok || strings.TrimSpace(callID) == "" {
-				if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" {
-					ensureCopy()
-					newItem["call_id"] = id
-				}
+		if !isCodexToolCallItemType(typ) {
+			if _, hasCallID := m["call_id"]; hasCallID {
+				ensureCopy()
+				delete(newItem, "call_id")
 			}
 		}
 
 		if !preserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-			if !isCodexToolCallItemType(typ) {
-				delete(newItem, "call_id")
-			}
 		}
 
 		filtered = append(filtered, newItem)
@@ -701,10 +706,19 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 }
 
 func isCodexToolCallItemType(typ string) bool {
-	if typ == "" {
+	switch typ {
+	case "function_call", "function_call_output",
+		"computer_call", "computer_call_output",
+		"local_shell_call",
+		"shell_call", "shell_call_output",
+		"apply_patch_call", "apply_patch_call_output",
+		"custom_tool_call", "custom_tool_call_output",
+		"tool_search_call", "tool_search_output",
+		"program", "program_output":
+		return true
+	default:
 		return false
 	}
-	return strings.HasSuffix(typ, "_call") || strings.HasSuffix(typ, "_call_output")
 }
 
 func normalizeCodexTools(reqBody map[string]any) bool {

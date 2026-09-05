@@ -209,6 +209,12 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id", h.Admin.Group.Delete)
 		groups.GET("/:id/stats", h.Admin.Group.GetStats)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+		groups.GET("/:id/models", h.ModelPlaza.List)
+		groups.POST("/:id/models", h.ModelPlaza.Create)
+		groups.PUT("/:id/models", h.ModelPlaza.Update)
+		groups.DELETE("/:id/models", h.ModelPlaza.Delete)
+		groups.PUT("/:id/models/*model", h.ModelPlaza.Update)
+		groups.DELETE("/:id/models/*model", h.ModelPlaza.Delete)
 	}
 }
 

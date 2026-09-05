@@ -218,6 +218,7 @@ export default {
     apiKeys: 'API 密钥',
     recharge: '充值',
     imagePreview: '图片预览',
+    modelPlaza: '模型广场',
     usage: '使用记录',
     redeem: '兑换',
     profile: '个人资料',
@@ -240,6 +241,25 @@ export default {
     github: 'GitHub',
     mySubscriptions: '我的订阅',
     docs: '文档'
+  },
+
+  modelPlaza: {
+    title: '模型广场',
+    description: '查看公开渠道的计费倍率、模型价格和支持模型',
+    subtitle: '选择适合你的渠道，快速了解可用模型、价格与倍率。',
+    searchPlaceholder: '搜索渠道或模型...',
+    allPlatforms: '全部平台',
+    multiplier: '倍率',
+    models: '支持模型',
+    inputPrice: '输入',
+    outputPrice: '输出',
+    priceUnit: '/百万 Token',
+    priceUnavailable: '价格暂不可用',
+    modelCount: '{count} 个模型',
+    noModels: '暂未配置支持模型',
+    noChannels: '暂无公开渠道',
+    failedToLoad: '加载模型广场失败',
+    refresh: '刷新'
   },
 
   imagePreview: {
@@ -828,6 +848,31 @@ export default {
 
   // Admin
   admin: {
+    modelPlaza: {
+      title: '模型广场管理',
+      description: '管理公开渠道展示的支持模型',
+      addModel: '添加模型',
+      editModel: '编辑模型',
+      channel: '公开渠道',
+      selectChannel: '选择渠道',
+      modelName: '模型 ID',
+      modelPlaceholder: '例如：claude-sonnet-4-6',
+      modelHint: '填写上游实际使用的模型 ID。',
+      autoModel: '自动发现（只读）',
+      saveModel: '保存模型',
+      empty: '当前渠道暂无支持模型',
+      chooseChannel: '请选择一个公开渠道',
+      noChannels: '暂无可管理的公开渠道',
+      modelRequired: '请输入模型 ID',
+      duplicateModel: '该模型已存在',
+      modelAdded: '模型已添加',
+      modelUpdated: '模型已更新',
+      modelDeleted: '模型已删除',
+      deleteConfirm: '确定删除模型“{model}”吗？',
+      failedToLoad: '加载模型配置失败',
+      failedToSave: '保存模型失败',
+      failedToDelete: '删除模型失败'
+    },
     // Dashboard
     dashboard: {
       title: '管理控制台',
@@ -1000,7 +1045,7 @@ export default {
       amountRequired: '请输入有效金额',
       insufficientBalance: '余额不足',
       setAllowedGroups: '设置允许分组',
-      allowedGroupsHint: '选择此用户可以使用的标准分组。订阅类型分组请在订阅管理中配置。',
+      allowedGroupsHint: '选择此用户额外允许使用的专属标准分组。公开分组始终可用，订阅类型分组请在订阅管理中配置。',
       noStandardGroups: '暂无标准分组',
       allowAllGroups: '允许全部分组',
       allowAllGroupsHint: '用户可以使用任何非专属分组',

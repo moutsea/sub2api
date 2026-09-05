@@ -447,6 +447,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		KiroOpus47Downgrade: g.KiroOpus47Downgrade,
 		ModelRouting:        g.ModelRouting,
 		ModelRoutingEnabled: g.ModelRoutingEnabled,
+		SupportedModels:     append([]string(nil), g.SupportedModels...),
 		CreatedAt:           g.CreatedAt,
 		UpdatedAt:           g.UpdatedAt,
 	}

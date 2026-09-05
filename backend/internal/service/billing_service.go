@@ -456,19 +456,7 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	if s.pricingService != nil {
 		litellmPricing := s.pricingService.GetModelPricing(model)
 		if litellmPricing != nil {
-			return applyModelSpecificPricingPolicy(model, &ModelPricing{
-				InputPricePerToken:             litellmPricing.InputCostPerToken,
-				InputPricePerTokenPriority:     litellmPricing.InputCostPerTokenPriority,
-				OutputPricePerToken:            litellmPricing.OutputCostPerToken,
-				OutputPricePerTokenPriority:    litellmPricing.OutputCostPerTokenPriority,
-				CacheCreationPricePerToken:     litellmPricing.CacheCreationInputTokenCost,
-				CacheReadPricePerToken:         litellmPricing.CacheReadInputTokenCost,
-				CacheReadPricePerTokenPriority: litellmPricing.CacheReadInputTokenCostPriority,
-				SupportsCacheBreakdown:         false,
-				LongContextInputThreshold:      litellmPricing.LongContextInputTokenThreshold,
-				LongContextInputMultiplier:     litellmPricing.LongContextInputCostMultiplier,
-				LongContextOutputMultiplier:    litellmPricing.LongContextOutputCostMultiplier,
-			}), nil
+			return applyModelSpecificPricingPolicy(model, modelPricingFromLiteLLM(litellmPricing)), nil
 		}
 	}
 
@@ -480,6 +468,52 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	}
 
 	return nil, fmt.Errorf("pricing not found for model: %s", model)
+}
+
+// GetModelPricingForDisplay returns a price only when it is explicitly known.
+// Unlike GetModelPricing, it does not use broad provider fallbacks intended to
+// keep billing operational for newly released model IDs.
+func (s *BillingService) GetModelPricingForDisplay(model string) (*ModelPricing, error) {
+	if s == nil {
+		return nil, fmt.Errorf("billing service unavailable")
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if s.pricingService != nil {
+		if litellmPricing := s.pricingService.GetModelPricingExact(model); litellmPricing != nil {
+			return applyModelSpecificPricingPolicy(model, modelPricingFromLiteLLM(litellmPricing)), nil
+		}
+	}
+
+	for _, candidate := range []string{
+		model,
+		normalizeModelNameForPricing(model),
+		strings.TrimPrefix(model, "models/"),
+		lastSegment(model),
+	} {
+		if pricing, ok := s.fallbackPrices[candidate]; ok {
+			return applyModelSpecificPricingPolicy(model, pricing), nil
+		}
+	}
+	return nil, fmt.Errorf("display pricing not found for model: %s", model)
+}
+
+func modelPricingFromLiteLLM(pricing *LiteLLMModelPricing) *ModelPricing {
+	if pricing == nil {
+		return nil
+	}
+	return &ModelPricing{
+		InputPricePerToken:             pricing.InputCostPerToken,
+		InputPricePerTokenPriority:     pricing.InputCostPerTokenPriority,
+		OutputPricePerToken:            pricing.OutputCostPerToken,
+		OutputPricePerTokenPriority:    pricing.OutputCostPerTokenPriority,
+		CacheCreationPricePerToken:     pricing.CacheCreationInputTokenCost,
+		CacheReadPricePerToken:         pricing.CacheReadInputTokenCost,
+		CacheReadPricePerTokenPriority: pricing.CacheReadInputTokenCostPriority,
+		SupportsCacheBreakdown:         false,
+		LongContextInputThreshold:      pricing.LongContextInputTokenThreshold,
+		LongContextInputMultiplier:     pricing.LongContextInputCostMultiplier,
+		LongContextOutputMultiplier:    pricing.LongContextOutputCostMultiplier,
+	}
 }
 
 func applyModelSpecificPricingPolicy(model string, pricing *ModelPricing) *ModelPricing {

@@ -41,6 +41,7 @@ type Handlers struct {
 	OpenAIGateway   *OpenAIGatewayHandler
 	Setting         *SettingHandler
 	TempAPIKeyQuery *TempAPIKeyQueryHandler
+	ModelPlaza      *ModelPlazaHandler
 }
 
 // BuildInfo contains build-time information

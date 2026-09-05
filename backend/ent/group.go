@@ -62,6 +62,8 @@ type Group struct {
 	ModelRouting map[string][]int64 `json:"model_routing,omitempty"`
 	// 是否启用模型路由配置
 	ModelRoutingEnabled bool `json:"model_routing_enabled,omitempty"`
+	// 渠道支持的模型 ID 列表
+	SupportedModels []string `json:"supported_models,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the GroupQuery when eager-loading is set.
 	Edges        GroupEdges `json:"edges"`
@@ -179,7 +181,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case group.FieldModelRouting:
+		case group.FieldModelRouting, group.FieldSupportedModels:
 			values[i] = new([]byte)
 		case group.FieldIsExclusive, group.FieldClaudeCodeOnly, group.FieldKiroOpus47Downgrade, group.FieldModelRoutingEnabled:
 			values[i] = new(sql.NullBool)
@@ -355,6 +357,14 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.ModelRoutingEnabled = value.Bool
 			}
+		case group.FieldSupportedModels:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field supported_models", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.SupportedModels); err != nil {
+					return fmt.Errorf("unmarshal field supported_models: %w", err)
+				}
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -519,6 +529,9 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("model_routing_enabled=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ModelRoutingEnabled))
+	builder.WriteString(", ")
+	builder.WriteString("supported_models=")
+	builder.WriteString(fmt.Sprintf("%v", _m.SupportedModels))
 	builder.WriteByte(')')
 	return builder.String()
 }

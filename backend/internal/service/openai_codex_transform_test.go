@@ -82,6 +82,25 @@ func TestNormalizeCodexModel_AcceptsGPT56Aliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodexModel_AcceptsGPT6AstraAliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "gpt6 astra", input: "gpt-6-astra", want: "gpt-6-astra"},
+		{name: "gpt6 astra high", input: "gpt-6-astra-high", want: "gpt-6-astra"},
+		{name: "provider gpt6 astra", input: "provider/gpt-6-astra-20260904", want: "gpt-6-astra"},
+		{name: "gpt6 astra fuzzy", input: "gpt 6 astra", want: "gpt-6-astra"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
+		})
+	}
+}
+
 func TestNormalizeCodexModel_AcceptsCurrentOfficialCodexModels(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -308,6 +327,162 @@ func TestFilterCodexInput_RemovesItemReferenceWhenNotPreserved(t *testing.T) {
 	require.Equal(t, "text", item["type"])
 	_, hasID := item["id"]
 	require.False(t, hasID)
+}
+
+func TestFilterCodexInput_PreservesCallIDForSupportedTypes(t *testing.T) {
+	supportedTypes := []string{
+		"function_call",
+		"function_call_output",
+		"computer_call",
+		"computer_call_output",
+		"local_shell_call",
+		"shell_call",
+		"shell_call_output",
+		"apply_patch_call",
+		"apply_patch_call_output",
+		"custom_tool_call",
+		"custom_tool_call_output",
+		"tool_search_call",
+		"tool_search_output",
+		"program",
+		"program_output",
+	}
+
+	for _, itemType := range supportedTypes {
+		t.Run(itemType, func(t *testing.T) {
+			filtered := filterCodexInput([]any{map[string]any{
+				"type":    itemType,
+				"id":      "item_1",
+				"call_id": "call_1",
+			}}, true)
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "call_1", item["call_id"])
+		})
+	}
+}
+
+func TestFilterCodexInput_DoesNotAddCallIDToUnsupportedTypes(t *testing.T) {
+	unsupportedTypes := []string{
+		"file_search_call",
+		"web_search_call",
+		"code_interpreter_call",
+		"image_generation_call",
+		"mcp_call",
+		"local_shell_call_output",
+		"item_reference",
+		"message",
+		"reasoning",
+	}
+
+	for _, itemType := range unsupportedTypes {
+		t.Run(itemType, func(t *testing.T) {
+			filtered := filterCodexInput([]any{map[string]any{
+				"type": itemType,
+				"id":   "item_1",
+			}}, true)
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			_, hasCallID := item["call_id"]
+			require.False(t, hasCallID)
+			require.Equal(t, "item_1", item["id"])
+		})
+	}
+}
+
+func TestFilterCodexInput_RemovesCallIDFromUnsupportedTypesDuringContinuation(t *testing.T) {
+	unsupportedTypes := []string{
+		"file_search_call",
+		"web_search_call",
+		"code_interpreter_call",
+		"image_generation_call",
+		"mcp_call",
+		"local_shell_call_output",
+		"item_reference",
+		"message",
+		"reasoning",
+	}
+
+	for _, itemType := range unsupportedTypes {
+		t.Run(itemType, func(t *testing.T) {
+			filtered := filterCodexInput([]any{map[string]any{
+				"type":    itemType,
+				"id":      "item_1",
+				"call_id": "invalid_call_id",
+			}}, true)
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			_, hasCallID := item["call_id"]
+			require.False(t, hasCallID)
+		})
+	}
+}
+
+func TestFilterCodexInput_DoesNotAddCallIDToUnsupportedTypesWithoutContinuation(t *testing.T) {
+	unsupportedTypes := []string{
+		"file_search_call",
+		"web_search_call",
+		"code_interpreter_call",
+		"image_generation_call",
+		"mcp_call",
+		"local_shell_call_output",
+		"message",
+		"reasoning",
+	}
+
+	for _, itemType := range unsupportedTypes {
+		t.Run(itemType, func(t *testing.T) {
+			filtered := filterCodexInput([]any{map[string]any{
+				"type": itemType,
+				"id":   "item_1",
+			}}, false)
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			_, hasCallID := item["call_id"]
+			require.False(t, hasCallID)
+			_, hasID := item["id"]
+			require.False(t, hasID)
+		})
+	}
+}
+
+func TestFilterCodexInput_RemovesUnknownCallID(t *testing.T) {
+	filtered := filterCodexInput([]any{map[string]any{
+		"type":    "future_tool_call",
+		"id":      "item_1",
+		"call_id": "call_1",
+	}}, true)
+
+	require.Len(t, filtered, 1)
+	item, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	_, hasCallID := item["call_id"]
+	require.False(t, hasCallID)
+}
+
+func TestFilterCodexInput_DoesNotSynthesizeCallIDFromItemID(t *testing.T) {
+	for _, itemType := range []string{"function_call_output", "local_shell_call_output"} {
+		t.Run(itemType, func(t *testing.T) {
+			filtered := filterCodexInput([]any{map[string]any{
+				"type": itemType,
+				"id":   "fc_1",
+			}}, true)
+
+			require.Len(t, filtered, 1)
+			item, ok := filtered[0].(map[string]any)
+			require.True(t, ok)
+			_, hasCallID := item["call_id"]
+			require.False(t, hasCallID)
+		})
+	}
 }
 
 func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunctionTools(t *testing.T) {

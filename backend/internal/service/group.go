@@ -38,12 +38,30 @@ type Group struct {
 	// value: 优先账号 ID 列表
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool
+	SupportedModels     []string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
 	AccountGroups []AccountGroup
 	AccountCount  int64
+}
+
+func NormalizeSupportedModels(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" || len(model) > 200 {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	return out
 }
 
 func (g *Group) IsActive() bool {

@@ -4063,6 +4063,8 @@ type GroupMutation struct {
 	kiro_opus_47_downgrade   *bool
 	model_routing            *map[string][]int64
 	model_routing_enabled    *bool
+	supported_models         *[]string
+	appendsupported_models   []string
 	clearedFields            map[string]struct{}
 	api_keys                 map[int64]struct{}
 	removedapi_keys          map[int64]struct{}
@@ -5297,6 +5299,57 @@ func (m *GroupMutation) ResetModelRoutingEnabled() {
 	m.model_routing_enabled = nil
 }
 
+// SetSupportedModels sets the "supported_models" field.
+func (m *GroupMutation) SetSupportedModels(s []string) {
+	m.supported_models = &s
+	m.appendsupported_models = nil
+}
+
+// SupportedModels returns the value of the "supported_models" field in the mutation.
+func (m *GroupMutation) SupportedModels() (r []string, exists bool) {
+	v := m.supported_models
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSupportedModels returns the old "supported_models" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldSupportedModels(ctx context.Context) (v []string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSupportedModels is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSupportedModels requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSupportedModels: %w", err)
+	}
+	return oldValue.SupportedModels, nil
+}
+
+// AppendSupportedModels adds s to the "supported_models" field.
+func (m *GroupMutation) AppendSupportedModels(s []string) {
+	m.appendsupported_models = append(m.appendsupported_models, s...)
+}
+
+// AppendedSupportedModels returns the list of values that were appended to the "supported_models" field in this mutation.
+func (m *GroupMutation) AppendedSupportedModels() ([]string, bool) {
+	if len(m.appendsupported_models) == 0 {
+		return nil, false
+	}
+	return m.appendsupported_models, true
+}
+
+// ResetSupportedModels resets all changes to the "supported_models" field.
+func (m *GroupMutation) ResetSupportedModels() {
+	m.supported_models = nil
+	m.appendsupported_models = nil
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by ids.
 func (m *GroupMutation) AddAPIKeyIDs(ids ...int64) {
 	if m.api_keys == nil {
@@ -5709,7 +5762,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 22)
+	fields := make([]string, 0, 23)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -5776,6 +5829,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.model_routing_enabled != nil {
 		fields = append(fields, group.FieldModelRoutingEnabled)
 	}
+	if m.supported_models != nil {
+		fields = append(fields, group.FieldSupportedModels)
+	}
 	return fields
 }
 
@@ -5828,6 +5884,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.ModelRouting()
 	case group.FieldModelRoutingEnabled:
 		return m.ModelRoutingEnabled()
+	case group.FieldSupportedModels:
+		return m.SupportedModels()
 	}
 	return nil, false
 }
@@ -5881,6 +5939,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldModelRouting(ctx)
 	case group.FieldModelRoutingEnabled:
 		return m.OldModelRoutingEnabled(ctx)
+	case group.FieldSupportedModels:
+		return m.OldSupportedModels(ctx)
 	}
 	return nil, fmt.Errorf("unknown Group field %s", name)
 }
@@ -6043,6 +6103,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetModelRoutingEnabled(v)
+		return nil
+	case group.FieldSupportedModels:
+		v, ok := value.([]string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSupportedModels(v)
 		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)
@@ -6332,6 +6399,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldModelRoutingEnabled:
 		m.ResetModelRoutingEnabled()
+		return nil
+	case group.FieldSupportedModels:
+		m.ResetSupportedModels()
 		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)

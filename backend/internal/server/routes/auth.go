@@ -40,6 +40,9 @@ func RegisterAuthRoutes(
 	{
 		settings.GET("/public", h.Setting.GetPublicSettings)
 	}
+	v1.GET("/model-plaza", h.ModelPlaza.Public)
+	// Keep the legacy public alias for clients using /models/public.
+	v1.GET("/models/public", h.ModelPlaza.Public)
 
 	// 需要认证的当前用户信息
 	authenticated := v1.Group("")

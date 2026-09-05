@@ -141,6 +141,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		ClaudeCodeOnly:      g.ClaudeCodeOnly,
 		FallbackGroupID:     g.FallbackGroupID,
 		KiroOpus47Downgrade: g.KiroOpus47Downgrade,
+		SupportedModels:     append([]string(nil), g.SupportedModels...),
 		CreatedAt:           g.CreatedAt,
 		UpdatedAt:           g.UpdatedAt,
 	}

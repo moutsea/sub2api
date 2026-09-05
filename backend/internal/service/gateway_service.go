@@ -25,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -4800,6 +4801,13 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 			}
 			continue
 		}
+		if acc.Platform == PlatformOpenAI && (platform == "" || platform == PlatformOpenAI) {
+			hasAnyMapping = true
+			for _, model := range openai.DefaultModelsForAccount(acc.IsOAuth()) {
+				modelSet[model.ID] = struct{}{}
+			}
+			continue
+		}
 		if acc.Platform == PlatformKiro && acc.IsKiroApiKey() {
 			hasAnyMapping = true
 			for _, model := range KiroAPIKeyDefaultModels() {
@@ -4822,7 +4830,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 	}
 
-	// If no account has model_mapping, return nil (use default)
+	// If no account has an explicit model mapping or a built-in model catalog, return nil.
 	if !hasAnyMapping {
 		return nil
 	}

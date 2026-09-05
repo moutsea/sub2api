@@ -293,6 +293,10 @@ func init() {
 	groupDescModelRoutingEnabled := groupFields[18].Descriptor()
 	// group.DefaultModelRoutingEnabled holds the default value on creation for the model_routing_enabled field.
 	group.DefaultModelRoutingEnabled = groupDescModelRoutingEnabled.Default.(bool)
+	// groupDescSupportedModels is the schema descriptor for supported_models field.
+	groupDescSupportedModels := groupFields[19].Descriptor()
+	// group.DefaultSupportedModels holds the default value on creation for the supported_models field.
+	group.DefaultSupportedModels = groupDescSupportedModels.Default.([]string)
 	promocodeFields := schema.PromoCode{}.Fields()
 	_ = promocodeFields
 	// promocodeDescCode is the schema descriptor for code field.

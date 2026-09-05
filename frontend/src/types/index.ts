@@ -276,6 +276,7 @@ export interface Group {
   fallback_group_id: number | null
   // Kiro 平台配置
   kiro_opus_47_downgrade: boolean
+  supported_models: string[]
   created_at: string
   updated_at: string
 }
@@ -401,6 +402,7 @@ export interface CreateGroupRequest {
   claude_code_only?: boolean
   fallback_group_id?: number | null
   kiro_opus_47_downgrade?: boolean
+  supported_models?: string[]
 }
 
 export interface UpdateGroupRequest {
@@ -420,6 +422,22 @@ export interface UpdateGroupRequest {
   claude_code_only?: boolean
   fallback_group_id?: number | null
   kiro_opus_47_downgrade?: boolean
+  supported_models?: string[]
+}
+
+export interface PublicModelChannel {
+  id: number
+  name: string
+  description: string
+  platform: GroupPlatform
+  rate_multiplier: number
+  supported_models: string[]
+  model_prices?: Record<string, PublicModelPrice>
+}
+
+export interface PublicModelPrice {
+  input_price_per_mtok: number
+  output_price_per_mtok: number
 }
 
 // ==================== Account & Proxy Types ====================

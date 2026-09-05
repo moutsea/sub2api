@@ -2375,6 +2375,8 @@ func normalizeOpenAIResponseModel(model string) string {
 		return ""
 	}
 	switch {
+	case hasOpenAIModelPrefix(model, "gpt-6-astra"):
+		return "gpt-6-astra"
 	case hasOpenAIModelPrefix(model, "gpt-5.6-sol"):
 		return "gpt-5.6-sol"
 	case hasOpenAIModelPrefix(model, "gpt-5.6-terra"):

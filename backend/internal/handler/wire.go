@@ -76,6 +76,7 @@ func ProvideHandlers(
 	openaiGatewayHandler *OpenAIGatewayHandler,
 	settingHandler *SettingHandler,
 	tempAPIKeyQueryHandler *TempAPIKeyQueryHandler,
+	modelPlazaHandler *ModelPlazaHandler,
 ) *Handlers {
 	return &Handlers{
 		Auth:            authHandler,
@@ -90,6 +91,7 @@ func ProvideHandlers(
 		OpenAIGateway:   openaiGatewayHandler,
 		Setting:         settingHandler,
 		TempAPIKeyQuery: tempAPIKeyQueryHandler,
+		ModelPlaza:      modelPlazaHandler,
 	}
 }
 
@@ -107,6 +109,7 @@ var ProviderSet = wire.NewSet(
 	NewOpenAIGatewayHandler,
 	ProvideSettingHandler,
 	NewTempAPIKeyQueryHandler,
+	NewModelPlazaHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

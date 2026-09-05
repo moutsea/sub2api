@@ -59,6 +59,8 @@ const (
 	FieldModelRouting = "model_routing"
 	// FieldModelRoutingEnabled holds the string denoting the model_routing_enabled field in the database.
 	FieldModelRoutingEnabled = "model_routing_enabled"
+	// FieldSupportedModels holds the string denoting the supported_models field in the database.
+	FieldSupportedModels = "supported_models"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
 	// EdgeTempAPIKeys holds the string denoting the temp_api_keys edge name in mutations.
@@ -165,6 +167,7 @@ var Columns = []string{
 	FieldKiroOpus47Downgrade,
 	FieldModelRouting,
 	FieldModelRoutingEnabled,
+	FieldSupportedModels,
 }
 
 var (
@@ -226,6 +229,8 @@ var (
 	DefaultKiroOpus47Downgrade bool
 	// DefaultModelRoutingEnabled holds the default value on creation for the "model_routing_enabled" field.
 	DefaultModelRoutingEnabled bool
+	// DefaultSupportedModels holds the default value on creation for the "supported_models" field.
+	DefaultSupportedModels []string
 )
 
 // OrderOption defines the ordering options for the Group queries.

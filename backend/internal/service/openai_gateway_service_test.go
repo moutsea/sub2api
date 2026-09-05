@@ -865,6 +865,15 @@ func TestOpenAIResponseModelMatches_NormalizesGPT55Snapshot(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponseModelMatches_NormalizesGPT6AstraSnapshot(t *testing.T) {
+	if !openAIResponseModelMatches("gpt-6-astra-2026-09-04", "gpt-6-astra") {
+		t.Fatalf("expected gpt-6-astra snapshot to match stable alias")
+	}
+	if normalized := normalizeOpenAIResponseModel("gpt-6-astra-2026-09-04"); normalized != "gpt-6-astra" {
+		t.Fatalf("expected gpt-6-astra snapshot to normalize, got %q", normalized)
+	}
+}
+
 func TestOpenAIResponseModelMatches_NormalizesGPT56Models(t *testing.T) {
 	tests := []struct {
 		actual string

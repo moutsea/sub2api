@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 var (
-	openAIModelDatePattern = regexp.MustCompile(`-\d{8}$`)
+	openAIModelDatePattern = regexp.MustCompile(`(-\d{8}|-\d{4}-\d{2}-\d{2})$`)
 	openAIModelBasePattern = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
 )
 
@@ -29,6 +30,18 @@ const (
 )
 
 var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
+	"gpt-6-astra": {
+		InputCostPerToken:               10e-06,
+		OutputCostPerToken:              50e-06,
+		CacheCreationInputTokenCost:     12.5e-06,
+		CacheReadInputTokenCost:         1e-06,
+		LongContextInputTokenThreshold:  272000,
+		LongContextInputCostMultiplier:  2.0,
+		LongContextOutputCostMultiplier: 1.5,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
 	"gpt-5.6": {
 		InputCostPerToken:               5e-06,
 		OutputCostPerToken:              30e-06,
@@ -652,6 +665,72 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	}
 
 	return nil
+}
+
+// GetModelPricingExact returns a price only when the model or a known model
+// variant has an explicit entry. It intentionally skips family and provider
+// fallback matching so callers can distinguish unknown prices.
+func (s *PricingService) GetModelPricingExact(modelName string) *LiteLLMModelPricing {
+	if s == nil || strings.TrimSpace(modelName) == "" {
+		return nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	modelLower := strings.ToLower(strings.TrimSpace(modelName))
+	candidates := s.buildModelLookupCandidates(modelLower)
+	lookup := func(candidate string) *LiteLLMModelPricing {
+		if pricing, ok := s.pricingData[candidate]; ok {
+			return pricing
+		}
+		if pricing, ok := openAIStaticPricingOverrides[candidate]; ok {
+			return cloneLiteLLMModelPricing(pricing)
+		}
+		if pricing, ok := geminiStaticPricingOverrides[candidate]; ok {
+			return cloneLiteLLMModelPricing(pricing)
+		}
+		return nil
+	}
+
+	for _, candidate := range candidates {
+		if pricing := lookup(candidate); pricing != nil {
+			return pricing
+		}
+	}
+	for _, candidate := range candidates {
+		if !strings.HasPrefix(candidate, "gpt-") && !strings.HasPrefix(candidate, "codex-") {
+			continue
+		}
+
+		withoutDate := openAIModelDatePattern.ReplaceAllString(candidate, "")
+		if withoutDate != candidate {
+			if pricing := lookup(withoutDate); pricing != nil {
+				return pricing
+			}
+			candidate = withoutDate
+		}
+
+		if !isKnownOpenAIModelID(candidate) {
+			continue
+		}
+		if matches := openAIModelBasePattern.FindStringSubmatch(candidate); len(matches) > 1 {
+			if pricing := lookup(matches[1]); pricing != nil {
+				return pricing
+			}
+		}
+	}
+
+	return nil
+}
+
+func isKnownOpenAIModelID(model string) bool {
+	for _, known := range openai.DefaultModels {
+		if known.ID == model {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *PricingService) buildModelLookupCandidates(modelLower string) []string {

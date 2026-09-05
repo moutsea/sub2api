@@ -1283,14 +1283,13 @@ async function handleSubmit() {
     persistDraftState()
     appStore.showError(message)
   } finally {
-    if (!isLatestRequest(requestId)) {
-      return
+    if (isLatestRequest(requestId)) {
+      generating.value = false
+      currentRequestId.value = null
+      persistDraftState()
+      activeController = null
+      stopPendingSyncTimer()
     }
-    generating.value = false
-    currentRequestId.value = null
-    persistDraftState()
-    activeController = null
-    stopPendingSyncTimer()
   }
 }
 

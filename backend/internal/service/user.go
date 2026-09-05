@@ -36,18 +36,19 @@ func (u *User) IsActive() bool {
 
 // CanBindGroup checks whether a user can bind to a given group.
 // For standard groups:
-// - If AllowedGroups is non-empty, only allow binding to IDs in that list.
-// - If AllowedGroups is empty (nil or length 0), allow binding to any non-exclusive group.
+// - Non-exclusive groups are always available to every user.
+// - AllowedGroups grants access to matching exclusive groups.
 func (u *User) CanBindGroup(groupID int64, isExclusive bool) bool {
-	if len(u.AllowedGroups) > 0 {
-		for _, id := range u.AllowedGroups {
-			if id == groupID {
-				return true
-			}
-		}
-		return false
+	if !isExclusive {
+		return true
 	}
-	return !isExclusive
+
+	for _, id := range u.AllowedGroups {
+		if id == groupID {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *User) SetPassword(password string) error {

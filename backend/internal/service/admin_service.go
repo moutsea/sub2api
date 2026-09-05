@@ -114,6 +114,7 @@ type CreateGroupInput struct {
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool // 是否启用模型路由
+	SupportedModels     []string
 }
 
 type UpdateGroupInput struct {
@@ -138,6 +139,7 @@ type UpdateGroupInput struct {
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled *bool // 是否启用模型路由
+	SupportedModels     []string
 }
 
 type CreateAccountInput struct {
@@ -597,6 +599,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		FallbackGroupID:     input.FallbackGroupID,
 		KiroOpus47Downgrade: input.KiroOpus47Downgrade,
 		ModelRouting:        input.ModelRouting,
+		SupportedModels:     NormalizeSupportedModels(input.SupportedModels),
 	}
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
@@ -735,8 +738,19 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.ModelRoutingEnabled != nil {
 		group.ModelRoutingEnabled = *input.ModelRoutingEnabled
 	}
+	if input.SupportedModels != nil {
+		group.SupportedModels = NormalizeSupportedModels(input.SupportedModels)
+	}
 
-	if err := s.groupRepo.Update(ctx, group); err != nil {
+	preservedSupportedModels := group.SupportedModels
+	if input.SupportedModels == nil {
+		group.SupportedModels = nil
+	}
+	err = s.groupRepo.Update(ctx, group)
+	if input.SupportedModels == nil {
+		group.SupportedModels = preservedSupportedModels
+	}
+	if err != nil {
 		return nil, err
 	}
 	if s.authCacheInvalidator != nil {
@@ -1683,47 +1697,24 @@ func (s *adminServiceImpl) GetUserGroupRates(ctx context.Context, userID int64) 
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
 
-	// Build group map for quick lookup
-	groupMap := make(map[int64]*Group, len(groups))
-	for i := range groups {
-		groupMap[groups[i].ID] = &groups[i]
-	}
-
 	// Get user's custom rates
 	rates, err := s.userRepo.GetUserGroupRates(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user group rates: %w", err)
 	}
 
-	// Build result: only include groups the user is allowed to use
-	var items []UserGroupRateItem
-	if len(user.AllowedGroups) > 0 {
-		// User has explicit allowed groups
-		for _, gid := range user.AllowedGroups {
-			g, ok := groupMap[gid]
-			if !ok {
-				continue
-			}
-			items = append(items, UserGroupRateItem{
-				GroupID:     g.ID,
-				GroupName:   g.Name,
-				DefaultRate: g.RateMultiplier,
-				CustomRate:  rates[gid],
-			})
+	// Public groups are always available; AllowedGroups only adds exclusive groups.
+	items := make([]UserGroupRateItem, 0, len(groups))
+	for _, g := range groups {
+		if !user.CanBindGroup(g.ID, g.IsExclusive) {
+			continue
 		}
-	} else {
-		// User can use all non-exclusive groups
-		for _, g := range groups {
-			if g.IsExclusive {
-				continue
-			}
-			items = append(items, UserGroupRateItem{
-				GroupID:     g.ID,
-				GroupName:   g.Name,
-				DefaultRate: g.RateMultiplier,
-				CustomRate:  rates[g.ID],
-			})
-		}
+		items = append(items, UserGroupRateItem{
+			GroupID:     g.ID,
+			GroupName:   g.Name,
+			DefaultRate: g.RateMultiplier,
+			CustomRate:  rates[g.ID],
+		})
 	}
 
 	return items, nil

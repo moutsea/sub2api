@@ -22,6 +22,8 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 		input  float64
 		output float64
 	}{
+		{model: "gpt-6-astra", input: 10e-06, output: 50e-06},
+		{model: "gpt-6-astra-2026-09-04", input: 10e-06, output: 50e-06},
 		{model: "gpt-5.3", input: 1.75e-06, output: 14e-06},
 		{model: "gpt-5.6", input: 5e-06, output: 30e-06},
 		{model: "gpt-5.6-sol", input: 5e-06, output: 30e-06},
@@ -49,6 +51,80 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 		})
 	}
 
+}
+
+func TestPricingServiceGetModelPricing_GPT6AstraUsesGPT56Policy(t *testing.T) {
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}
+
+	pricing := svc.GetModelPricing("gpt-6-astra")
+	if pricing == nil {
+		t.Fatal("expected gpt-6-astra pricing")
+	}
+	if pricing.CacheCreationInputTokenCost != 12.5e-06 {
+		t.Fatalf("cache creation pricing = %v, want %v", pricing.CacheCreationInputTokenCost, 12.5e-06)
+	}
+	if pricing.CacheReadInputTokenCost != 1e-06 {
+		t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadInputTokenCost, 1e-06)
+	}
+	if pricing.LongContextInputTokenThreshold != 272000 {
+		t.Fatalf("long context threshold = %d, want %d", pricing.LongContextInputTokenThreshold, 272000)
+	}
+	if pricing.LongContextInputCostMultiplier != 2 || pricing.LongContextOutputCostMultiplier != 1.5 {
+		t.Fatalf("long context multipliers = %v/%v, want 2/1.5", pricing.LongContextInputCostMultiplier, pricing.LongContextOutputCostMultiplier)
+	}
+	if !pricing.SupportsPromptCaching {
+		t.Fatal("expected gpt-6-astra to support prompt caching")
+	}
+}
+
+func TestPricingServiceGetModelPricingExactSkipsProviderFallback(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.5": {
+				InputCostPerToken:  5e-06,
+				OutputCostPerToken: 30e-06,
+			},
+		},
+	}
+
+	if pricing := svc.GetModelPricingExact("gpt-unknown"); pricing != nil {
+		t.Fatalf("expected unknown model to have no exact pricing, got %+v", pricing)
+	}
+	if pricing := svc.GetModelPricingExact("gpt-5.6-unknown"); pricing != nil {
+		t.Fatalf("expected unknown model variant to have no exact pricing, got %+v", pricing)
+	}
+	pricing := svc.GetModelPricingExact("gpt-6-astra")
+	if pricing == nil {
+		t.Fatal("expected static pricing for gpt-6-astra")
+	}
+	if pricing.InputCostPerToken != 10e-06 || pricing.OutputCostPerToken != 50e-06 {
+		t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputCostPerToken, pricing.OutputCostPerToken, 10e-06, 50e-06)
+	}
+	if pricing := svc.GetModelPricingExact("gpt-5.4-mini"); pricing == nil {
+		t.Fatal("expected known gpt-5.4-mini variant to use gpt-5.4 pricing")
+	}
+}
+
+func TestBillingServiceGetModelPricingForDisplaySkipsProviderFallback(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.5": {
+				InputCostPerToken:  5e-06,
+				OutputCostPerToken: 30e-06,
+			},
+		},
+	})
+
+	if _, err := svc.GetModelPricingForDisplay("gpt-unknown"); err == nil {
+		t.Fatal("expected unknown model display pricing to fail")
+	}
+	pricing, err := svc.GetModelPricingForDisplay("gpt-6-astra")
+	if err != nil {
+		t.Fatalf("expected static gpt-6-astra display pricing, got %v", err)
+	}
+	if pricing.InputPricePerToken != 10e-06 || pricing.OutputPricePerToken != 50e-06 {
+		t.Fatalf("pricing = %v/%v, want %v/%v", pricing.InputPricePerToken, pricing.OutputPricePerToken, 10e-06, 50e-06)
+	}
 }
 
 func TestPricingServiceGetModelPricing_Gemini38StaticFallback(t *testing.T) {
@@ -448,6 +524,21 @@ func TestBillingServiceGetModelPricing_OpenAIGPTDoesNotUseSeparateCacheCreationP
 	}
 	if pricing.CacheReadPricePerToken != 5e-07 {
 		t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadPricePerToken, 5e-07)
+	}
+}
+
+func TestBillingServiceGetModelPricing_GPT6AstraDoesNotUseSeparateCacheCreationPrice(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+
+	pricing, err := svc.GetModelPricing("gpt-6-astra")
+	if err != nil {
+		t.Fatalf("expected GPT-6 Astra pricing, got error %v", err)
+	}
+	if pricing.CacheCreationPricePerToken != 0 {
+		t.Fatalf("cache creation pricing = %v, want 0", pricing.CacheCreationPricePerToken)
+	}
+	if pricing.CacheReadPricePerToken != 1e-06 {
+		t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadPricePerToken, 1e-06)
 	}
 }
 

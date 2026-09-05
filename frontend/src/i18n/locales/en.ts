@@ -221,6 +221,7 @@ export default {
     apiKeys: 'API Keys',
     recharge: 'Recharge',
     imagePreview: 'Images Preview',
+    modelPlaza: 'Model Plaza',
     usage: 'Usage',
     redeem: 'Redeem',
     profile: 'Profile',
@@ -243,6 +244,25 @@ export default {
     github: 'GitHub',
     mySubscriptions: 'My Subscriptions',
     docs: 'Docs'
+  },
+
+  modelPlaza: {
+    title: 'Model Plaza',
+    description: 'Browse public channel rates, model prices, and supported models',
+    subtitle: 'Compare public channels and find the models, prices, and rates that fit your workflow.',
+    searchPlaceholder: 'Search channels or models...',
+    allPlatforms: 'All platforms',
+    multiplier: 'Multiplier',
+    models: 'Supported models',
+    inputPrice: 'Input',
+    outputPrice: 'Output',
+    priceUnit: '/ MTok',
+    priceUnavailable: 'Price unavailable',
+    modelCount: '{count} models',
+    noModels: 'No supported models configured',
+    noChannels: 'No public channels available',
+    failedToLoad: 'Failed to load model plaza',
+    refresh: 'Refresh'
   },
 
   imagePreview: {
@@ -832,6 +852,31 @@ export default {
 
   // Admin
   admin: {
+    modelPlaza: {
+      title: 'Model Plaza Management',
+      description: 'Manage models displayed for public channels',
+      addModel: 'Add model',
+      editModel: 'Edit model',
+      channel: 'Public channel',
+      selectChannel: 'Select a channel',
+      modelName: 'Model ID',
+      modelPlaceholder: 'e.g. claude-sonnet-4-6',
+      modelHint: 'Use the model ID accepted by the upstream provider.',
+      autoModel: 'Auto-discovered (read-only)',
+      saveModel: 'Save model',
+      empty: 'No supported models configured for this channel',
+      chooseChannel: 'Choose a public channel',
+      noChannels: 'No public channels to manage',
+      modelRequired: 'Enter a model ID',
+      duplicateModel: 'This model already exists',
+      modelAdded: 'Model added',
+      modelUpdated: 'Model updated',
+      modelDeleted: 'Model deleted',
+      deleteConfirm: 'Delete model “{model}”?',
+      failedToLoad: 'Failed to load model configuration',
+      failedToSave: 'Failed to save model',
+      failedToDelete: 'Failed to delete model'
+    },
     // Dashboard
     dashboard: {
       title: 'Admin Dashboard',
@@ -946,7 +991,7 @@ export default {
       deleteConfirm: "Are you sure you want to delete '{email}'? This action cannot be undone.",
       setAllowedGroups: 'Set Allowed Groups',
       allowedGroupsHint:
-        'Select which standard groups this user can use. Subscription groups are managed separately.',
+        'Select additional exclusive groups this user can use. Public groups are always available; subscription groups are managed separately.',
       noStandardGroups: 'No standard groups available',
       allowAllGroups: 'Allow All Groups',
       allowAllGroupsHint: 'User can use any non-exclusive group',

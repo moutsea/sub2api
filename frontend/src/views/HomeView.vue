@@ -61,6 +61,15 @@
             <span class="hidden sm:inline">{{ t('home.keyQuery') }}</span>
           </router-link>
 
+          <router-link
+            to="/model-plaza"
+            class="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm text-gray-500 transition-all duration-200 hover:bg-gray-100/80 hover:text-gray-800 dark:text-dark-400 dark:hover:bg-dark-800/80 dark:hover:text-white"
+            :title="t('modelPlaza.title')"
+          >
+            <Icon name="cube" size="md" />
+            <span class="hidden sm:inline">{{ t('modelPlaza.title') }}</span>
+          </router-link>
+
           <LocaleSwitcher />
 
           <a
