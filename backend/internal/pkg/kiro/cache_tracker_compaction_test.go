@@ -107,6 +107,53 @@ func TestStableCreditNeverExceedsPreviousCacheable(t *testing.T) {
 	}
 }
 
+// TestStableCreditRequiresMinCacheableStablePrefix 验证稳定前缀本身达不到上游
+// 最小可缓存单位时，不给 cache_read 额度。
+//
+// 反例形态："system 很短 + 历史很长" —— 整体可缓存量过了 1024 阈值，
+// 但 stable 只有几个 token。Anthropic 不会缓存小于 MinCacheableTokens 的前缀，
+// 所以此时上游其实没有任何稳定前缀被缓存，给额度就是过度授信：
+// 少收用户的钱，且与上游返回的真实 usage 对不上。
+func TestStableCreditRequiresMinCacheableStablePrefix(t *testing.T) {
+	tracker := NewCacheTracker(DefaultCacheTTL)
+	defer tracker.Stop()
+	scope := CacheScope{AccountID: 1, Model: "m", SessionID: "s"}
+
+	shortSystem := "you are helpful"
+	longHistory := func(first string) *ClaudeRequest {
+		req := &ClaudeRequest{System: shortSystem, Messages: []ClaudeMessage{userMsg(first)}}
+		for i := 0; i < 10; i++ {
+			req.Messages = append(req.Messages, ClaudeMessage{
+				Role: "user", Content: strings.Repeat("long history turn ", 60),
+			})
+		}
+		return req
+	}
+
+	base := longHistory("original")
+	baseEst := EstimateCache(base)
+	if !baseEst.MeetsCacheThreshold {
+		t.Fatal("fixture must meet the overall cache threshold")
+	}
+	if baseEst.StableTokens >= MinCacheableTokens {
+		t.Fatalf("fixture stable=%d should be below Min=%d to exercise this path",
+			baseEst.StableTokens, MinCacheableTokens)
+	}
+	tracker.BeginPrefix(scope, base, baseEst).Commit()
+
+	// 历史分叉：stable 仍然匹配，但 stable 太小，不该给额度
+	forked := longHistory("COMPLETELY DIFFERENT")
+	got := tracker.BeginPrefix(scope, forked, EstimateCache(forked))
+	if got.Hit {
+		t.Fatalf("stable prefix of %d tokens is below Min=%d and is not cached upstream; "+
+			"expected a full miss, got kind=%q credit=%d",
+			baseEst.StableTokens, MinCacheableTokens, got.HitKind, got.PrevTokens)
+	}
+	if got.PrevTokens != 0 {
+		t.Fatalf("PrevTokens = %d, want 0", got.PrevTokens)
+	}
+}
+
 // TestStableCreditRequiresSameAccount 验证换账号仍然是完全未命中。
 // 上游 prompt cache 是按账号隔离的，新账号上什么都没缓存，
 // 给额度就是少收用户的钱且与上游 usage 不一致。

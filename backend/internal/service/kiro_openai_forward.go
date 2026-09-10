@@ -73,6 +73,12 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
 		// so it needs a client-session identifier, not a content fingerprint.
 		cacheResult = s.beginKiroOAuthCache(c, account, activeUpstreamModel, claudeReq, cacheEstimation)
+		// 与 Claude 路径同口径打点：hit_kind 用于定位命中率卡在哪一层
+		// （none=首次/TTL过期/换账号/system变化，stable=历史分叉，full=完整命中）。
+		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d cache_hit=%v hit_kind=%s prev_tokens=%d",
+			prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
+			cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
+			cacheResult.Hit, cacheResult.HitKind, cacheResult.PrevTokens)
 	}
 
 	// 3. Get access token

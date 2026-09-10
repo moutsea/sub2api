@@ -179,20 +179,29 @@ func (ct *CacheTracker) BeginPrefix(scope CacheScope, req *ClaudeRequest, estima
 	// 前缀依然是热的。此时若整体判未命中，会把这段已缓存的 token 全部按
 	// cache_creation 计价 —— 用户为同一份 system prompt 反复付全价。
 	//
-	// 取两者较小值：上一次真正缓存过的量不会超过 entry.cacheableTokens，
-	// 本次可归为 cache_read 的也不会超过本次的 StableTokens。
+	// 取各项下限：能记为 cache_read 的不超过本次的 StableTokens，
+	// 也不超过上一次真正缓存过的量。
 	stable := result.stableTokens
-	if entry.stableTokens > 0 && entry.stableTokens < stable {
+	if entry.stableTokens < stable {
 		stable = entry.stableTokens
 	}
 	if stable > entry.cacheableTokens {
 		stable = entry.cacheableTokens
 	}
-	if stable > 0 {
-		result.Hit = true
-		result.HitKind = CacheHitStable
-		result.PrevTokens = stable
+
+	// 稳定前缀本身必须达到上游的最小可缓存单位。
+	//
+	// Anthropic 不会缓存小于 MinCacheableTokens 的前缀，所以"system 很短 +
+	// 历史很长"的请求（整体过阈值，但 stable 只有几十 token）实际上没有任何
+	// 稳定前缀被缓存。给它记 cache_read 就是过度授信：少收用户的钱，
+	// 且与上游返回的真实 usage 对不上。这类仍按完全未命中处理。
+	if stable < MinCacheableTokens {
+		return result
 	}
+
+	result.Hit = true
+	result.HitKind = CacheHitStable
+	result.PrevTokens = stable
 	return result
 }
 
