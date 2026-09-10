@@ -710,10 +710,10 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		cacheEstimation = kiro.EstimateCache(claudeReq)
 		if cacheEstimation.MeetsCacheThreshold {
 			cacheResult = s.beginKiroOAuthCache(c, account, activeUpstreamModel, claudeReq, cacheEstimation)
-			log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v prev_tokens=%d",
+			log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v hit_kind=%s prev_tokens=%d",
 				prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
 				cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
-				cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.PrevTokens)
+				cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.HitKind, cacheResult.PrevTokens)
 		}
 	}
 

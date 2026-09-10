@@ -39,14 +39,34 @@ type prefixCacheEntry struct {
 	historyCount    int
 	chainHash       [sha256.Size]byte
 	cacheableTokens int
-	sequence        uint64
+	// stableTokens 是 system+tools 的 token 数。
+	// 历史分叉（上下文压缩、截断、编辑重发）时，上游的 system+tools 前缀通常
+	// 仍然是热的，所以要能单独把这部分记为 cache_read，而不是整体判为未命中。
+	stableTokens int
+	sequence     uint64
 }
+
+// CacheHitKind 说明命中到了哪一层，便于运维定位"为什么命中率低"。
+type CacheHitKind string
+
+const (
+	// CacheHitNone 完全未命中：稳定前缀也没对上（首次请求 / TTL 过期 / 换账号 /
+	// system 或 tools 变了）。
+	CacheHitNone CacheHitKind = "none"
+	// CacheHitStable 只命中稳定前缀：system+tools 仍然是热的，但历史分叉了。
+	// 典型场景是客户端做了上下文压缩或截断。
+	CacheHitStable CacheHitKind = "stable"
+	// CacheHitFull 完整命中：稳定前缀与历史前缀都对上。
+	CacheHitFull CacheHitKind = "full"
+)
 
 // CacheResult holds the result of a cache check, providing the previous
 // cacheable token count so callers can compute cache_read vs cache_creation.
 type CacheResult struct {
-	Hit        bool // Whether the cache key was seen within TTL
-	PrevTokens int  // Previous cacheable token count (0 on miss)
+	Hit        bool // Whether any cacheable prefix was still warm within TTL
+	PrevTokens int  // Previously-cached token count credited as cache_read (0 on miss)
+	// HitKind 说明命中层级（none/stable/full），仅用于日志与运维观测。
+	HitKind CacheHitKind
 
 	tracker *CacheTracker
 	scope   cacheScope
@@ -56,6 +76,7 @@ type CacheResult struct {
 	historyCount    int
 	chainHash       [sha256.Size]byte
 	cacheableTokens int
+	stableTokens    int
 	sequence        uint64
 }
 
@@ -121,9 +142,11 @@ func (ct *CacheTracker) BeginPrefix(scope CacheScope, req *ClaudeRequest, estima
 		tracker:         ct,
 		scope:           internalScope,
 		valid:           true,
+		HitKind:         CacheHitNone,
 		stableHash:      stableHash,
 		historyCount:    historyCount,
 		cacheableTokens: estimation.CacheableTokens,
+		stableTokens:    estimation.StableTokens,
 	}
 	if historyCount > 0 {
 		result.chainHash = chain[historyCount-1]
@@ -134,12 +157,41 @@ func (ct *CacheTracker) BeginPrefix(scope CacheScope, req *ClaudeRequest, estima
 	ct.prefixSequence++
 	result.sequence = ct.prefixSequence
 
-	if entry, found := ct.prefixSeen[internalScope]; found &&
-		time.Since(entry.lastSeen) <= ct.ttl &&
-		entry.stableHash == stableHash &&
-		chainHasPrefix(chain, entry.historyCount, entry.chainHash) {
+	entry, found := ct.prefixSeen[internalScope]
+	if !found || time.Since(entry.lastSeen) > ct.ttl || entry.stableHash != stableHash {
+		// 稳定前缀都没对上：首次请求 / TTL 过期 / 换账号 / system 或 tools 变了。
+		// 上游此时确实没有可复用的前缀，全部计入 cache_creation 是正确的。
+		return result
+	}
+
+	if chainHasPrefix(chain, entry.historyCount, entry.chainHash) {
+		// 完整命中：上一次的整个可缓存前缀都还在。
 		result.Hit = true
+		result.HitKind = CacheHitFull
 		result.PrevTokens = entry.cacheableTokens
+		return result
+	}
+
+	// 历史分叉，但 system+tools 仍然命中。
+	//
+	// 这是客户端做上下文压缩/截断/编辑重发后的常见形态。上游的 prompt cache 是
+	// 按前缀组织的：历史变了只会让**分叉点之后**的部分失效，system+tools 这段
+	// 前缀依然是热的。此时若整体判未命中，会把这段已缓存的 token 全部按
+	// cache_creation 计价 —— 用户为同一份 system prompt 反复付全价。
+	//
+	// 取两者较小值：上一次真正缓存过的量不会超过 entry.cacheableTokens，
+	// 本次可归为 cache_read 的也不会超过本次的 StableTokens。
+	stable := result.stableTokens
+	if entry.stableTokens > 0 && entry.stableTokens < stable {
+		stable = entry.stableTokens
+	}
+	if stable > entry.cacheableTokens {
+		stable = entry.cacheableTokens
+	}
+	if stable > 0 {
+		result.Hit = true
+		result.HitKind = CacheHitStable
+		result.PrevTokens = stable
 	}
 	return result
 }
@@ -162,6 +214,7 @@ func (r CacheResult) Commit() {
 		historyCount:    r.historyCount,
 		chainHash:       r.chainHash,
 		cacheableTokens: r.cacheableTokens,
+		stableTokens:    r.stableTokens,
 		sequence:        r.sequence,
 	}
 }

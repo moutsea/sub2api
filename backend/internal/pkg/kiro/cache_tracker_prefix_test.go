@@ -173,7 +173,13 @@ func TestCacheTrackerConcurrentBeginCommitIsRaceFree(t *testing.T) {
 
 // TestCacheTrackerTruncatedHistoryMisses 验证客户端截断会话后不再命中。
 // 上一次记录的前缀比当前更长，说明当前请求不是它的延续，必须保守地判为未命中。
-func TestCacheTrackerTruncatedHistoryMisses(t *testing.T) {
+// TestCacheTrackerTruncatedHistoryFallsBackToStableCredit 验证历史被截断时
+// 仍然保留稳定前缀（system+tools）的 cache_read 额度。
+//
+// 上游 prompt cache 按前缀组织：历史分叉只会让**分叉点之后**失效，
+// system+tools 这段前缀仍是热的。若整体判未命中，用户会为同一份 system prompt
+// 反复付全价 —— 这正是上下文压缩场景下命中率骤降、花销上升的直接原因。
+func TestCacheTrackerTruncatedHistoryFallsBackToStableCredit(t *testing.T) {
 	tracker := NewCacheTracker(DefaultCacheTTL)
 	defer tracker.Stop()
 
@@ -181,11 +187,53 @@ func TestCacheTrackerTruncatedHistoryMisses(t *testing.T) {
 	long := newCacheableRequest(
 		userMsg("a"), assistantMsg("b"), userMsg("c"), assistantMsg("d"), userMsg("e"),
 	)
-	tracker.BeginPrefix(scope, long, EstimateCache(long)).Commit()
+	longEstimation := EstimateCache(long)
+	tracker.BeginPrefix(scope, long, longEstimation).Commit()
 
 	truncated := newCacheableRequest(userMsg("a"), assistantMsg("b"))
-	if got := tracker.BeginPrefix(scope, truncated, EstimateCache(truncated)); got.Hit {
-		t.Fatal("truncated conversation must not hit a longer stored prefix")
+	truncatedEstimation := EstimateCache(truncated)
+	got := tracker.BeginPrefix(scope, truncated, truncatedEstimation)
+
+	if !got.Hit {
+		t.Fatal("stable prefix (system+tools) is still warm upstream; expected a stable-level hit")
+	}
+	if got.HitKind != CacheHitStable {
+		t.Fatalf("HitKind = %q, want %q", got.HitKind, CacheHitStable)
+	}
+	// 只credit 稳定前缀，不能把更长的历史也算进去
+	if got.PrevTokens != truncatedEstimation.StableTokens {
+		t.Fatalf("PrevTokens = %d, want StableTokens=%d", got.PrevTokens, truncatedEstimation.StableTokens)
+	}
+	if got.PrevTokens >= longEstimation.CacheableTokens {
+		t.Fatalf("PrevTokens = %d must stay below the previous full cacheable total %d",
+			got.PrevTokens, longEstimation.CacheableTokens)
+	}
+}
+
+// TestCacheTrackerStableMismatchIsFullMiss 验证 system/tools 变化时仍是完全未命中。
+// 前缀缓存下，最前面的部分变了会让**整条**前缀失效，此时不能给任何 cache_read 额度，
+// 否则就是少收用户的钱、并与上游 usage 不一致。
+func TestCacheTrackerStableMismatchIsFullMiss(t *testing.T) {
+	tracker := NewCacheTracker(DefaultCacheTTL)
+	defer tracker.Stop()
+
+	scope := CacheScope{AccountID: 1, Model: "m", SessionID: "s"}
+	base := newCacheableRequest(userMsg("a"), assistantMsg("b"), userMsg("c"))
+	tracker.BeginPrefix(scope, base, EstimateCache(base)).Commit()
+
+	changedStable := &ClaudeRequest{
+		System:   strings.Repeat("system prompt ", 600) + " CHANGED",
+		Messages: base.Messages,
+	}
+	got := tracker.BeginPrefix(scope, changedStable, EstimateCache(changedStable))
+	if got.Hit {
+		t.Fatal("changed system/tools invalidates the whole prefix; must be a full miss")
+	}
+	if got.HitKind != CacheHitNone {
+		t.Fatalf("HitKind = %q, want %q", got.HitKind, CacheHitNone)
+	}
+	if got.PrevTokens != 0 {
+		t.Fatalf("PrevTokens = %d, want 0", got.PrevTokens)
 	}
 }
 

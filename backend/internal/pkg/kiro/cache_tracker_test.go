@@ -39,11 +39,20 @@ func TestCacheTrackerPrefixRequiresStableAndHistoryPrefix(t *testing.T) {
 	}
 	hit.Commit()
 
+	// 历史分叉：不再是完整命中，但 system+tools 仍然是热的，
+	// 所以降级为 stable 级命中（只 credit 稳定前缀），而不是完全未命中。
 	changed := &ClaudeRequest{System: base.System, Messages: append([]ClaudeMessage(nil), appended.Messages...)}
 	changed.Messages[0].Content = "changed first user message"
 	changedResult := tracker.BeginPrefix(scope, changed, EstimateCache(changed))
-	if changedResult.Hit {
-		t.Fatal("changed history must miss")
+	if changedResult.HitKind == CacheHitFull {
+		t.Fatal("changed history must not be a full hit")
+	}
+	if changedResult.HitKind != CacheHitStable {
+		t.Fatalf("changed history should keep the stable-prefix credit, got %q", changedResult.HitKind)
+	}
+	if changedResult.PrevTokens >= appendedEstimation.CacheableTokens {
+		t.Fatalf("stable credit %d must stay below the full cacheable total %d",
+			changedResult.PrevTokens, appendedEstimation.CacheableTokens)
 	}
 	stableChanged := &ClaudeRequest{System: strings.Repeat("system prompt ", 600) + " changed", Messages: append([]ClaudeMessage(nil), appended.Messages...)}
 	stableChangedResult := tracker.BeginPrefix(scope, stableChanged, EstimateCache(stableChanged))
