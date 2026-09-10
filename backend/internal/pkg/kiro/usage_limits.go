@@ -261,7 +261,7 @@ func (f *UsageLimitsFetcher) FetchUsageLimits(ctx context.Context, accessToken, 
 	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/%s lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", osName, kiroVersion, machineID))
 	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroVersion, machineID))
 	req.Header.Set("Host", ManagementHost(region, family))
-	req.Header.Set("Connection", "close")
+	// 不发 Connection: close —— 保持连接复用，避免每次查询都重建 TCP + TLS。
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 	req.Header.Set("Authorization", "Bearer "+accessToken)

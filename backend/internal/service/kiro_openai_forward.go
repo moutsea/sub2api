@@ -68,12 +68,11 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	// 2. Cache estimation
 	cacheEstimation := kiro.EstimateCache(claudeReq)
 	var cacheResult kiro.CacheResult
-	if cacheEstimation.MeetsCacheThreshold {
+	if cacheEstimation.MeetsCacheThreshold && !account.IsKiroApiKey() {
 		// Use stable conversation ID (IP + UA + API key) as cache key.
 		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
 		// so it needs a client-session identifier, not a content fingerprint.
-		cacheKey := kiro.GenerateStableConversationID(c)
-		cacheResult = kiro.GlobalCacheTracker.CheckAndMark(cacheKey, cacheEstimation.CacheableTokens)
+		cacheResult = s.beginKiroOAuthCache(c, account, activeUpstreamModel, claudeReq, cacheEstimation)
 	}
 
 	// 3. Get access token
@@ -157,7 +156,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 				upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 				upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
 				upstreamReq.Header.Set("Host", ep.Host)
-				upstreamReq.Header.Set("Connection", "close")
+				s.applyKiroConnectionHeader(upstreamReq)
 				upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 				upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
 				if ep.AmzTarget != "" {
@@ -188,7 +187,22 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 						attempt++
 						continue
 					}
-					lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
+					log.Printf("%s endpoint=%s status=request_failed retries_exhausted error=%v", prefix, ep.Name, err)
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform:    account.Platform,
+						AccountID:   account.ID,
+						AccountName: account.Name,
+						Kind:        "transport_error",
+						Message:     sanitizeKiroClientErrorMessage(err.Error()),
+						Detail: fmt.Sprintf("class=%s endpoint=%s note=request_may_not_have_reached_upstream",
+							kiroFailureTransport, ep.Name),
+					})
+					// B 类：必须包成 failover error，否则 handler 不写任何响应体
+					lastErr = newKiroTransportFailure(
+						"kiro_transport_error",
+						http.StatusBadGateway,
+						fmt.Sprintf("endpoint %s: %v", ep.Name, err),
+					).failoverError()
 					break
 				}
 
@@ -247,6 +261,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 						_, reqBody, err = s.prepareCodeWhispererPayload(claudeReq, profileArn, c, activeUpstreamModel)
 						if err != nil {
 							return nil, fmt.Errorf("prepare fallback request: %w", err)
+						}
+						if !account.IsKiroApiKey() {
+							cacheResult = s.beginKiroOAuthCache(c, account, activeUpstreamModel, claudeReq, cacheEstimation)
 						}
 						log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
 						continue
@@ -320,6 +337,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		// Calculate cache tokens (cache_read + cache_creation coexist)
 		// CW path: cap to model-specific context window
 		cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, kiro.GetContextWindowLimit(activeUpstreamModel))
+		if !account.IsKiroApiKey() {
+			cacheReadTokens, cacheCreationTokens = s.applyKiroSimulatedCacheReadRatio(cacheReadTokens, cacheCreationTokens)
+		}
 		thinkingEnabled := kiro.IsThinkingConfigEnabled(claudeReq)
 
 		var usage *OpenAIUsage
@@ -328,7 +348,11 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		if wantStream {
 			result, err := s.handleOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
 			if err != nil {
+				recordKiroFailureOps(c, account, err)
 				return nil, err
+			}
+			if result.failedAfterCommit {
+				recordKiroPostCommitFailureOps(c, account, result.inBandException, result.upstreamRequestID)
 			}
 			usage = result.usage
 			firstTokenMs = result.firstTokenMs
@@ -346,6 +370,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 					})
 					return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
 				}
+				recordKiroFailureOps(c, account, err)
 				return nil, err
 			}
 			usage = result.usage
@@ -353,6 +378,9 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 
 		if activeUpstreamModel != originalModel {
 			log.Printf("%s model_effective requested_model=%s effective_model=%s", prefix, originalModel, activeUpstreamModel)
+		}
+		if !account.IsKiroApiKey() {
+			cacheResult.Commit()
 		}
 		return &OpenAIForwardResult{
 			RequestID:    resp.Header.Get("x-amzn-requestid"),

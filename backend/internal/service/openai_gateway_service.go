@@ -2480,12 +2480,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 		cost = s.billingService.CalculateImageCost(result.Model, result.ImageSize, result.ImageCount, groupConfig, multiplier)
 	} else {
-		// 计算实际的新输入token（减去缓存读取的token）
-		// 因为 input_tokens 包含了 cache_read_tokens，而缓存读取的token不应按输入价格计费
-		actualInputTokens = result.Usage.InputTokens - result.Usage.CacheReadInputTokens
-		if actualInputTokens < 0 {
-			actualInputTokens = 0
-		}
+		actualInputTokens = openAIActualInputTokens(result, account)
 
 		tokens := UsageTokens{
 			InputTokens:         actualInputTokens,
@@ -2621,6 +2616,20 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	s.deferredService.ScheduleLastUsedUpdate(account.ID)
 
 	return nil
+}
+
+func openAIActualInputTokens(result *OpenAIForwardResult, account *Account) int {
+	if result == nil {
+		return 0
+	}
+	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens
+	if account != nil && account.IsKiro() && !account.IsKiroApiKey() {
+		actualInputTokens -= result.Usage.CacheCreationInputTokens
+	}
+	if actualInputTokens < 0 {
+		return 0
+	}
+	return actualInputTokens
 }
 
 // extractCodexUsageHeaders extracts Codex usage limits from response headers

@@ -167,8 +167,18 @@ gateway:
   # Max idle connections per host
   # 每个主机的最大空闲连接数
   max_idle_conns_per_host: 120
-  # Max connections per host
-  # 每个主机的最大连接数
+  # Max connections per host (0 = unlimited)
+  # 每个主机的最大连接数（0 表示无限制）
+  #
+  # Under account-scoped isolation (connection_pool_isolation =
+  # account / account_proxy) the per-account pool is derived from the account's
+  # concurrency limit and then capped by the three values above, each against
+  # its own configured ceiling. Raise this above the default if you run
+  # high-concurrency accounts and want more upstream throughput.
+  #
+  # 账号级隔离下（connection_pool_isolation 为 account / account_proxy），
+  # 每个账号的连接池由该账号的并发数推导，再分别用上面三个值各自收口。
+  # 高并发账号想要更大吞吐时，把这个值调高于默认值即可生效。
   max_conns_per_host: 240
   # Idle connection timeout (seconds)
   # 空闲连接超时时间（秒）
@@ -622,6 +632,26 @@ kiro:
   # Switch to "legacy" only if you need to temporarily route through the
   # deprecated q.*.amazonaws.com domains. Default value is recommended.
   service_endpoint_family: "kiro"
+
+  # Send "Connection: close" on Kiro upstream requests
+  # 是否对 Kiro 上游请求发送 Connection: close
+  #
+  # Default false (keep-alive). This header was originally added to mirror the
+  # real Kiro IDE client's request headers, but it disables connection reuse
+  # entirely: every request pays a fresh TCP + TLS handshake. Under high
+  # per-account concurrency that causes handshake storms, ephemeral port /
+  # TIME_WAIT pressure, and MaxConnsPerHost queueing. Those failures never
+  # reach upstream, so upstream has no record of them — a common source of
+  # locally-generated 502s.
+  #
+  # 默认 false（保持连接复用）。仅当发现上游对 keep-alive 有异常反应时，
+  # 才置为 true 快速回滚。
+  upstream_connection_close: false
+
+  # Simulated cache-read ratio for Kiro OAuth billing (0.0-1.0).
+  # 1.0 preserves the full simulated cache discount; lower values charge
+  # part of predicted cache-read tokens as regular input.
+  simulated_cache_read_ratio: 1.0
 
 # =============================================================================
 # Update Configuration (在线更新配置)

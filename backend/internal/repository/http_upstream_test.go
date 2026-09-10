@@ -202,19 +202,39 @@ func (s *HTTPUpstreamSuite) TestAccountModeProxyChangeClearsPool() {
 	require.False(s.T(), hasEntry(svc, entry1), "旧连接池应被清理")
 }
 
-// TestAccountConcurrencyOverridesPoolSettings 测试账户并发数覆盖连接池配置
-// 验证账户隔离模式下，连接池大小与账户并发数对应
-func (s *HTTPUpstreamSuite) TestAccountConcurrencyOverridesPoolSettings() {
+// TestAccountConcurrencyScalesPoolSettings 测试账户并发数对连接池大小的影响
+//
+// 连接池大小按账户并发数缩放，但**不再是 1:1 绑定**。
+// 单个客户端请求往往需要多条上游连接（主转发 + websearch agentic 循环 +
+// usage_limits 查询 + token 刷新）；1:1 绑定会让这些辅助请求与主转发互相
+// 抢连接槽位，并发一高就在 transport 层排队甚至超时。
+// 并发控制由上层并发槽位负责，连接池只需保证自己不成为额外瓶颈。
+func (s *HTTPUpstreamSuite) TestAccountConcurrencyScalesPoolSettings() {
 	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccount}
 	svc := s.newService()
-	// 账户并发数为 12
-	entry := svc.getOrCreateClient("", 1, 12)
+	const concurrency = 12
+	entry := svc.getOrCreateClient("", 1, concurrency)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
-	// 连接池参数应与并发数一致
-	require.Equal(s.T(), 12, transport.MaxConnsPerHost, "MaxConnsPerHost mismatch")
-	require.Equal(s.T(), 12, transport.MaxIdleConns, "MaxIdleConns mismatch")
-	require.Equal(s.T(), 12, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost mismatch")
+
+	expected := concurrency * accountPoolHeadroom
+	require.Equal(s.T(), expected, transport.MaxConnsPerHost, "MaxConnsPerHost mismatch")
+	require.Equal(s.T(), expected, transport.MaxIdleConns, "MaxIdleConns mismatch")
+	require.Equal(s.T(), expected, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost mismatch")
+	require.Greater(s.T(), transport.MaxConnsPerHost, concurrency,
+		"连接池上限必须高于账号并发数，为辅助请求留出余量")
+}
+
+// TestLowConcurrencyPoolHasFloor 验证低并发账号也有连接数下限。
+// 并发为 1 的账号如果连接池也只有 1，token 刷新与主转发会互相阻塞。
+func (s *HTTPUpstreamSuite) TestLowConcurrencyPoolHasFloor() {
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccount}
+	svc := s.newService()
+	entry := svc.getOrCreateClient("", 1, 1)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.GreaterOrEqual(s.T(), transport.MaxConnsPerHost, minAccountPoolConns,
+		"低并发账号也应有足够连接给辅助请求")
 }
 
 // TestAccountConcurrencyFallbackToDefault 测试账户并发数为 0 时回退到默认配置

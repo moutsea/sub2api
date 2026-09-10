@@ -463,7 +463,12 @@ import Icon from '@/components/icons/Icon.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import ImageRequestPreviewModal from '@/components/user/ImageRequestPreviewModal.vue'
 
-type GptImageModel = 'gpt-image-1' | 'gpt-image-1.5' | 'gpt-image-2'
+type GptImageModel =
+  | 'gpt-image-1'
+  | 'gpt-image-1.5'
+  | 'gpt-image-2'
+  | 'gpt-image-2.5-sunburst'
+  | 'gpt-image-2.5-flare'
 type ImagePreviewMode = 'generate' | 'edit'
 type ImageSize = 'auto' | '1024x1024' | '1536x1024' | '1024x1536' | '1792x1024' | '1024x1792' | '2048x2048'
 type UpscaleMode = '' | '2k' | '4k'
@@ -566,6 +571,8 @@ const form = reactive({
 })
 
 const modelOptions: Array<{ value: GptImageModel; label: string }> = [
+  { value: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5 Sunburst' },
+  { value: 'gpt-image-2.5-flare', label: 'GPT Image 2.5 Flare' },
   { value: 'gpt-image-2', label: 'GPT Image 2' },
   { value: 'gpt-image-1.5', label: 'GPT Image 1.5' },
   { value: 'gpt-image-1', label: 'GPT Image 1' }

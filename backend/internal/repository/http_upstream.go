@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -439,6 +441,16 @@ func (s *httpUpstreamService) clientIdleTTL() time.Duration {
 	return time.Duration(defaultClientIdleTTLSeconds) * time.Second
 }
 
+// minAccountPoolConns 是账号级连接池的下限。
+//
+// 单个"客户端请求"往往需要多条上游连接：主转发 + websearch agentic 循环 +
+// usage_limits 查询 + token 刷新。把上限直接压成 account.Concurrency 会让这些
+// 辅助请求和主请求互相抢槽位，并发一高就在 transport 层排队甚至超时。
+const minAccountPoolConns = 16
+
+// accountPoolHeadroom 是账号并发数到连接数的放大系数，理由同上。
+const accountPoolHeadroom = 4
+
 // resolvePoolSettings 解析连接池配置
 // 根据隔离策略和账户并发数动态调整连接池参数
 //
@@ -448,19 +460,70 @@ func (s *httpUpstreamService) clientIdleTTL() time.Duration {
 //
 // 返回:
 //   - poolSettings: 连接池配置
-//
-// 说明:
-//   - 账户隔离模式下，连接池大小与账户并发数对应
-//   - 这确保了单账户不会占用过多连接资源
 func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcurrency int) poolSettings {
 	settings := defaultPoolSettings(s.cfg)
-	// 账户隔离模式下，根据账户并发数调整连接池大小
-	if (isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy) && accountConcurrency > 0 {
-		settings.maxIdleConns = accountConcurrency
-		settings.maxIdleConnsPerHost = accountConcurrency
-		settings.maxConnsPerHost = accountConcurrency
+	if !isAccountScopedIsolation(isolation) || accountConcurrency <= 0 {
+		return settings
 	}
+
+	// 账户隔离模式下，根据账户并发数调整连接池大小。
+	//
+	// 注意这里不再把上限设成 accountConcurrency 本身：并发控制由上层的
+	// 并发槽位（concurrency slot）负责，连接池只需保证不成为额外瓶颈。
+	// 之前 1:1 绑定会导致辅助请求（websearch/usage_limits）和主转发抢连接，
+	// 在 HTTP/1.1 下尤其明显。
+	limit := accountPoolLimit(accountConcurrency)
+
+	// 每个字段各自不超过**其自身配置**的上限：
+	//   - 不能因为放大系数就顶穿运维显式配置的 max_idle_conns_per_host
+	//     （那是用来约束内存/fd 的）
+	//   - 也不能反过来把配置得比默认值更大的 max_conns_per_host 压回默认值
+	//     （capPositive 只在 configured > 0 且确实更小时才收口）
+	settings.maxConnsPerHost = capPositive(limit, settings.maxConnsPerHost)
+	settings.maxIdleConns = capPositive(limit, settings.maxIdleConns)
+	settings.maxIdleConnsPerHost = capPositive(limit, settings.maxIdleConnsPerHost)
 	return settings
+}
+
+// isAccountScopedIsolation 判断隔离策略是否按账号维度切分连接池。
+func isAccountScopedIsolation(isolation string) bool {
+	return isolation == config.ConnectionPoolIsolationAccount ||
+		isolation == config.ConnectionPoolIsolationAccountProxy
+}
+
+// accountPoolLimit 由账号并发数推导期望连接数，只负责放大 + 下限 + 防溢出。
+//
+// 这里刻意**不**施加任何上限：上限属于配置语义，由调用方按字段用
+// capPositive 收口。之前在这里硬编码 defaultMaxConnsPerHost 收口，
+// 会让显式配置的 gateway.max_conns_per_host（>240 时）失效 ——
+// 高并发账号被静默压回 240，配置形同虚设。
+//
+// 防溢出不是洁癖：accountConcurrency 来自 DB，异常大的值乘以放大系数会翻成
+// 负数。Go 的 tryPutIdleConn 判定是 `len(idles) >= t.maxIdleConnsPerHost()`，
+// 负数上限会让任意 len（>=0）都命中 errTooManyIdleHost → **从不缓存空闲连接**
+// → 彻底关掉连接复用，正是本次要修的问题被反向引入。
+// 溢出时饱和到 math.MaxInt，交由 capPositive 按配置收口。
+func accountPoolLimit(accountConcurrency int) int {
+	if accountConcurrency <= 0 {
+		return minAccountPoolConns
+	}
+	if accountConcurrency > math.MaxInt/accountPoolHeadroom {
+		return math.MaxInt
+	}
+	limit := accountConcurrency * accountPoolHeadroom
+	if limit < minAccountPoolConns {
+		return minAccountPoolConns
+	}
+	return limit
+}
+
+// capPositive 在 configured > 0 时把 value 限制在 configured 以内。
+// configured <= 0 表示"无限制"，此时不做限制。
+func capPositive(value, configured int) int {
+	if configured > 0 && value > configured {
+		return configured
+	}
+	return value
 }
 
 // buildPoolKey 构建连接池配置键
@@ -472,10 +535,17 @@ func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcu
 //
 // 返回:
 //   - string: 配置键
+//
+// 关键点：key 必须由**解析后**的连接池参数派生，而不是原始的 accountConcurrency。
+// 否则同一账号的不同调用方传入不同并发数（例如 token 刷新传 1、主转发传 N）
+// 会算出不同的 poolKey，而两者的 cacheKey 相同 → shouldReuseEntry 判定不可复用
+// → 每次交替调用都销毁并重建整个 transport（连带 CloseIdleConnections），
+// 高并发下会持续抖动，连接完全无法复用。
 func (s *httpUpstreamService) buildPoolKey(isolation string, accountConcurrency int) string {
 	if isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy {
 		if accountConcurrency > 0 {
-			return fmt.Sprintf("account:%d", accountConcurrency)
+			settings := s.resolvePoolSettings(isolation, accountConcurrency)
+			return fmt.Sprintf("account:%d", settings.maxConnsPerHost)
 		}
 	}
 	return "default"
@@ -613,6 +683,10 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL) (*http.Tra
 		MaxConnsPerHost:       settings.maxConnsPerHost,
 		IdleConnTimeout:       settings.idleConnTimeout,
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
+		// ForceAttemptHTTP2: 即使自定义了 DialContext/DialTLSContext 也尝试协商 HTTP/2。
+		// 之前没设这个值，加上 DialTLSContext 非 nil，Go 会完全跳过 HTTP/2 自动升级，
+		// 导致所有上游请求都退化成 HTTP/1.1 —— 注释里写的"HTTP/2 多路复用"从未生效。
+		ForceAttemptHTTP2: true,
 	}
 	if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
 		return nil, err
@@ -658,8 +732,33 @@ func wrapTrackedBody(body io.ReadCloser, onClose func()) io.ReadCloser {
 	return &trackedBody{ReadCloser: body, onClose: onClose}
 }
 
-// wrapWithUTLSDialer wraps the transport with uTLS dialer for Anthropic domains
-// This bypasses Cloudflare's TLS fingerprinting detection
+// needsUTLSFingerprint 判断目标主机是否需要 uTLS 指纹伪装。
+// 仅 Anthropic 系域名需要绕过 Cloudflare 的 TLS 指纹检测。
+func needsUTLSFingerprint(host string) bool {
+	host = strings.ToLower(host)
+	return strings.Contains(host, "anthropic.com") || strings.Contains(host, "claude.ai")
+}
+
+// wrapWithUTLSDialer 为需要指纹伪装的域名启用 uTLS，其余域名走标准 crypto/tls。
+//
+// 为什么要按域名区分：Go 的 transport 在 dialConn 里用
+// `pconn.conn.(*tls.Conn)` 断言来提取 TLS 状态并决定是否切到 HTTP/2
+// (net/http/transport.go)。utls.UConn 不是 *tls.Conn，断言失败 → tlsState 为 nil
+// → 永远不会启用 HTTP/2。也就是说 uTLS 与 h2 互斥。
+//
+// 之前的实现对所有域名都套 uTLS，导致全部上游请求被锁死在 HTTP/1.1。
+// 对 Kiro 这类不需要指纹伪装、但并发很高的上游，HTTP/1.1 + 无连接复用
+// 会造成握手风暴和连接槽位排队，是 502 的主要成因之一。
+//
+// 现在的分工：
+//   - Anthropic 域名：uTLS + Firefox 指纹，ALPN 强制只宣告 http/1.1
+//     （详见 firefoxHTTP1Spec 的注释：之前会协商出 h2 但按 h1 说话，服务端直接断连）
+//   - 其他域名（含 Kiro）：标准 crypto/tls，ALPN 宣告 h2 + http/1.1，
+//     返回真正的 *tls.Conn 让 Go 能正常升级到 HTTP/2
+//
+// 注意：本函数只在 Go 走"自定义 TLS dialer"分支时生效，即目标为 https 且
+// 未经 HTTP 代理。经 http:// 代理时 cm.scheme() 是 "http"，Go 会自己 CONNECT
+// 再用标准 crypto/tls 握手，uTLS 不参与（这是既有行为，非本次改动引入）。
 func wrapWithUTLSDialer(transport *http.Transport) *http.Transport {
 	// Store original dialer
 	originalDialContext := transport.DialContext
@@ -671,7 +770,8 @@ func wrapWithUTLSDialer(transport *http.Transport) *http.Transport {
 		originalDialContext = dialer.DialContext
 	}
 
-	// Wrap with uTLS for TLS connections
+	baseTLSConfig := transport.TLSClientConfig
+
 	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Extract hostname for SNI
 		host, _, err := net.SplitHostPort(addr)
@@ -685,26 +785,45 @@ func wrapWithUTLSDialer(transport *http.Transport) *http.Transport {
 			return nil, err
 		}
 
-		// Determine which TLS fingerprint to use
-		var clientHello utls.ClientHelloID
-		if strings.Contains(host, "anthropic.com") || strings.Contains(host, "claude.ai") {
-			// For Anthropic domains, use Firefox fingerprint to bypass detection
-			clientHello = utls.HelloFirefox_Auto
-		} else {
-			// For other domains, use Go's default fingerprint (no change in behavior)
-			clientHello = utls.HelloGolang
+		if !needsUTLSFingerprint(host) {
+			// 标准 TLS 路径：返回 *tls.Conn，Go 才能读到 ALPN 结果并升级 h2
+			stdConfig := &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			}
+			if baseTLSConfig != nil {
+				stdConfig = baseTLSConfig.Clone()
+			}
+			stdConfig.ServerName = host
+			if len(stdConfig.NextProtos) == 0 {
+				stdConfig.NextProtos = []string{"h2", "http/1.1"}
+			}
+			tlsConn := tls.Client(conn, stdConfig)
+			if hsErr := tlsConn.HandshakeContext(ctx); hsErr != nil {
+				conn.Close()
+				return nil, fmt.Errorf("tls handshake failed for %s: %w", host, hsErr)
+			}
+			return tlsConn, nil
 		}
 
-		// Configure TLS
+		// uTLS 路径：Firefox 指纹，但 ALPN 必须只宣告 http/1.1（原因见下）
 		tlsConfig := &utls.Config{
 			ServerName:         host,
 			InsecureSkipVerify: false,
 		}
-
-		// Create uTLS connection
-		tlsConn := utls.UClient(conn, tlsConfig, clientHello)
-
-		// Perform TLS handshake
+		if baseTLSConfig != nil {
+			tlsConfig.InsecureSkipVerify = baseTLSConfig.InsecureSkipVerify
+			tlsConfig.RootCAs = baseTLSConfig.RootCAs
+		}
+		tlsConn := utls.UClient(conn, tlsConfig, utls.HelloCustom)
+		spec, err := firefoxHTTP1Spec()
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("build utls spec for %s: %w", host, err)
+		}
+		if err := tlsConn.ApplyPreset(spec); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("apply utls spec for %s: %w", host, err)
+		}
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("tls handshake failed for %s: %w", host, err)
@@ -714,4 +833,34 @@ func wrapWithUTLSDialer(transport *http.Transport) *http.Transport {
 	}
 
 	return transport
+}
+
+// firefoxHTTP1Spec 返回 Firefox 指纹的 ClientHelloSpec，但把 ALPN 改成只宣告
+// http/1.1。
+//
+// 为什么必须改 spec 而不是设 utls.Config.NextProtos：
+// utls 的 ALPNExtension.writeToUConn 会**反向覆盖** uc.config.NextProtos
+// （见 u_tls_extensions.go），所以对预置 ClientHelloID 来说 Config.NextProtos
+// 是被忽略的，预置 spec 里硬编码的 "h2,http/1.1" 永远生效。
+//
+// 这会造成一个隐蔽故障：ALPN 协商出 h2，但 Go 的 transport 拿到的是
+// *utls.UConn，`pconn.conn.(*tls.Conn)` 断言失败 → tlsState 为 nil →
+// 不会切到 HTTP/2，于是仍按 HTTP/1.1 在一条 h2 连接上说话。
+// 服务端（实测 api.anthropic.com 会协商到 h2）收到的是 "GET / HTTP/1.1"
+// 而非 h2 preface，直接判为 bogus greeting 并断开。
+//
+// 因为 uTLS 与 h2 在当前实现下互斥（无法从 UConn 提取 tlsState），
+// 唯一自洽的选择是让 ALPN 与实际使用的协议一致 —— 只宣告 http/1.1。
+// 除 ALPN 之外的指纹特征（密码套件、扩展顺序、曲线等）仍保持 Firefox 原样。
+func firefoxHTTP1Spec() (*utls.ClientHelloSpec, error) {
+	spec, err := utls.UTLSIdToSpec(utls.HelloFirefox_Auto)
+	if err != nil {
+		return nil, err
+	}
+	for _, ext := range spec.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = []string{"http/1.1"}
+		}
+	}
+	return &spec, nil
 }

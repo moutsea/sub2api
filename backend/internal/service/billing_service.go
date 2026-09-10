@@ -848,7 +848,7 @@ func (s *BillingService) getDefaultImagePrice(model string, imageSize string) fl
 
 	// OpenAI gpt-image 模型使用 token 计价，没有 output_cost_per_image 字段。
 	// 回退到基于官方 image output token 价格的估算值（per image, 1K tier）。
-	// gpt-image-1: ~$0.040, gpt-image-1.5: ~$0.050, gpt-image-2: ~$0.060
+	// gpt-image-1: ~$0.040, gpt-image-1.5: ~$0.050, gpt-image-2/2.5: ~$0.060
 	if basePrice <= 0 && isOpenAIImageBillingModel(model) {
 		basePrice = getOpenAIImageDefaultPrice(model)
 	}
@@ -896,6 +896,8 @@ func isOpenAIImageBillingModel(model string) bool {
 func getOpenAIImageDefaultPrice(model string) float64 {
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case m == "gpt-image-2.5-sunburst" || m == "gpt-image-2.5-flare":
+		return 0.060
 	case strings.HasPrefix(m, "gpt-image-2"):
 		return 0.060
 	case strings.HasPrefix(m, "gpt-image-1.5"):

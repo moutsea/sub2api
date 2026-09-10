@@ -147,6 +147,36 @@
           </div>
         </div>
 
+        <!-- Kiro OAuth Cache Billing Settings -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.kiroCache.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.kiroCache.description') }}
+            </p>
+          </div>
+          <div class="space-y-4 p-6">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.kiroCache.readRatio') }}
+              </label>
+              <input
+                v-model.number="form.kiro_simulated_cache_read_ratio"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                class="input w-32"
+              />
+              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.kiroCache.readRatioHint') }}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- Stream Timeout Settings -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -1015,6 +1045,7 @@ const form = reactive<SettingsForm>({
   email_verify_enabled: false,
   default_balance: 0,
   default_concurrency: 1,
+  kiro_simulated_cache_read_ratio: 1,
   site_name: 'Sub2API',
   site_logo: '',
   site_subtitle: 'Subscription to API Conversion Platform',
@@ -1137,6 +1168,7 @@ async function saveSettings() {
       email_verify_enabled: form.email_verify_enabled,
       default_balance: form.default_balance,
       default_concurrency: form.default_concurrency,
+      kiro_simulated_cache_read_ratio: form.kiro_simulated_cache_read_ratio,
       site_name: form.site_name,
       site_logo: form.site_logo,
       site_subtitle: form.site_subtitle,

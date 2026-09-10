@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -247,7 +248,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(reqModel), streamStarted)
 						return
 					}
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 					return
 				}
 				h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
@@ -400,7 +401,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(reqModel), streamStarted)
 					return
 				}
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 				return
 			}
 			h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
@@ -753,6 +754,33 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, lastMessage string, streamStarted bool) {
+	// Kiro 故障带了分类信息：按分类还原到正确的状态码族，不要再一律压成 502。
+	// 上游 200 + in-band exception 属于限流/过载，传输层失败才是 502/504。
+	//
+	// 注意仍然过一遍 mapUpstreamError：对下游的状态码约定必须和其它平台一致
+	// （例如上游 401 要对外报 502，否则客户端会以为是自己的 key 有问题；
+	// 529 按既有约定对外报 503）。这里只替换文案与响应头，不另立一套状态码。
+	if info := service.DecodeKiroFailureMessage(lastMessage); info != nil {
+		classified := statusCode
+		if classified <= 0 {
+			classified = http.StatusBadGateway
+		}
+		status, errType, _ := h.mapUpstreamError(classified, lastMessage)
+		if !streamStarted {
+			if info.RetryAfterSeconds > 0 {
+				c.Header("Retry-After", strconv.Itoa(info.RetryAfterSeconds))
+			}
+			// 把上游 requestID 透给客户端，报障时可直接用于和上游对单
+			if info.RequestID != "" {
+				c.Header("x-upstream-request-id", info.RequestID)
+			}
+		}
+		log.Printf("Kiro failover exhausted: class=%s classified=%d client_status=%d exception=%s request_id=%s reason=%s",
+			info.Class, classified, status, info.ExceptionType, info.RequestID, info.Reason)
+		h.handleStreamingAwareError(c, status, errType, info.ClientMessage(classified), streamStarted)
+		return
+	}
+
 	status, errType, errMsg := h.mapUpstreamError(statusCode, lastMessage)
 	if !streamStarted && isKiroInitialResponseTimeoutMessage(lastMessage) {
 		c.Header("Retry-After", kiroClaudeOAuthClientRetryAfterHeader)
@@ -925,7 +953,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(parsedReq.Model))
 			return
 		}
-		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error())
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err))
 		return
 	}
 	setOpsSelectedAccount(c, account.ID)

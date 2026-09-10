@@ -3421,6 +3421,12 @@ export default {
         defaultConcurrency: '默认并发数',
         defaultConcurrencyHint: '新用户的最大并发请求数'
       },
+      kiroCache: {
+        title: 'Kiro OAuth 模拟缓存计费',
+        description: '仅影响 Kiro OAuth 账号的本地模拟缓存计费，API Key 账号不受影响。',
+        readRatio: '缓存读取计费比例',
+        readRatioHint: '范围 0-1。1 表示全部按缓存读取价格计费，0 表示全部按普通输入价格计费。'
+      },
       site: {
         title: '站点设置',
         description: '自定义站点品牌',

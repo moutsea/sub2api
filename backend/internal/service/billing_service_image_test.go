@@ -147,3 +147,11 @@ func TestGetDefaultImagePrice_FallbackHardcoded(t *testing.T) {
 	cost = svc.CalculateImageCost("gemini-3-pro-image", "2K", 1, nil, 1.0)
 	require.InDelta(t, 0.134, cost.TotalCost, 0.0001)
 }
+
+func TestCalculateImageCost_GPTImage25DefaultPricing(t *testing.T) {
+	svc := &BillingService{}
+	for _, model := range []string{"gpt-image-2.5-sunburst", "gpt-image-2.5-flare"} {
+		cost := svc.CalculateImageCost(model, "1K", 1, nil, 1.0)
+		require.InDelta(t, 0.060, cost.TotalCost, 0.0001)
+	}
+}

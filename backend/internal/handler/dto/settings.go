@@ -31,8 +31,9 @@ type SystemSettings struct {
 	HomeContent         string `json:"home_content"`
 	HideCcsImportButton bool   `json:"hide_ccs_import_button"`
 
-	DefaultConcurrency int     `json:"default_concurrency"`
-	DefaultBalance     float64 `json:"default_balance"`
+	DefaultConcurrency          int     `json:"default_concurrency"`
+	DefaultBalance              float64 `json:"default_balance"`
+	KiroSimulatedCacheReadRatio float64 `json:"kiro_simulated_cache_read_ratio"`
 
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`

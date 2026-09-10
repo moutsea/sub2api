@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -18,6 +19,18 @@ import (
 
 // claudeCodeValidator is a singleton validator for Claude Code client detection
 var claudeCodeValidator = service.NewClaudeCodeValidator()
+
+// noAvailableAccountsMessage 生成账号选择失败时对客户端展示的文案。
+//
+// 账号选择失败的 error 可能包含 DB/Redis 细节、账号名、内部约束名等信息，
+// 直接拼进响应会泄露内部拓扑。这里把原始 error 记到服务端日志，
+// 只给客户端一句无信息量的通用文案。
+func noAvailableAccountsMessage(err error) string {
+	if err != nil {
+		log.Printf("Account selection failed: %v", err)
+	}
+	return "No available accounts, please retry later or contact administrator"
+}
 
 const (
 	// OpenAI-compatible Kiro requests commit an initial SSE chunk early, so they

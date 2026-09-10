@@ -73,6 +73,38 @@ type Config struct {
 //   - "legacy": q.<region>.amazonaws.com (deprecated per AWS firewall docs)
 type KiroConfig struct {
 	ServiceEndpointFamily string `mapstructure:"service_endpoint_family"`
+	// SimulatedCacheReadRatio controls how much predicted cache-read usage is
+	// exposed to users on OAuth requests. 1 keeps the existing behavior; 0
+	// charges all predicted cache-read tokens as normal input tokens.
+	//
+	// 用指针而非 float64：这是一个**计费方向**的开关，0 表示"全部按 input 全价计
+	// 费"（计费最高），而 float64 的零值恰好也是 0。若用值类型，任何未经 viper
+	// 默认值填充的 Config（直接构造、测试、嵌入式使用）都会被当成显式 0，
+	// 静默切到最高计费档。nil 明确表示"未设置"，由调用方回退到 1。
+	SimulatedCacheReadRatio *float64 `mapstructure:"simulated_cache_read_ratio"`
+	// UpstreamConnectionClose: 是否对 Kiro 上游请求发送 Connection: close。
+	//
+	// 默认 false（keep-alive）。这个头最初是为了对齐 Kiro IDE 客户端的真实请求头
+	// 而加上的，但它会彻底禁用连接复用：每个请求都要重新完成 TCP + TLS 握手，
+	// 单账号高并发时造成握手风暴与连接槽位排队，是 502 的主要成因之一。
+	// 如果后续发现上游对 keep-alive 有异常反应，可置为 true 快速回滚。
+	UpstreamConnectionClose bool `mapstructure:"upstream_connection_close"`
+}
+
+// KiroSimulatedCacheReadRatioOrDefault 返回模拟缓存计费比例，未设置时回退到 1。
+//
+// 回退到 1 而不是 0 是刻意的：1 表示"保持既有计费行为"，0 表示"把全部预测
+// cache_read 按 input 全价计费"（计费最高）。默认值必须是行为不变的那一端，
+// 否则配置缺失会静默抬高用户账单。
+func (c *KiroConfig) KiroSimulatedCacheReadRatioOrDefault() float64 {
+	if c == nil || c.SimulatedCacheReadRatio == nil {
+		return 1
+	}
+	ratio := *c.SimulatedCacheReadRatio
+	if ratio < 0 || ratio > 1 {
+		return 1
+	}
+	return ratio
 }
 
 type GeminiConfig struct {
@@ -910,9 +942,15 @@ func setDefaults() {
 	// Kiro service endpoint family — default to new kiro.dev domains.
 	// Set to "legacy" to fall back to q.<region>.amazonaws.com (deprecated).
 	viper.SetDefault("kiro.service_endpoint_family", "kiro")
+	// 默认启用 keep-alive（不发 Connection: close），保证连接可复用
+	viper.SetDefault("kiro.upstream_connection_close", false)
+	viper.SetDefault("kiro.simulated_cache_read_ratio", 1.0)
 }
 
 func (c *Config) Validate() error {
+	if r := c.Kiro.SimulatedCacheReadRatio; r != nil && (*r < 0 || *r > 1) {
+		return fmt.Errorf("kiro.simulated_cache_read_ratio must be between 0 and 1")
+	}
 	if c.JWT.ExpireHour <= 0 {
 		return fmt.Errorf("jwt.expire_hour must be positive")
 	}

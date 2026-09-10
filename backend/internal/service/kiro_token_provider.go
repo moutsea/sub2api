@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 )
 
@@ -53,6 +55,9 @@ const (
 	kiroBannedRecoveryInterval   = 10 * time.Minute // Check banned accounts every 10min
 	kiroDBErrorRecoveryInterval  = 15 * time.Minute // Check DB error accounts every 15min
 	kiroMaxRefreshFailures       = 3                // Mark as banned after 3 consecutive failures
+	// kiroRefreshTimeout 是单次 token 刷新（DB 读 + HTTP + DB 写）的整体上限。
+	// 刷新走独立 context，不随发起方请求取消，因此必须自带超时兜底。
+	kiroRefreshTimeout = 45 * time.Second
 )
 
 // KiroTokenState represents the runtime state of a Kiro account token
@@ -122,6 +127,13 @@ type KiroTokenProvider struct {
 	cooldownDuration time.Duration
 	httpUpstream     HTTPUpstream // Use HTTPUpstream for proxy support
 	mu               sync.RWMutex
+	// refreshSF 合并同一账号的并发刷新。
+	//
+	// 之前刷新是在 state.mu 里做的：一次刷新要走一整个网络往返（含 DB 读、
+	// HTTP 请求、DB 写），期间该账号所有请求都阻塞在锁上。单账号高并发时，
+	// 一次慢刷新会把整批请求拖到超时。改用 singleflight 后锁只保护内存态读写，
+	// 网络调用在锁外执行，且并发刷新仍然只发一次。
+	refreshSF singleflight.Group
 }
 
 // NewKiroTokenProvider creates a new KiroTokenProvider
@@ -151,6 +163,99 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 	// Get or create token state
 	state := p.getOrCreateState(account.ID)
 
+	// 第一阶段：只在锁内读内存态，判断是否可以直接复用现有 token。
+	// 注意这里不再持锁做网络调用。
+	token, err := p.cachedAccessToken(state, account)
+	if err != nil {
+		return "", err
+	}
+	if token != "" {
+		return token, nil
+	}
+
+	// 第二阶段：锁外刷新，同一账号的并发刷新由 singleflight 合并成一次。
+	key := strconv.FormatInt(account.ID, 10)
+	result, err, _ := p.refreshSF.Do(key, func() (any, error) {
+		// singleflight 内部再检一次：等在同一个 key 上的调用者可能已经被
+		// 前一次刷新满足了，避免连续刷两次。
+		if cached, cachedErr := p.cachedAccessToken(state, account); cachedErr == nil && cached != "" {
+			return cached, nil
+		}
+
+		// 刷新不能绑定发起方的请求 context。
+		//
+		// singleflight 会让多个请求共享同一次刷新，如果沿用第一个调用者的 ctx，
+		// 那个客户端一断开就会 cancel 掉整次刷新，连带把所有等待者一起打挂
+		// —— 比不合并更糟。这里用独立 context 并设置上限超时。
+		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), kiroRefreshTimeout)
+		defer cancelRefresh()
+
+		// Need to refresh token — reload account from DB to get latest refresh_token.
+		// The account object passed in may hold a stale refresh_token if it was rotated
+		// by a previous successful refresh.
+		freshAccount, reloadErr := p.accountRepo.GetByID(refreshCtx, account.ID)
+		if reloadErr != nil {
+			log.Printf("[KiroToken] Account %d: failed to reload from DB, using original account: %v", account.ID, reloadErr)
+			freshAccount = account
+		}
+
+		tokenInfo, refreshErr := p.refreshToken(refreshCtx, freshAccount)
+		if refreshErr != nil {
+			errType := p.classifyRefreshError(refreshErr)
+			state.mu.Lock()
+			p.handleRefreshError(account.ID, state, errType, refreshErr)
+			state.mu.Unlock()
+			return "", fmt.Errorf("refresh token failed: %w", refreshErr)
+		}
+
+		// 先落库、再换内存态。
+		//
+		// 之前这里是 `go p.updateAccountCredentials(...)`：内存态先更新、DB 异步写。
+		// refresh_token 每次刷新都会轮换，如果异步写还没落地就发生下一次刷新，
+		// 下一次会从 DB 读到**旧的** refresh_token 去刷，直接失败。
+		// 同步落库能保证 DB 里的 refresh_token 不落后于内存态。
+		if persistErr := p.persistAccountCredentials(refreshCtx, account.ID, tokenInfo); persistErr != nil {
+			// 落库失败不阻断当前请求（token 本身是有效的），但要记日志：
+			// 此时 DB 里仍是旧 refresh_token，重启后需要重新刷新。
+			log.Printf("[KiroToken] Account %d: failed to persist credentials, in-memory token still usable: %v",
+				account.ID, persistErr)
+		}
+
+		state.mu.Lock()
+		state.AccessToken = tokenInfo.AccessToken
+		state.ExpiresAt = tokenInfo.ExpiresAt
+		state.LastRefreshed = time.Now()
+		state.Status = KiroTokenStatusActive
+		state.RefreshFailures = 0
+		state.ErrorMsg = ""
+		if tokenInfo.ProfileArn != "" {
+			state.ProfileArn = tokenInfo.ProfileArn
+		}
+		newToken := state.AccessToken
+		state.mu.Unlock()
+
+		// Clear backoff on success
+		p.refreshBackoff.Delete(account.ID)
+
+		return newToken, nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	token, _ = result.(string)
+	if token == "" {
+		return "", fmt.Errorf("refresh token failed: empty access token for account %d", account.ID)
+	}
+	return token, nil
+}
+
+// cachedAccessToken 在锁内检查内存态，返回可直接复用的 access token。
+//
+// 返回 ("", nil) 表示需要刷新；返回 error 表示账号处于不可用状态（cooldown/banned/exhausted）。
+// 拆成独立函数是为了让 GetAccessToken 的锁范围收敛到"纯内存读写"，
+// 网络调用一律放到锁外。
+func (p *KiroTokenProvider) cachedAccessToken(state *KiroTokenState, account *Account) (string, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
@@ -177,40 +282,7 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 		return state.AccessToken, nil
 	}
 
-	// Need to refresh token — reload account from DB to get latest refresh_token.
-	// The account object passed in may hold a stale refresh_token if it was rotated
-	// by a previous successful refresh (written to DB async via updateAccountCredentials).
-	freshAccount, reloadErr := p.accountRepo.GetByID(ctx, account.ID)
-	if reloadErr != nil {
-		log.Printf("[KiroToken] Account %d: failed to reload from DB, using original account: %v", account.ID, reloadErr)
-		freshAccount = account
-	}
-
-	tokenInfo, err := p.refreshToken(ctx, freshAccount)
-	if err != nil {
-		errType := p.classifyRefreshError(err)
-		p.handleRefreshError(account.ID, state, errType, err)
-		return "", fmt.Errorf("refresh token failed: %w", err)
-	}
-
-	// Update state with new token
-	state.AccessToken = tokenInfo.AccessToken
-	state.ExpiresAt = tokenInfo.ExpiresAt
-	state.LastRefreshed = time.Now()
-	state.Status = KiroTokenStatusActive
-	state.RefreshFailures = 0
-	state.ErrorMsg = ""
-	if tokenInfo.ProfileArn != "" {
-		state.ProfileArn = tokenInfo.ProfileArn
-	}
-
-	// Clear backoff on success
-	p.refreshBackoff.Delete(account.ID)
-
-	// Update account credentials in database (async)
-	go p.updateAccountCredentials(account.ID, tokenInfo)
-
-	return state.AccessToken, nil
+	return "", nil
 }
 
 // getOrCreateState gets or creates a token state for an account
@@ -308,7 +380,10 @@ func (p *KiroTokenProvider) refreshSocialToken(ctx context.Context, account *Acc
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := p.httpUpstream.Do(req, proxyURL, account.ID, 1)
+	// 并发数必须与主转发路径传同一个值。之前这里硬编码 1，而主转发传
+	// account.Concurrency，两者 cacheKey 相同但 poolKey 不同，导致每次刷新
+	// token 都会销毁并重建该账号的整个连接池。
+	resp, err := p.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -414,7 +489,10 @@ func (p *KiroTokenProvider) refreshIdCToken(ctx context.Context, account *Accoun
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := p.httpUpstream.Do(req, proxyURL, account.ID, 1)
+	// 并发数必须与主转发路径传同一个值。之前这里硬编码 1，而主转发传
+	// account.Concurrency，两者 cacheKey 相同但 poolKey 不同，导致每次刷新
+	// token 都会销毁并重建该账号的整个连接池。
+	resp, err := p.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -708,22 +786,36 @@ func (p *KiroTokenProvider) GetProfileArn(accountID int64) string {
 	return ""
 }
 
-// updateAccountCredentials updates account credentials in database
-func (p *KiroTokenProvider) updateAccountCredentials(accountID int64, tokenInfo *KiroTokenInfo) {
+// persistAccountCredentials 同步落库刷新后的凭据。
+//
+// 与 updateAccountCredentials 的区别是它返回 error，供刷新路径判断是否落库成功。
+// refresh_token 会轮换，必须先落库再换内存态，否则下一次刷新可能读到旧 token。
+//
+// 调用方传入的应当是不随客户端断开而取消的 context（见 GetAccessToken 里的
+// refreshCtx），否则客户端一断开就会留下"内存态已换、DB 未落库"的不一致。
+func (p *KiroTokenProvider) persistAccountCredentials(ctx context.Context, accountID int64, tokenInfo *KiroTokenInfo) error {
 	if p.accountRepo == nil || tokenInfo == nil {
-		return
+		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	account, err := p.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
-		log.Printf("[KiroToken] Failed to get account %d for credential update: %v", accountID, err)
-		return
+		return fmt.Errorf("get account %d: %w", accountID, err)
 	}
 
-	// Update credentials
+	p.applyCredentialUpdate(account, tokenInfo)
+
+	if err := p.accountRepo.Update(ctx, account); err != nil {
+		return fmt.Errorf("update account %d: %w", accountID, err)
+	}
+	return nil
+}
+
+// applyCredentialUpdate 把刷新结果写入 account 对象（不落库）。
+func (p *KiroTokenProvider) applyCredentialUpdate(account *Account, tokenInfo *KiroTokenInfo) {
 	if account.Credentials == nil {
 		account.Credentials = make(map[string]any)
 	}
@@ -742,6 +834,24 @@ func (p *KiroTokenProvider) updateAccountCredentials(accountID int64, tokenInfo 
 	// Update status to active and clear error message on successful refresh
 	account.Status = StatusActive
 	account.ErrorMessage = ""
+}
+
+// updateAccountCredentials updates account credentials in database
+func (p *KiroTokenProvider) updateAccountCredentials(accountID int64, tokenInfo *KiroTokenInfo) {
+	if p.accountRepo == nil || tokenInfo == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	account, err := p.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		log.Printf("[KiroToken] Failed to get account %d for credential update: %v", accountID, err)
+		return
+	}
+
+	p.applyCredentialUpdate(account, tokenInfo)
 
 	if err := p.accountRepo.Update(ctx, account); err != nil {
 		log.Printf("[KiroToken] Failed to update account %d credentials: %v", accountID, err)

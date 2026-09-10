@@ -71,6 +71,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		HideCcsImportButton:                  settings.HideCcsImportButton,
 		DefaultConcurrency:                   settings.DefaultConcurrency,
 		DefaultBalance:                       settings.DefaultBalance,
+		KiroSimulatedCacheReadRatio:          settings.KiroSimulatedCacheReadRatio,
 		EnableModelFallback:                  settings.EnableModelFallback,
 		FallbackModelAnthropic:               settings.FallbackModelAnthropic,
 		FallbackModelOpenAI:                  settings.FallbackModelOpenAI,
@@ -122,8 +123,9 @@ type UpdateSettingsRequest struct {
 	HideCcsImportButton bool   `json:"hide_ccs_import_button"`
 
 	// 默认配置
-	DefaultConcurrency int     `json:"default_concurrency"`
-	DefaultBalance     float64 `json:"default_balance"`
+	DefaultConcurrency          int      `json:"default_concurrency"`
+	DefaultBalance              float64  `json:"default_balance"`
+	KiroSimulatedCacheReadRatio *float64 `json:"kiro_simulated_cache_read_ratio"`
 
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`
@@ -167,6 +169,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.SMTPPort <= 0 {
 		req.SMTPPort = 587
+	}
+	kiroCacheReadRatio := previousSettings.KiroSimulatedCacheReadRatio
+	if req.KiroSimulatedCacheReadRatio != nil {
+		kiroCacheReadRatio = *req.KiroSimulatedCacheReadRatio
+	}
+	if kiroCacheReadRatio < 0 || kiroCacheReadRatio > 1 {
+		response.BadRequest(c, "Kiro simulated cache read ratio must be between 0 and 1")
+		return
 	}
 
 	// Turnstile 参数验证
@@ -238,39 +248,40 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 
 	settings := &service.SystemSettings{
-		RegistrationEnabled:        req.RegistrationEnabled,
-		EmailVerifyEnabled:         req.EmailVerifyEnabled,
-		SMTPHost:                   req.SMTPHost,
-		SMTPPort:                   req.SMTPPort,
-		SMTPUsername:               req.SMTPUsername,
-		SMTPPassword:               req.SMTPPassword,
-		SMTPFrom:                   req.SMTPFrom,
-		SMTPFromName:               req.SMTPFromName,
-		SMTPUseTLS:                 req.SMTPUseTLS,
-		TurnstileEnabled:           req.TurnstileEnabled,
-		TurnstileSiteKey:           req.TurnstileSiteKey,
-		TurnstileSecretKey:         req.TurnstileSecretKey,
-		LinuxDoConnectEnabled:      req.LinuxDoConnectEnabled,
-		LinuxDoConnectClientID:     req.LinuxDoConnectClientID,
-		LinuxDoConnectClientSecret: req.LinuxDoConnectClientSecret,
-		LinuxDoConnectRedirectURL:  req.LinuxDoConnectRedirectURL,
-		SiteName:                   req.SiteName,
-		SiteLogo:                   req.SiteLogo,
-		SiteSubtitle:               req.SiteSubtitle,
-		APIBaseURL:                 req.APIBaseURL,
-		ContactInfo:                req.ContactInfo,
-		DocURL:                     req.DocURL,
-		HomeContent:                req.HomeContent,
-		HideCcsImportButton:        req.HideCcsImportButton,
-		DefaultConcurrency:         req.DefaultConcurrency,
-		DefaultBalance:             req.DefaultBalance,
-		EnableModelFallback:        req.EnableModelFallback,
-		FallbackModelAnthropic:     req.FallbackModelAnthropic,
-		FallbackModelOpenAI:        req.FallbackModelOpenAI,
-		FallbackModelGemini:        req.FallbackModelGemini,
-		FallbackModelAntigravity:   req.FallbackModelAntigravity,
-		EnableIdentityPatch:        req.EnableIdentityPatch,
-		IdentityPatchPrompt:        req.IdentityPatchPrompt,
+		RegistrationEnabled:         req.RegistrationEnabled,
+		EmailVerifyEnabled:          req.EmailVerifyEnabled,
+		SMTPHost:                    req.SMTPHost,
+		SMTPPort:                    req.SMTPPort,
+		SMTPUsername:                req.SMTPUsername,
+		SMTPPassword:                req.SMTPPassword,
+		SMTPFrom:                    req.SMTPFrom,
+		SMTPFromName:                req.SMTPFromName,
+		SMTPUseTLS:                  req.SMTPUseTLS,
+		TurnstileEnabled:            req.TurnstileEnabled,
+		TurnstileSiteKey:            req.TurnstileSiteKey,
+		TurnstileSecretKey:          req.TurnstileSecretKey,
+		LinuxDoConnectEnabled:       req.LinuxDoConnectEnabled,
+		LinuxDoConnectClientID:      req.LinuxDoConnectClientID,
+		LinuxDoConnectClientSecret:  req.LinuxDoConnectClientSecret,
+		LinuxDoConnectRedirectURL:   req.LinuxDoConnectRedirectURL,
+		SiteName:                    req.SiteName,
+		SiteLogo:                    req.SiteLogo,
+		SiteSubtitle:                req.SiteSubtitle,
+		APIBaseURL:                  req.APIBaseURL,
+		ContactInfo:                 req.ContactInfo,
+		DocURL:                      req.DocURL,
+		HomeContent:                 req.HomeContent,
+		HideCcsImportButton:         req.HideCcsImportButton,
+		DefaultConcurrency:          req.DefaultConcurrency,
+		DefaultBalance:              req.DefaultBalance,
+		KiroSimulatedCacheReadRatio: kiroCacheReadRatio,
+		EnableModelFallback:         req.EnableModelFallback,
+		FallbackModelAnthropic:      req.FallbackModelAnthropic,
+		FallbackModelOpenAI:         req.FallbackModelOpenAI,
+		FallbackModelGemini:         req.FallbackModelGemini,
+		FallbackModelAntigravity:    req.FallbackModelAntigravity,
+		EnableIdentityPatch:         req.EnableIdentityPatch,
+		IdentityPatchPrompt:         req.IdentityPatchPrompt,
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -338,6 +349,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		HideCcsImportButton:                  updatedSettings.HideCcsImportButton,
 		DefaultConcurrency:                   updatedSettings.DefaultConcurrency,
 		DefaultBalance:                       updatedSettings.DefaultBalance,
+		KiroSimulatedCacheReadRatio:          updatedSettings.KiroSimulatedCacheReadRatio,
 		EnableModelFallback:                  updatedSettings.EnableModelFallback,
 		FallbackModelAnthropic:               updatedSettings.FallbackModelAnthropic,
 		FallbackModelOpenAI:                  updatedSettings.FallbackModelOpenAI,
@@ -451,6 +463,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.DefaultBalance != after.DefaultBalance {
 		changed = append(changed, "default_balance")
+	}
+	if before.KiroSimulatedCacheReadRatio != after.KiroSimulatedCacheReadRatio {
+		changed = append(changed, "kiro_simulated_cache_read_ratio")
 	}
 	if before.EnableModelFallback != after.EnableModelFallback {
 		changed = append(changed, "enable_model_fallback")

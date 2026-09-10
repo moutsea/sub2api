@@ -3269,6 +3269,12 @@ export default {
         defaultConcurrency: 'Default Concurrency',
         defaultConcurrencyHint: 'Maximum concurrent requests for new users'
       },
+      kiroCache: {
+        title: 'Kiro OAuth Simulated Cache Billing',
+        description: 'Controls local simulated cache billing for Kiro OAuth accounts only. API Key accounts are unaffected.',
+        readRatio: 'Cache Read Billing Ratio',
+        readRatioHint: 'Range 0-1. 1 bills all simulated cache reads at the cache price; 0 bills them as regular input.'
+      },
       site: {
         title: 'Site Settings',
         description: 'Customize site branding',

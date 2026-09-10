@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -31,18 +34,26 @@ type SettingRepository interface {
 
 // SettingService 系统设置服务
 type SettingService struct {
-	settingRepo SettingRepository
-	cfg         *config.Config
-	onUpdate    func() // Callback when settings are updated (for cache invalidation)
-	version     string // Application version
+	settingRepo            SettingRepository
+	cfg                    *config.Config
+	onUpdate               func() // Callback when settings are updated (for cache invalidation)
+	version                string // Application version
+	kiroCacheReadRatioBits atomic.Uint64
+	kiroCacheReadRatioOnce sync.Once
 }
 
 // NewSettingService 创建系统设置服务实例
 func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *SettingService {
-	return &SettingService{
+	s := &SettingService{
 		settingRepo: settingRepo,
 		cfg:         cfg,
 	}
+	ratio := 1.0
+	if cfg != nil {
+		ratio = cfg.Kiro.KiroSimulatedCacheReadRatioOrDefault()
+	}
+	s.kiroCacheReadRatioBits.Store(math.Float64bits(ratio))
+	return s
 }
 
 // GetAllSettings 获取所有系统设置
@@ -202,6 +213,10 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	// 默认配置
 	updates[SettingKeyDefaultConcurrency] = strconv.Itoa(settings.DefaultConcurrency)
 	updates[SettingKeyDefaultBalance] = strconv.FormatFloat(settings.DefaultBalance, 'f', 8, 64)
+	if settings.KiroSimulatedCacheReadRatio < 0 || settings.KiroSimulatedCacheReadRatio > 1 {
+		return fmt.Errorf("kiro_simulated_cache_read_ratio must be between 0 and 1")
+	}
+	updates[SettingKeyKiroSimulatedCacheReadRatio] = strconv.FormatFloat(settings.KiroSimulatedCacheReadRatio, 'f', 6, 64)
 
 	// Model fallback configuration
 	updates[SettingKeyEnableModelFallback] = strconv.FormatBool(settings.EnableModelFallback)
@@ -223,6 +238,9 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	}
 
 	err := s.settingRepo.SetMultiple(ctx, updates)
+	if err == nil {
+		s.kiroCacheReadRatioBits.Store(math.Float64bits(settings.KiroSimulatedCacheReadRatio))
+	}
 	if err == nil && s.onUpdate != nil {
 		s.onUpdate() // Invalidate cache after settings update
 	}
@@ -294,15 +312,20 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 	}
 
 	// 初始化默认设置
+	kiroCacheReadRatio := 1.0
+	if s.cfg != nil {
+		kiroCacheReadRatio = s.cfg.Kiro.KiroSimulatedCacheReadRatioOrDefault()
+	}
 	defaults := map[string]string{
-		SettingKeyRegistrationEnabled: "true",
-		SettingKeyEmailVerifyEnabled:  "false",
-		SettingKeySiteName:            "Sub2API",
-		SettingKeySiteLogo:            "",
-		SettingKeyDefaultConcurrency:  strconv.Itoa(s.cfg.Default.UserConcurrency),
-		SettingKeyDefaultBalance:      strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
-		SettingKeySMTPPort:            "587",
-		SettingKeySMTPUseTLS:          "false",
+		SettingKeyRegistrationEnabled:         "true",
+		SettingKeyEmailVerifyEnabled:          "false",
+		SettingKeySiteName:                    "Sub2API",
+		SettingKeySiteLogo:                    "",
+		SettingKeyDefaultConcurrency:          strconv.Itoa(s.cfg.Default.UserConcurrency),
+		SettingKeyDefaultBalance:              strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
+		SettingKeyKiroSimulatedCacheReadRatio: strconv.FormatFloat(kiroCacheReadRatio, 'f', 6, 64),
+		SettingKeySMTPPort:                    "587",
+		SettingKeySMTPUseTLS:                  "false",
 		// Model fallback defaults
 		SettingKeyEnableModelFallback:      "false",
 		SettingKeyFallbackModelAnthropic:   "claude-3-5-sonnet-20241022",
@@ -366,6 +389,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	} else {
 		result.DefaultBalance = s.cfg.Default.UserBalance
 	}
+
+	result.KiroSimulatedCacheReadRatio = s.kiroSimulatedCacheReadRatio(settings)
 
 	// 敏感信息直接返回，方便测试连接时使用
 	result.SMTPPassword = settings[SettingKeySMTPPassword]
@@ -436,6 +461,35 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 
 	return result
+}
+
+func (s *SettingService) kiroSimulatedCacheReadRatio(settings map[string]string) float64 {
+	raw, ok := settings[SettingKeyKiroSimulatedCacheReadRatio]
+	if ok {
+		if ratio, err := strconv.ParseFloat(raw, 64); err == nil && ratio >= 0 && ratio <= 1 {
+			return ratio
+		}
+	}
+	return math.Float64frombits(s.kiroCacheReadRatioBits.Load())
+}
+
+// GetKiroSimulatedCacheReadRatio returns the current OAuth cache billing ratio.
+// The persisted value is loaded once; subsequent admin updates are applied atomically.
+func (s *SettingService) GetKiroSimulatedCacheReadRatio(ctx context.Context) float64 {
+	if s.settingRepo != nil {
+		s.kiroCacheReadRatioOnce.Do(func() {
+			if value, err := s.settingRepo.GetValue(ctx, SettingKeyKiroSimulatedCacheReadRatio); err == nil {
+				if ratio, parseErr := strconv.ParseFloat(value, 64); parseErr == nil && ratio >= 0 && ratio <= 1 {
+					s.kiroCacheReadRatioBits.Store(math.Float64bits(ratio))
+				}
+			}
+		})
+	}
+	ratio := math.Float64frombits(s.kiroCacheReadRatioBits.Load())
+	if ratio < 0 || ratio > 1 {
+		return 1
+	}
+	return ratio
 }
 
 func isFalseSettingValue(value string) bool {

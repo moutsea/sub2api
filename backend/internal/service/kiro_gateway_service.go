@@ -29,6 +29,14 @@ const (
 	kiroRetryBaseDelay                 = 1 * time.Second
 	kiroRetryMaxDelay                  = 16 * time.Second
 	defaultKiroStreamKeepaliveInterval = 15 * time.Second
+
+	// kiroStreamCommitDeadline 是"上游迟迟不发首帧"时仍然提交 SSE 信封的上限。
+	//
+	// 权衡：提交越晚，可 failover 的窗口越大；但客户端与中间层
+	// （Cloudflare 约 120s）在收到任何字节前会超时断开。取 20s 是因为
+	// in-band exception / 空流几乎总在首帧就暴露，20s 足以覆盖，
+	// 又远小于 120s 窗口。
+	kiroStreamCommitDeadline = 20 * time.Second
 )
 
 // kiroEndpointConfig defines an upstream endpoint for Kiro requests
@@ -109,6 +117,11 @@ type KiroGatewayService struct {
 	proxyPoolUpdated     time.Time          // cache timestamp
 	modelCapabilityCache sync.Map           // account+model -> dynamic capability state
 	freeTierSF           singleflight.Group // dedup concurrent subscription type fetches per account
+
+	// openAICommitDeadline / streamCommitDeadline 覆盖对应路径的信封提交上限，
+	// 仅测试用。为 0 时取各自的默认常量。
+	openAICommitDeadline time.Duration
+	streamCommitDeadline time.Duration
 }
 
 // NewKiroGatewayService creates a new KiroGatewayService
@@ -148,6 +161,18 @@ func (s *KiroGatewayService) kiroStreamKeepaliveInterval() time.Duration {
 		return time.Duration(cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	}
 	return defaultKiroStreamKeepaliveInterval
+}
+
+// applyKiroConnectionHeader 按配置决定是否发送 Connection: close。
+//
+// 默认不发（keep-alive）。发送 close 会让每个请求都重建 TCP + TLS 连接，
+// 单账号并发一高就出现握手风暴、临时端口/TIME_WAIT 堆积，
+// 以及 MaxConnsPerHost 槽位排队 —— 这些失败请求根本到不了上游，
+// 上游侧查无记录，正是排查 502 时"上游说没收到"的成因之一。
+func (s *KiroGatewayService) applyKiroConnectionHeader(req *http.Request) {
+	if s.cfg != nil && s.cfg.Kiro.UpstreamConnectionClose {
+		req.Header.Set("Connection", "close")
+	}
 }
 
 // applyRequestJitter sleeps a random duration between configured min/max before an upstream request.
@@ -631,20 +656,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		estimatedTokens = kiro.EstimateInputTokens(claudeReq)
 	}
 
-	// Cache estimation for billing — computed from the actual request as-is.
-	cacheEstimation := kiro.EstimateCache(claudeReq)
+	cacheEstimation := kiro.CacheEstimation{}
 	var cacheResult kiro.CacheResult
-	if cacheEstimation.MeetsCacheThreshold {
-		// Generate cache key from stable conversation ID (IP + UA + API key or client-provided session/conversation ID).
-		// CacheTracker tracks per-client cache state to predict upstream prompt cache hits,
-		// so it needs a client-session identifier, not a content fingerprint.
-		cacheKey := kiro.GenerateStableConversationID(c)
-		cacheResult = kiro.GlobalCacheTracker.CheckAndMark(cacheKey, cacheEstimation.CacheableTokens)
-		log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v prev_tokens=%d cache_key=%s",
-			prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
-			cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
-			cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.PrevTokens, cacheKey)
-	}
 
 	// Get access token
 	if s.tokenProvider == nil {
@@ -674,7 +687,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		body = enforceCacheControlLimit(body)
 		// 确保 metadata.user_id 格式合规（缺失或格式不对时基于 apiKey 生成确定性值）
 		body = claude.EnsureMetadataUserID(body, accessToken)
-		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, cacheEstimation, cacheResult, false)
+		return s.forwardClaudeAPIRequest(ctx, c, account, claudeReq, body, accessToken, proxyURL, originalModel, startTime, false)
 	}
 
 	// Resolve URL-based images to base64 (CW only supports base64).
@@ -691,6 +704,16 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if !kiro.Is1MContext(originalModel) {
 		if kiro.CompressImagesInRequest(claudeReq) {
 			log.Printf("%s images compressed for body size reduction", prefix)
+		}
+	}
+	if !isAPIKeyAccount {
+		cacheEstimation = kiro.EstimateCache(claudeReq)
+		if cacheEstimation.MeetsCacheThreshold {
+			cacheResult = s.beginKiroOAuthCache(c, account, activeUpstreamModel, claudeReq, cacheEstimation)
+			log.Printf("%s cache_estimation: cacheable=%d non_cacheable=%d stable=%d history=%d meets_threshold=%v cache_hit=%v prev_tokens=%d",
+				prefix, cacheEstimation.CacheableTokens, cacheEstimation.NonCacheableTokens,
+				cacheEstimation.StableTokens, cacheEstimation.HistoryTokens,
+				cacheEstimation.MeetsCacheThreshold, cacheResult.Hit, cacheResult.PrevTokens)
 		}
 	}
 
@@ -727,6 +750,11 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	var lastErr error
 	tokenRefreshed := false // shared across endpoints to avoid redundant refresh
 
+	// proxySuspect 表示上一次尝试是**传输层**失败，当前代理有嫌疑，下次尝试换一个。
+	// 只在传输失败时置位：上游返回 5xx 说明请求已经到达上游，代理是无辜的，
+	// 此时换代理会白白改掉 client 缓存键、丢掉已建好的连接池。
+	proxySuspect := false
+
 	{
 		resp = nil
 		lastErr = nil
@@ -744,6 +772,18 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				// deadline after jitter so queue smoothing does not consume the Kiro budget.
 				s.applyRequestJitter(ctx)
 
+				// 传输层失败后重新解析代理：之前代理只在循环外解析一次，
+				// 一旦选中的代理不可用，三次重试会全部走同一个坏代理然后整体失败。
+				// Free-tier 账号会从池里随机换一个；固定代理账号解析结果不变（无副作用）。
+				// 注意用 = 而非 :=，避免 shadow 掉外层 proxyURL。
+				if proxySuspect {
+					proxySuspect = false
+					if rotated := s.resolveProxyURL(ctx, account, freeTier); rotated != proxyURL {
+						log.Printf("%s endpoint=%s proxy_rotated attempt=%d", prefix, ep.Name, attempt)
+						proxyURL = rotated
+					}
+				}
+
 				reqCtx, deadline := s.startKiroInitialDeadline(ctx, account)
 				upstreamReq, err := http.NewRequestWithContext(reqCtx, "POST", ep.URL, bytes.NewReader(reqBody))
 				if err != nil {
@@ -760,7 +800,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 				upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
 				upstreamReq.Header.Set("Host", ep.Host)
-				upstreamReq.Header.Set("Connection", "close")
+				s.applyKiroConnectionHeader(upstreamReq)
 				upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 				upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
 				if ep.AmzTarget != "" {
@@ -789,9 +829,14 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 						AccountID:          account.ID,
 						AccountName:        account.Name,
 						UpstreamStatusCode: 0,
-						Kind:               "request_error",
+						Kind:               "transport_error",
 						Message:            safeErr,
+						// 明确标注请求可能未到达上游，避免再和上游互相甩锅
+						Detail: fmt.Sprintf("class=%s endpoint=%s attempt=%d note=request_may_not_have_reached_upstream",
+							kiroFailureTransport, ep.Name, attempt),
 					})
+					// 传输层失败：当前代理有嫌疑，下一次尝试换一个
+					proxySuspect = true
 
 					if attempt < kiroMaxRetries {
 						log.Printf("%s endpoint=%s status=request_failed retry=%d/%d error=%v", prefix, ep.Name, attempt, kiroMaxRetries, err)
@@ -802,7 +847,15 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 						continue
 					}
 					log.Printf("%s endpoint=%s status=request_failed retries_exhausted error=%v", prefix, ep.Name, err)
-					lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
+					// B 类：传输层失败，请求可能根本没到上游（上游侧查不到记录）。
+					// 必须包成 UpstreamFailoverError，否则 handler 的 errors.As 匹配不上，
+					// 会直接 return 而不写任何响应体，客户端拿到空的 200。
+					transportFailure := newKiroTransportFailure(
+						"kiro_transport_error",
+						http.StatusBadGateway,
+						fmt.Sprintf("endpoint %s: %v", ep.Name, err),
+					)
+					lastErr = transportFailure.failoverError()
 					break // try next endpoint
 				}
 
@@ -897,6 +950,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 						if err != nil {
 							return nil, fmt.Errorf("prepare fallback request: %w", err)
 						}
+						cacheResult = s.beginKiroOAuthCache(c, account, activeUpstreamModel, claudeReq, cacheEstimation)
 						log.Printf("%s endpoint=%s request_rebuilt request_size=%d model=%s mapped_model=%s", prefix, ep.Name, len(reqBody), originalModel, mappedModel)
 						continue
 					}
@@ -1002,7 +1056,12 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				setOpsUpstreamError(c, 0, lastErr.Error(), "")
 				return nil, lastErr
 			}
-			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "All endpoints failed")
+			// 兜底也走 failover 语义，确保 handler 一定会写出响应
+			return nil, newKiroTransportFailure(
+				"kiro_all_endpoints_failed",
+				http.StatusBadGateway,
+				"all endpoints failed",
+			).failoverError()
 		}
 
 	endpointDone:
@@ -1059,6 +1118,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			// Calculate cache tokens to pass to handlers (cache_read + cache_creation coexist)
 			// CW path: cap to model-specific context window
 			cacheReadTokens, cacheCreationTokens := cacheEstimation.SplitCacheTokens(cacheResult, contextWindowLimit)
+			if !isAPIKeyAccount {
+				cacheReadTokens, cacheCreationTokens = s.applyKiroSimulatedCacheReadRatio(cacheReadTokens, cacheCreationTokens)
+			}
 			thinkingEnabled := kiro.IsThinkingConfigEnabled(claudeReq)
 
 			if claudeReq.Stream {
@@ -1089,7 +1151,14 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 						return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
 					}
 					log.Printf("%s status=stream_error error=%v", prefix, err)
+					// A/B 类故障要落 ops（带 requestID + exception 类型），
+					// 否则只能靠翻日志和上游对单。
+					recordKiroFailureOps(c, account, err)
 					return nil, err
+				}
+				// 流已提交后才失败：状态码改不了了，但要留下可查的 ops 记录
+				if streamRes.failedAfterCommit {
+					recordKiroPostCommitFailureOps(c, account, streamRes.inBandException, streamRes.upstreamRequestID)
 				}
 				usage = streamRes.usage
 				firstTokenMs = streamRes.firstTokenMs
@@ -1122,6 +1191,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 						return nil, kiroInitialResponseFailover(timeoutErr.Phase, timeoutErr.Timeout)
 					}
 					log.Printf("%s status=non_stream_error error=%v", prefix, err)
+					recordKiroFailureOps(c, account, err)
 					return nil, err
 				}
 				usage = streamRes.usage
@@ -1164,6 +1234,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				log.Printf("%s model_effective requested_model=%s effective_model=%s", prefix, originalModel, activeUpstreamModel)
 			}
 
+			if !isAPIKeyAccount {
+				cacheResult.Commit()
+			}
 			return &ForwardResult{
 				RequestID:    requestID,
 				Usage:        *usage,
@@ -1186,6 +1259,14 @@ type kiroStreamResult struct {
 	usage             *ClaudeUsage
 	firstTokenMs      *int
 	usageFromUpstream bool
+
+	// 流已提交后才发生的失败无法再改 HTTP 状态码，函数会返回
+	// (result, nil)（视为"部分成功"）。这些字段把故障信息带回调用方，
+	// 由有 account 的一层落 ops —— 否则 ThrottlingException 这类最常见的
+	// 上游限流会完全不进 ops，只剩日志，无法和上游对单。
+	inBandException   string
+	upstreamRequestID string
+	failedAfterCommit bool
 }
 
 func isRenderableKiroStreamEvent(event kiro.StreamEvent) bool {
@@ -1203,13 +1284,6 @@ func isRenderableKiroStreamEvent(event kiro.StreamEvent) bool {
 
 func isRenderableKiroCompleteResponse(resp *kiro.CompleteResponse) bool {
 	return resp != nil && (resp.Text != "" || resp.Thinking != "" || len(resp.ToolCalls) > 0)
-}
-
-func kiroEmptyStreamFailover(reason string) *UpstreamFailoverError {
-	return &UpstreamFailoverError{
-		StatusCode: http.StatusBadGateway,
-		Message:    reason,
-	}
 }
 
 type kiroStreamOptions struct {
@@ -1250,9 +1324,20 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 		converter.SetContentBlockOffset(len(webSearchEvents) * 2)
 	}
 
+	// 上游 requestID 必须在所有分支都可用。之前只有 >=400 分支读它，
+	// 导致"上游 200 + 空流/读错误"这类故障完全无法和上游对单。
+	upstreamRequestID := resp.Header.Get("x-amzn-requestid")
+	// 即使最终失败也把 requestID 透给客户端，便于用户报障时直接提供
+	if upstreamRequestID != "" {
+		c.Header("x-request-id", upstreamRequestID)
+	}
+
 	streamCommitted := false
 	sawRenderableEvent := false
 	streamFailed := false
+	// inBandException 记录 AWS EventStream 里的 :exception-type。
+	// 流已提交后无法再改 HTTP 状态码，但这个类型必须留下来进日志和 ops 记录。
+	inBandException := ""
 
 	writeFormattedClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
 		for _, claudeEvent := range events {
@@ -1308,31 +1393,32 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 		return nil
 	}
 
-	// Once upstream headers arrive we immediately commit the SSE envelope
-	// (message_start + web-search blocks) so the client starts receiving the
-	// stream before Cloudflare's 120s window — see the commitStream call below.
-	// After this point streamCommitted is always true, so downstream events are
-	// written straight through.
+	// 有内容要写时才提交 SSE 信封（懒提交）。
+	//
+	// 之前是"上游响应头一到就立刻提交"，注释里把它记为一个权衡：牺牲提交后的
+	// 账号 failover，换取抢在 Cloudflare 120s 窗口前给客户端发出第一个字节。
+	// 但实际代价比记录的更大 —— 上游 HTTP 200 + in-band exception
+	// （ThrottlingException 等）几乎总在首帧到达，而提交发生在读 body 之前，
+	// 于是这类故障**永远**只能以 200 + SSE error 收场，既不能换账号重试，
+	// 也让客户端把限流当成成功。
+	//
+	// 现在改为：真正有内容时提交；若上游迟迟不发首帧，则由下面的
+	// commitTimer 在 kiroStreamCommitDeadline 到点时兜底提交，
+	// 仍然远早于 120s 窗口。两头的好处都拿到了。
 	writeClaudeEvents := func(events []kiro.ClaudeSSEEvent) error {
 		if len(events) == 0 {
 			return nil
 		}
+		if err := commitStream(); err != nil {
+			return err
+		}
 		return writeFormattedClaudeEvents(events)
 	}
 
-	// Commit the SSE envelope as soon as upstream headers are available, rather
-	// than deferring until the first renderable event. This trades away
-	// post-header account failover — once the envelope is committed we can only
-	// surface upstream errors/empty streams as an SSE error event, not retry on
-	// another account — in exchange for beating Cloudflare's 120s cutoff on slow
-	// first tokens. Pre-commit failover still applies before this point.
 	select {
 	case <-c.Request.Context().Done():
 		return nil, c.Request.Context().Err()
 	default:
-	}
-	if err := commitStream(); err != nil {
-		return nil, err
 	}
 
 	var firstTokenMs *int
@@ -1397,6 +1483,14 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 	keepaliveTicker := time.NewTicker(keepaliveInterval)
 	defer keepaliveTicker.Stop()
 
+	// 信封提交上限：上游迟迟不发首帧时兜底提交，保住连接
+	commitDeadline := kiroStreamCommitDeadline
+	if s.streamCommitDeadline > 0 {
+		commitDeadline = s.streamCommitDeadline
+	}
+	commitTimer := time.NewTimer(commitDeadline)
+	defer commitTimer.Stop()
+
 	// Track last data arrival for timeout and keepalive decisions
 	lastDataAt := time.Now()
 
@@ -1428,6 +1522,17 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			streamFailed = true
 			goto finishStream
 
+		case <-commitTimer.C:
+			// 上游迟迟不发首帧：到点先提交信封保住连接，放弃 failover 机会。
+			// 这是懒提交的安全阀，仍远早于 Cloudflare 的 120s 窗口。
+			if !streamCommitted {
+				log.Printf("Kiro stream commit deadline reached before first event: request_id=%s timeout=%s",
+					upstreamRequestID, commitDeadline)
+				if err := commitStream(); err != nil {
+					return nil, err
+				}
+			}
+
 		case chunk, ok := <-chunkCh:
 			if !ok {
 				// Channel closed — upstream done
@@ -1441,9 +1546,13 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 					}
 					goto finishStream
 				}
-				log.Printf("Stream read error (kiro): %v", chunk.err)
+				log.Printf("Stream read error (kiro): request_id=%s error=%v", upstreamRequestID, chunk.err)
 				if !streamCommitted {
-					return nil, kiroEmptyStreamFailover("kiro_stream_read_error")
+					// 读流中断：上游已回 200 并开始传输，属于 B 类传输失败，
+					// 但 requestID 已经拿到了，带上以便对单。
+					failure := newKiroTransportFailure("kiro_stream_read_error", http.StatusBadGateway, chunk.err.Error())
+					failure.RequestID = upstreamRequestID
+					return nil, failure.failoverError()
 				}
 				sendErrorEvent("stream_read_error")
 				goto finishStream
@@ -1487,6 +1596,26 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 					if msg == "" {
 						msg = "kiro_stream_error"
 					}
+					// 保留 AWS 的 exception 类型：这是 A 类故障（上游 HTTP 200 +
+					// in-band exception），上游侧记录的是 200，只有 exception 类型
+					// 加 requestID 才能对单。
+					inBandException = event.ErrorType
+					log.Printf("Kiro in-band exception: type=%s request_id=%s committed=%v retryable=%v message=%s",
+						event.ErrorType, upstreamRequestID, streamCommitted,
+						isRetryableKiroException(event.ErrorType), msg)
+					// 只有"可重试"的 exception（限流/过载）才在提交前 failover：
+					// 换账号有机会成功，且客户端应看到 429/529 而不是 502。
+					// 确定性错误（订阅不支持、参数非法）换账号只会撞同一面墙，
+					// 应把上游那句可操作的原因原样透传给客户端。
+					if !streamCommitted && isRetryableKiroException(event.ErrorType) {
+						return nil, newKiroInBandFailure(event.ErrorType, msg, upstreamRequestID).failoverError()
+					}
+					// 确定性错误：提交信封后以 SSE error 事件透传上游原因
+					if !streamCommitted {
+						if err := commitStream(); err != nil {
+							return nil, err
+						}
+					}
 					sendErrorEvent(msg)
 					goto finishStream
 				}
@@ -1508,9 +1637,12 @@ func (s *KiroGatewayService) handleStreamingResponseWithOptions(c *gin.Context, 
 			if time.Since(lastDataAt) < streamInterval {
 				continue
 			}
-			log.Printf("Stream data interval timeout (kiro): no data for %v", streamInterval)
+			log.Printf("Stream data interval timeout (kiro): no data for %v request_id=%s", streamInterval, upstreamRequestID)
 			if !streamCommitted {
-				return nil, kiroEmptyStreamFailover("kiro_stream_timeout_before_first_event")
+				// 上游已回 200 但迟迟不发数据：按超时归到 B 类，状态码用 504
+				failure := newKiroTransportFailure("kiro_stream_timeout_before_first_event", http.StatusGatewayTimeout, "")
+				failure.RequestID = upstreamRequestID
+				return nil, failure.failoverError()
 			}
 			sendErrorEvent("stream_timeout")
 			goto finishStream
@@ -1541,6 +1673,19 @@ finishStream:
 			msg := sanitizeKiroClientErrorMessage(event.ErrorMessage)
 			if msg == "" {
 				msg = "kiro_stream_error"
+			}
+			if inBandException == "" {
+				inBandException = event.ErrorType
+			}
+			log.Printf("Kiro in-band exception (finish): type=%s request_id=%s committed=%v message=%s",
+				event.ErrorType, upstreamRequestID, streamCommitted, msg)
+			if !streamCommitted && isRetryableKiroException(event.ErrorType) {
+				return nil, newKiroInBandFailure(event.ErrorType, msg, upstreamRequestID).failoverError()
+			}
+			if !streamCommitted {
+				if err := commitStream(); err != nil {
+					return nil, err
+				}
 			}
 			sendErrorEvent(msg)
 			break
@@ -1573,19 +1718,32 @@ finishStream:
 			usage:             usage,
 			firstTokenMs:      firstTokenMs,
 			usageFromUpstream: tokenUsage != nil,
+			inBandException:   inBandException,
+			upstreamRequestID: upstreamRequestID,
+			failedAfterCommit: true,
 		}, nil
 	}
 
 	if !sawRenderableEvent {
-		log.Printf("Kiro upstream returned empty stream: duration=%v parse_errors=%d message_stopped=%v stream_committed=%v",
-			time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped(), streamCommitted)
+		log.Printf("Kiro upstream returned empty stream: duration=%v parse_errors=%d message_stopped=%v stream_committed=%v request_id=%s exception=%s",
+			time.Since(startTime), parser.ParseErrorCount(), parser.MessageStopped(), streamCommitted, upstreamRequestID, inBandException)
 		if streamCommitted {
 			sendErrorEvent("kiro_empty_stream")
 			return &kiroStreamResult{
-				usage: &ClaudeUsage{},
+				usage:             &ClaudeUsage{},
+				inBandException:   inBandException,
+				upstreamRequestID: upstreamRequestID,
+				failedAfterCommit: true,
 			}, nil
 		}
-		return nil, kiroEmptyStreamFailover("kiro_empty_stream")
+		// 上游 HTTP 200 但零可渲染内容 —— A 类。上游侧看到的是 200，
+		// 所以必须带 requestID，且不能报 502（会让上游查无此单）。
+		failure := newKiroEmptyFailure("kiro_empty_stream", upstreamRequestID)
+		if inBandException != "" {
+			failure = newKiroInBandFailure(inBandException, "", upstreamRequestID)
+			failure.Reason = "kiro_empty_stream"
+		}
+		return nil, failure.failoverError()
 	}
 
 	// Set context percentage before building final events
@@ -1678,19 +1836,27 @@ func (s *KiroGatewayService) handleNonStreamingResponseWithOptions(c *gin.Contex
 	ms := int(time.Since(startTime).Milliseconds())
 	firstTokenMs = &ms
 
+	// 与流式路径一致：非流式分支同样要带上 requestID 才能和上游对单
+	upstreamRequestID := resp.Header.Get("x-amzn-requestid")
+	if upstreamRequestID != "" {
+		c.Header("x-request-id", upstreamRequestID)
+	}
+
 	// Parse complete response with tool name restoration
 	messageID := "msg_" + uuid.New().String()[:24]
 	parsedResp, err := kiro.ParseCompleteResponseWithNameRestoreAndThinkingStrict(respBody, toolNameReverseMap, thinkingEnabled)
 	if err != nil {
-		log.Printf("Kiro upstream returned invalid non-stream response: duration=%v error=%v", time.Since(startTime), err)
-		return nil, &UpstreamFailoverError{
-			StatusCode: http.StatusBadGateway,
-			Message:    sanitizeKiroClientErrorMessage(err.Error()),
-		}
+		log.Printf("Kiro upstream returned invalid non-stream response: duration=%v request_id=%s error=%v",
+			time.Since(startTime), upstreamRequestID, err)
+		// 上游 200 但响应体无法解析 —— A 类
+		failure := newKiroEmptyFailure("kiro_invalid_response", upstreamRequestID)
+		failure.Message = sanitizeKiroClientErrorMessage(err.Error())
+		return nil, failure.failoverError()
 	}
 	if !isRenderableKiroCompleteResponse(parsedResp) {
-		log.Printf("Kiro upstream returned empty non-stream response before downstream commit: duration=%v body_size=%d", time.Since(startTime), len(respBody))
-		return nil, kiroEmptyStreamFailover("kiro_empty_response")
+		log.Printf("Kiro upstream returned empty non-stream response before downstream commit: duration=%v body_size=%d request_id=%s",
+			time.Since(startTime), len(respBody), upstreamRequestID)
+		return nil, newKiroEmptyFailure("kiro_empty_response", upstreamRequestID).failoverError()
 	}
 
 	// Calculate input tokens from context percentage if available
@@ -2191,7 +2357,7 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 			req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 			req.Header.Set("x-amzn-codewhisperer-optout", "true")
 			req.Header.Set("Host", ep.Host)
-			req.Header.Set("Connection", "close")
+			s.applyKiroConnectionHeader(req)
 			req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 			req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 			if ep.AmzTarget != "" {
@@ -2367,7 +2533,6 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 	claudeReq *kiro.ClaudeRequest, body []byte,
 	apiKey, proxyURL, originalModel string,
 	startTime time.Time,
-	cacheEstimation kiro.CacheEstimation, cacheResult kiro.CacheResult,
 	hideCacheUsage bool,
 ) (*ForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-apikey-Forward] account=%s", account.Name)
@@ -2623,18 +2788,6 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 			}
 		}
 
-		// Apply cache estimation only when upstream did not provide token usage.
-		// Real Claude behavior: cache_read and cache_creation coexist.
-		if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-			cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult, 0)
-			usage.CacheReadInputTokens = cacheRead
-			usage.CacheCreationInputTokens = cacheCreation
-			usage.InputTokens -= (cacheRead + cacheCreation)
-			if usage.InputTokens < 0 {
-				usage.InputTokens = 0
-			}
-		}
-
 		return &ForwardResult{
 			RequestID:    requestID,
 			Usage:        *usage,
@@ -2678,18 +2831,6 @@ func (s *KiroGatewayService) forwardClaudeAPIRequest(
 		usage = &ClaudeUsage{
 			InputTokens:  inputTokens,
 			OutputTokens: outputTokens,
-		}
-	}
-
-	// Apply cache estimation only when upstream did not provide token usage.
-	// Real Claude behavior: cache_read and cache_creation coexist.
-	if cacheEstimation.MeetsCacheThreshold && !usageFromUpstream {
-		cacheRead, cacheCreation := cacheEstimation.SplitCacheTokens(cacheResult, 0)
-		usage.CacheReadInputTokens = cacheRead
-		usage.CacheCreationInputTokens = cacheCreation
-		usage.InputTokens -= (cacheRead + cacheCreation)
-		if usage.InputTokens < 0 {
-			usage.InputTokens = 0
 		}
 	}
 

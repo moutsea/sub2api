@@ -144,7 +144,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(parsed.Model), streamStarted)
 					return
 				}
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 				return
 			}
 			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)

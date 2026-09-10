@@ -197,6 +197,140 @@ func TestOpenAIImagesRequestNormalizeForOAuthDoesNotIgnoreMask(t *testing.T) {
 	require.Nil(t, ignored)
 }
 
+func TestBuildOpenAIImageResponsesBodyUsesExplicitImageModel(t *testing.T) {
+	parsed := &OpenAIImagesRequest{
+		Endpoint: openAIImagesEditsEndpoint,
+		Model:    "gpt-image-2.5-sunburst",
+		Prompt:   "edit this image",
+		Size:     "1024x1024",
+		Uploads: []OpenAIImagesUpload{{
+			ContentType: "image/png",
+			Data:        []byte("png-data"),
+		}},
+	}
+
+	body, err := buildOpenAIImageResponsesBody(parsed, parsed.Model)
+	if err != nil {
+		t.Fatalf("buildOpenAIImageResponsesBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(mustJSONBytes(t, body), "model").String(); got != openAIImageResponsesHostModel {
+		t.Fatalf("host model = %q, want %q", got, openAIImageResponsesHostModel)
+	}
+	encoded := mustJSONBytes(t, body)
+	if got := gjson.GetBytes(encoded, "tools.0.model").String(); got != parsed.Model {
+		t.Fatalf("image model = %q, want %q", got, parsed.Model)
+	}
+	if got := gjson.GetBytes(encoded, "tools.0.action").String(); got != "edit" {
+		t.Fatalf("action = %q, want edit", got)
+	}
+	if got := gjson.GetBytes(encoded, "input.0.content.1.image_url").String(); got != "data:image/png;base64,cG5nLWRhdGE=" {
+		t.Fatalf("image URL = %q", got)
+	}
+}
+
+func TestBuildOpenAIImageResponsesBodyCarriesNativeOptionsAndMask(t *testing.T) {
+	compression := 80
+	parsed := &OpenAIImagesRequest{
+		Endpoint:          openAIImagesEditsEndpoint,
+		Model:             "gpt-image-2.5-flare",
+		Prompt:            "replace the background",
+		Quality:           "high",
+		Background:        "transparent",
+		OutputFormat:      "webp",
+		OutputCompression: &compression,
+		Uploads:           []OpenAIImagesUpload{{ContentType: "image/jpeg", Data: []byte("base")}},
+		MaskUpload:        &OpenAIImagesUpload{ContentType: "image/png", Data: []byte("mask")},
+	}
+	body, err := buildOpenAIImageResponsesBody(parsed, parsed.Model)
+	if err != nil {
+		t.Fatalf("buildOpenAIImageResponsesBody() error = %v", err)
+	}
+	encoded := mustJSONBytes(t, body)
+	if got := gjson.GetBytes(encoded, "tools.0.quality").String(); got != "high" {
+		t.Fatalf("quality = %q", got)
+	}
+	if got := gjson.GetBytes(encoded, "tools.0.background").String(); got != "transparent" {
+		t.Fatalf("background = %q", got)
+	}
+	if got := gjson.GetBytes(encoded, "tools.0.output_format").String(); got != "webp" {
+		t.Fatalf("output format = %q", got)
+	}
+	if got := gjson.GetBytes(encoded, "tools.0.output_compression").Int(); got != int64(compression) {
+		t.Fatalf("output compression = %d", got)
+	}
+	if got := gjson.GetBytes(encoded, "tools.0.input_image_mask.image_url").String(); got != "data:image/png;base64,bWFzaw==" {
+		t.Fatalf("mask URL = %q", got)
+	}
+}
+
+func TestClassifyOpenAIImage25RequiresOAuthCapability(t *testing.T) {
+	for _, model := range []string{"gpt-image-2.5-sunburst", "gpt-image-2.5-flare"} {
+		req := &OpenAIImagesRequest{Model: model}
+		if got := classifyOpenAIImagesCapability(req); got != OpenAIImagesCapabilityOAuth {
+			t.Fatalf("model %s capability = %q, want %q", model, got, OpenAIImagesCapabilityOAuth)
+		}
+	}
+}
+
+func TestValidateOpenAIImage25RequestRejectsUnsupportedCombinations(t *testing.T) {
+	for name, req := range map[string]*OpenAIImagesRequest{
+		"stream":           {Model: "gpt-image-2.5-flare", Stream: true, N: 1},
+		"multiple outputs": {Model: "gpt-image-2.5-flare", N: 2},
+		"url response":     {Model: "gpt-image-2.5-flare", N: 1, ResponseFormat: "url"},
+	} {
+		if err := validateOpenAIImage25Request(req); err == nil {
+			t.Errorf("%s request unexpectedly accepted", name)
+		}
+	}
+}
+
+func TestNormalizeOpenAIImage25PreservesNativeOptions(t *testing.T) {
+	req := &OpenAIImagesRequest{
+		Model:            "gpt-image-2.5-sunburst",
+		HasNativeOptions: true,
+		NativeOptions:    []string{"quality"},
+		Quality:          "high",
+	}
+	normalized, ignored := req.NormalizeForAccount(&Account{Type: AccountTypeOAuth})
+	if normalized != req || len(ignored) != 0 {
+		t.Fatalf("2.5 OAuth normalization stripped options: normalized=%#v ignored=%v", normalized, ignored)
+	}
+}
+
+func TestExtractOpenAIImageGenerationResult(t *testing.T) {
+	body := []byte(`{"output":[{"type":"message"},{"type":"image_generation_call","result":"aGVsbG8="}]}`)
+	if got := extractOpenAIImageGenerationResult(body); got != "aGVsbG8=" {
+		t.Fatalf("image result = %q, want aGVsbG8=", got)
+	}
+}
+
+func TestValidateOpenAIImageResponsesCompletion(t *testing.T) {
+	valid := []byte(`{"status":"completed","output":[{"type":"image_generation_call","status":"completed","result":"aGVsbG8="}]}`)
+	if err := validateOpenAIImageResponsesCompletion(valid); err != nil {
+		t.Fatalf("valid response rejected: %v", err)
+	}
+	failed := []byte(`{"status":"completed","output":[{"type":"image_generation_call","status":"failed","result":"aGVsbG8="}]}`)
+	if err := validateOpenAIImageResponsesCompletion(failed); err == nil {
+		t.Fatal("failed image call accepted")
+	}
+}
+
+func TestExtractOpenAIImageGenerationResultFromStream(t *testing.T) {
+	body := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"image_generation_call\",\"result\":\"aGVsbG8=\"}}\n\n")
+	if got := extractOpenAIImageGenerationResultFromStream(body); got != "aGVsbG8=" {
+		t.Fatalf("image result = %q, want aGVsbG8=", got)
+	}
+}
+
+func mustJSONBytes(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return encoded
+}
+
 func TestOpenAIImagesRequestMultipartPreservesGrokMaskUpload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var body bytes.Buffer

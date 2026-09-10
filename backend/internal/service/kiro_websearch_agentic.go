@@ -544,7 +544,7 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 			upstreamReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 			upstreamReq.Header.Set("x-amzn-codewhisperer-optout", "true")
 			upstreamReq.Header.Set("Host", ep.Host)
-			upstreamReq.Header.Set("Connection", "close")
+			s.applyKiroConnectionHeader(upstreamReq)
 			upstreamReq.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 			upstreamReq.Header.Set("amz-sdk-request", "attempt=1; max=3")
 			if ep.AmzTarget != "" {
@@ -572,8 +572,10 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 					Platform:    account.Platform,
 					AccountID:   account.ID,
 					AccountName: account.Name,
-					Kind:        "request_error",
+					Kind:        "transport_error",
 					Message:     safeErr,
+					Detail: fmt.Sprintf("class=%s endpoint=%s note=request_may_not_have_reached_upstream",
+						kiroFailureTransport, ep.Name),
 				})
 
 				if attempt < kiroMaxRetries {
@@ -585,7 +587,12 @@ func (s *KiroGatewayService) executeCodeWhispererRequest(ctx context.Context, c 
 					continue
 				}
 				log.Printf("%s endpoint=%s retries_exhausted error=%v", prefix, ep.Name, err)
-				lastErr = fmt.Errorf("endpoint %s: %w", ep.Name, err)
+				// B 类：包成 failover error，避免 handler 静默返回空响应
+				lastErr = newKiroTransportFailure(
+					"kiro_transport_error",
+					http.StatusBadGateway,
+					fmt.Sprintf("endpoint %s: %v", ep.Name, err),
+				).failoverError()
 				break // try next endpoint
 			}
 

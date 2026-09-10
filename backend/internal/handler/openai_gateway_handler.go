@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -226,7 +227,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(reqModel), streamStarted)
 					return
 				}
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 				return
 			}
 			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
@@ -508,7 +509,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", modelNotSupportedClientMessage(reqModel), streamStarted)
 					return
 				}
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 				return
 			}
 			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
@@ -684,6 +685,28 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 }
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, lastMessage string, streamStarted bool) {
+	// 与 Claude 路径保持一致：按分类还原状态码族，但仍过 mapUpstreamError
+	// 以沿用本平台对下游的状态码约定，只替换文案与响应头。
+	if info := service.DecodeKiroFailureMessage(lastMessage); info != nil {
+		classified := statusCode
+		if classified <= 0 {
+			classified = http.StatusBadGateway
+		}
+		status, errType, _ := h.mapUpstreamError(classified, lastMessage)
+		if !streamStarted {
+			if info.RetryAfterSeconds > 0 {
+				c.Header("Retry-After", strconv.Itoa(info.RetryAfterSeconds))
+			}
+			if info.RequestID != "" {
+				c.Header("x-upstream-request-id", info.RequestID)
+			}
+		}
+		log.Printf("Kiro failover exhausted (openai): class=%s classified=%d client_status=%d exception=%s request_id=%s reason=%s",
+			info.Class, classified, status, info.ExceptionType, info.RequestID, info.Reason)
+		h.handleStreamingAwareError(c, status, errType, info.ClientMessage(classified), streamStarted)
+		return
+	}
+
 	status, errType, errMsg := h.mapUpstreamError(statusCode, lastMessage)
 	if !streamStarted && isKiroInitialResponseTimeoutMessage(lastMessage) {
 		c.Header("Retry-After", kiroClaudeOAuthClientRetryAfterHeader)

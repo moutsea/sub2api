@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
@@ -17,6 +16,12 @@ import (
 type kiroOpenAIStreamResult struct {
 	usage        *OpenAIUsage
 	firstTokenMs *int
+
+	// 流已提交后才发生的失败无法再改状态码，函数返回 (result, nil) 视为部分成功。
+	// 这些字段把故障信息带回调用方落 ops，语义同 kiroStreamResult。
+	inBandException   string
+	upstreamRequestID string
+	failedAfterCommit bool
 }
 
 // handleOpenAIStreamingResponse handles CW streaming response and converts to OpenAI SSE format.
@@ -27,12 +32,6 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	cacheCreationTokens, cacheReadTokens int,
 	thinkingEnabled bool,
 ) (*kiroOpenAIStreamResult, error) {
-	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Status(http.StatusOK)
-
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return nil, fmt.Errorf("streaming not supported")
@@ -48,27 +47,128 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	converter := kiro.NewOpenAIStreamConverter(messageID, originalModel, inputTokens)
 	converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
 
-	// Send initial chunk (role: assistant)
-	if _, err := c.Writer.Write([]byte(converter.BuildInitialEvent())); err != nil {
-		return nil, err
+	upstreamRequestID := resp.Header.Get("x-amzn-requestid")
+	if upstreamRequestID != "" {
+		c.Header("x-request-id", upstreamRequestID)
 	}
-	flusher.Flush()
+
+	// 延迟提交 SSE 信封。
+	//
+	// 之前这里在函数入口就写 c.Status(200) + initial chunk，于是从第一行代码起
+	// 就再也改不了状态码、也无法换账号重试 —— 上游 in-band exception / 空流
+	// 只能以 SSE error 事件的形式吐给客户端，而 HTTP 状态仍是 200。
+	// 现在推迟到"确实有内容要写"或达到 kiroOpenAICommitDeadline 才提交，
+	// 在此之前的失败都能走正常的分类 + failover 路径。
+	streamCommitted := false
+	commitStream := func() error {
+		if streamCommitted {
+			return nil
+		}
+		c.Header("Content-Type", "text/event-stream; charset=utf-8")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		if _, err := c.Writer.Write([]byte(converter.BuildInitialEvent())); err != nil {
+			return err
+		}
+		streamCommitted = true
+		flusher.Flush()
+		return nil
+	}
 
 	var firstTokenMs *int
 	streamFailed := false
 	sawRenderableEvent := false
+	inBandException := ""
 
-	// Read and process stream
-	buf := make([]byte, 4096)
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+	// 提交前的失败要包装成分类故障，让上层能换账号重试
+	preCommitFailure := func(reason string, statusCode int, message string) error {
+		failure := newKiroTransportFailure(reason, statusCode, message)
+		failure.RequestID = upstreamRequestID
+		return failure.failoverError()
+	}
 
+	// 后台读取上游，主循环用 select 以便在无数据时也能触发提交上限
+	type openAIStreamChunk struct {
+		data []byte
+		err  error
+	}
+	chunkCh := make(chan openAIStreamChunk, 32)
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		defer close(chunkCh)
+		buf := make([]byte, 4096)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case chunkCh <- openAIStreamChunk{data: data}:
+				case <-done:
+					return
+				}
+			}
+			if err != nil {
+				select {
+				case chunkCh <- openAIStreamChunk{err: err}:
+				case <-done:
+				}
+				return
+			}
+		}
+	}()
+
+	commitDeadline := kiroStreamCommitDeadline
+	if s.openAICommitDeadline > 0 {
+		commitDeadline = s.openAICommitDeadline
+	}
+	commitTimer := time.NewTimer(commitDeadline)
+	defer commitTimer.Stop()
+
+readLoop:
 	for !streamFailed {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+		select {
+		case <-c.Request.Context().Done():
+			if !streamCommitted {
+				return nil, c.Request.Context().Err()
+			}
+			streamFailed = true
+			break readLoop
 
-			events := parser.Process(buf[:n])
+		case <-commitTimer.C:
+			// 上游迟迟不发第一帧：先提交信封保住连接，放弃 failover 机会
+			if !streamCommitted {
+				log.Printf("[kiro-OpenAI] commit deadline reached before first frame: request_id=%s", upstreamRequestID)
+				if err := commitStream(); err != nil {
+					return nil, err
+				}
+			}
+
+		case chunk, ok := <-chunkCh:
+			if !ok {
+				break readLoop
+			}
+			if chunk.err != nil {
+				if chunk.err != io.EOF {
+					log.Printf("[kiro-OpenAI] stream read error: request_id=%s error=%v", upstreamRequestID, chunk.err)
+					if !streamCommitted {
+						return nil, preCommitFailure("kiro_stream_read_error", http.StatusBadGateway, chunk.err.Error())
+					}
+					if _, err := c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_read_error", sanitizeKiroClientErrorMessage(chunk.err.Error())))); err != nil {
+						return nil, err
+					}
+					flusher.Flush()
+					streamFailed = true
+				}
+				break readLoop
+			}
+
+			events := parser.Process(chunk.data)
 			for _, e := range events {
 				if isRenderableKiroStreamEvent(e) {
 					sawRenderableEvent = true
@@ -83,12 +183,26 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 				}
 
 				if e.Type == kiro.EventError {
+					inBandException = e.ErrorType
+					log.Printf("[kiro-OpenAI] in-band exception: type=%s request_id=%s committed=%v retryable=%v message=%s",
+						e.ErrorType, upstreamRequestID, streamCommitted,
+						isRetryableKiroException(e.ErrorType), e.ErrorMessage)
+					// 只有可重试的 exception（限流/过载）才在提交前 failover；
+					// 确定性错误（订阅不支持等）换账号无意义，应透传上游原因。
+					if !streamCommitted && isRetryableKiroException(e.ErrorType) {
+						return nil, newKiroInBandFailure(e.ErrorType, e.ErrorMessage, upstreamRequestID).failoverError()
+					}
 					e.ErrorType = sanitizeKiroClientErrorMessage(e.ErrorType)
 					e.ErrorMessage = sanitizeKiroClientErrorMessage(e.ErrorMessage)
 				}
 				sseStr := converter.ConvertEvent(e)
 				if sseStr == "" {
 					continue
+				}
+
+				// 有真实内容要写了，此时才提交信封
+				if err := commitStream(); err != nil {
+					return nil, err
 				}
 
 				// Track first token time
@@ -105,19 +219,9 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 					break
 				}
 			}
-			flusher.Flush()
-		}
-
-		if readErr != nil {
-			if readErr != io.EOF {
-				log.Printf("[kiro-OpenAI] stream read error: %v", readErr)
-				if _, err := c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_read_error", sanitizeKiroClientErrorMessage(readErr.Error())))); err != nil {
-					return nil, err
-				}
+			if streamCommitted {
 				flusher.Flush()
-				streamFailed = true
 			}
-			break
 		}
 	}
 
@@ -136,11 +240,22 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 				}
 			}
 			if e.Type == kiro.EventError {
+				if inBandException == "" {
+					inBandException = e.ErrorType
+				}
+				log.Printf("[kiro-OpenAI] in-band exception (finish): type=%s request_id=%s committed=%v message=%s",
+					e.ErrorType, upstreamRequestID, streamCommitted, e.ErrorMessage)
+				if !streamCommitted && isRetryableKiroException(e.ErrorType) {
+					return nil, newKiroInBandFailure(e.ErrorType, e.ErrorMessage, upstreamRequestID).failoverError()
+				}
 				e.ErrorType = sanitizeKiroClientErrorMessage(e.ErrorType)
 				e.ErrorMessage = sanitizeKiroClientErrorMessage(e.ErrorMessage)
 			}
 			sseStr := converter.ConvertEvent(e)
 			if sseStr != "" {
+				if err := commitStream(); err != nil {
+					return nil, err
+				}
 				if _, err := c.Writer.Write([]byte(sseStr)); err != nil {
 					return nil, err
 				}
@@ -152,6 +267,18 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 		}
 	}
 	if !streamFailed && !sawRenderableEvent {
+		log.Printf("[kiro-OpenAI] empty stream: request_id=%s committed=%v exception=%s",
+			upstreamRequestID, streamCommitted, inBandException)
+		// 上游 HTTP 200 但零可渲染内容 —— A 类。未提交时可以换账号重试，
+		// 且必须带 requestID（上游侧记录的是 200，这是唯一对单凭据）。
+		if !streamCommitted {
+			failure := newKiroEmptyFailure("kiro_empty_stream", upstreamRequestID)
+			if inBandException != "" {
+				failure = newKiroInBandFailure(inBandException, "", upstreamRequestID)
+				failure.Reason = "kiro_empty_stream"
+			}
+			return nil, failure.failoverError()
+		}
 		if _, err := c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_empty_stream", "kiro_empty_stream"))); err != nil {
 			return nil, err
 		}
@@ -160,11 +287,17 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 
 	// Send final events (finish_reason + usage + [DONE])
 	if !streamFailed {
+		// 正常收尾也要确保信封已提交（例如上游只回了 usage 帧的边界情况）
+		if err := commitStream(); err != nil {
+			return nil, err
+		}
 		if _, err := c.Writer.Write([]byte(converter.BuildFinalEvent())); err != nil {
 			return nil, err
 		}
 	}
-	flusher.Flush()
+	if streamCommitted {
+		flusher.Flush()
+	}
 
 	outputTokens := converter.TotalOutputTokens()
 	usage := &OpenAIUsage{
@@ -175,8 +308,11 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	}
 
 	return &kiroOpenAIStreamResult{
-		usage:        usage,
-		firstTokenMs: firstTokenMs,
+		usage:             usage,
+		firstTokenMs:      firstTokenMs,
+		inBandException:   inBandException,
+		upstreamRequestID: upstreamRequestID,
+		failedAfterCommit: streamFailed,
 	}, nil
 }
 
@@ -202,14 +338,19 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 	parser.SetThinkingEnabled(thinkingEnabled)
 	events := parser.Process(respBody)
 	events = append(events, parser.Finish()...)
+	upstreamRequestID := resp.Header.Get("x-amzn-requestid")
+	if upstreamRequestID != "" {
+		c.Header("x-request-id", upstreamRequestID)
+	}
 	for _, event := range events {
 		if event.Type != kiro.EventError {
 			continue
 		}
-		return nil, &UpstreamFailoverError{
-			StatusCode: http.StatusBadGateway,
-			Message:    sanitizeKiroClientErrorMessage(event.ErrorMessage),
-		}
+		// A 类：上游 HTTP 200 + in-band exception。按 exception 类型映射状态码
+		// （限流应为 429，不是 502），并带上 requestID 以便和上游对单。
+		log.Printf("Kiro in-band exception (openai non-stream): type=%s request_id=%s message=%s",
+			event.ErrorType, upstreamRequestID, event.ErrorMessage)
+		return nil, newKiroInBandFailure(event.ErrorType, event.ErrorMessage, upstreamRequestID).failoverError()
 	}
 
 	// Collect text and tool calls from events
@@ -254,7 +395,7 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 		}
 	}
 	if text == "" && len(toolCalls) == 0 {
-		return nil, kiroEmptyStreamFailover("kiro_empty_response")
+		return nil, newKiroEmptyFailure("kiro_empty_response", upstreamRequestID).failoverError()
 	}
 
 	// Build CompleteResponse for the non-stream builder

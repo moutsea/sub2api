@@ -132,6 +132,29 @@ func TestKiroAPIKeyGPTChatCompletionsUsesAnthropicMessagesProtocol(t *testing.T)
 	require.Contains(t, recorder.Body.String(), `"content":"ok"`)
 }
 
+func TestKiroAPIKeyClaudeDoesNotUseLocalSimulatedCache(t *testing.T) {
+	upstream := &kiroAPIKeyProtocolUpstream{
+		responseBody:   `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`,
+		responseHeader: make(http.Header),
+	}
+	svc := newKiroAPIKeyProtocolService(upstream)
+	payload, err := json.Marshal(map[string]any{
+		"model":  "claude-opus-4-8",
+		"system": strings.Repeat("system prompt ", 600),
+		"messages": []map[string]string{
+			{"role": "user", "content": "request"},
+		},
+	})
+	require.NoError(t, err)
+	c, _ := newOpenAIKiroTestContext(payload)
+
+	result, err := svc.Forward(context.Background(), c, newKiroAPIKeyProtocolAccount(), payload)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Zero(t, result.Usage.CacheReadInputTokens)
+	require.Zero(t, result.Usage.CacheCreationInputTokens)
+}
+
 func TestKiroAPIKeyOpenAIThinkingUsesLargerDefaultMaxTokens(t *testing.T) {
 	upstream := &kiroAPIKeyProtocolUpstream{
 		responseBody:   `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`,
@@ -337,8 +360,6 @@ func TestKiroAPIKeyClaudeStreamCommitsKeepaliveBeforeUpstreamBody(t *testing.T) 
 			"",
 			claudeReq.Model,
 			time.Now(),
-			kiro.CacheEstimation{},
-			kiro.CacheResult{},
 			false,
 		)
 		done <- forwardResult{result: result, err: forwardErr}

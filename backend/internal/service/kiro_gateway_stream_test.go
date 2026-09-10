@@ -189,13 +189,21 @@ func TestKiroInitialResponseFailoverMessageIncludesTimeout(t *testing.T) {
 	}
 }
 
-func TestKiroStreamingEmptyBodyCommitsInitialEnvelope(t *testing.T) {
+// TestKiroStreamingEmptyBodyFailsOverBeforeCommit 验证上游 200 + 空 body
+// 在信封提交前就失败转移。
+//
+// 行为变更：以前信封在响应头到达时就提交，空流只能以 200 + SSE error 收场
+// —— 客户端拿到的是一个"成功但没内容"的响应，也没有换账号重试的机会。
+// 现在空流（可能是软限流）会 failover，且状态码不再是 502。
+func TestKiroStreamingEmptyBodyFailsOverBeforeCommit(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
+	resp := newKiroStreamHTTPResponse("")
+	resp.Header.Set("x-amzn-requestid", "req-empty-1")
 
 	result, err := svc.handleStreamingResponse(
 		c,
-		newKiroStreamHTTPResponse(""),
+		resp,
 		time.Now(),
 		"claude-sonnet-4-6",
 		10,
@@ -206,23 +214,35 @@ func TestKiroStreamingEmptyBodyCommitsInitialEnvelope(t *testing.T) {
 		false,
 	)
 
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
 	}
-	if result == nil || result.usage == nil {
-		t.Fatalf("result/usage should not be nil: %+v", result)
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("err = %v, want UpstreamFailoverError", err)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("response body missing %q: %s", want, body)
-		}
+	if failoverErr.StatusCode == http.StatusBadGateway {
+		t.Fatal("status = 502; upstream returned HTTP 200 so it would have no matching record")
+	}
+	info := DecodeKiroFailureMessage(failoverErr.Message)
+	if info == nil || info.RequestID != "req-empty-1" {
+		t.Fatalf("request id not preserved: %+v", info)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty before commit", rec.Body.String())
 	}
 }
 
+// TestKiroStreamingCommitsInitialEnvelopeBeforeFirstRenderableEvent 验证上游
+// 首个 token 很慢时，客户端仍能提前收到 SSE 信封（不至于在收到任何字节前
+// 被 Cloudflare/客户端超时断开）。
+//
+// 机制变更：信封提交时机从"上游响应头一到就提交"改成"有内容时提交，
+// 否则由 streamCommitDeadline 到点兜底提交"。本测试要保住的性质没变，
+// 只是改为验证兜底提交这条路径（用短 deadline 以免测试等 20s）。
 func TestKiroStreamingCommitsInitialEnvelopeBeforeFirstRenderableEvent(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
-	svc := &KiroGatewayService{}
+	svc := &KiroGatewayService{streamCommitDeadline: 30 * time.Millisecond}
 	body := newGatedReadCloser(mustContentPayload(t, "hello"))
 	defer body.Close()
 
@@ -248,9 +268,8 @@ func TestKiroStreamingCommitsInitialEnvelopeBeforeFirstRenderableEvent(t *testin
 		done <- streamResult{result: result, err: err}
 	}()
 
-	// The envelope (message_start) is committed as soon as upstream headers are
-	// available — before the gated body releases its first renderable token.
-	if !rec.WaitForWrite(200 * time.Millisecond) {
+	// 到达提交上限后，信封先于被门控的首个 token 发出
+	if !rec.WaitForWrite(500 * time.Millisecond) {
 		t.Fatal("expected initial SSE envelope before first renderable event")
 	}
 	initialBody := rec.BodyString()
@@ -311,70 +330,62 @@ func TestKiroNonStreamingInitialResponseTimeoutBeforeCommit(t *testing.T) {
 	}
 }
 
-func TestKiroStreamingUsageOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
-	c, rec := newKiroStreamTestContext()
-	svc := &KiroGatewayService{}
+// TestKiroStreamingNoRenderableContentFailsOverBeforeCommit 验证上游 HTTP 200
+// 但没有任何可渲染内容时，在信封提交前就失败转移。
+//
+// 覆盖两种真实形态：
+//   - 只有 usage 元数据帧（上游计了费但没产出内容）
+//   - 帧本身损坏（缺字段导致解析失败）
+//
+// 行为变更：以前信封在响应头到达时就提交，这两种都只能以 200 + SSE error
+// 收场 —— 客户端把它当成功、用户还被计费，且没有换账号重试的机会。
+func TestKiroStreamingNoRenderableContentFailsOverBeforeCommit(t *testing.T) {
+	cases := []struct {
+		name  string
+		frame []byte
+	}{
+		{
+			name: "usage_metadata_only",
+			frame: mustKiroEventFrame(t, "messageMetadataEvent", map[string]any{
+				"tokenUsage": map[string]any{"inputTokens": 100, "outputTokens": 0},
+			}),
+		},
+		{
+			name:  "malformed_tool_frame",
+			frame: mustKiroEventFrame(t, "toolUseEvent", map[string]any{"stop": true}),
+		},
+	}
 
-	result, err := svc.handleStreamingResponse(
-		c,
-		newKiroStreamHTTPResponse(string(mustKiroEventFrame(t, "messageMetadataEvent", map[string]any{
-			"tokenUsage": map[string]any{"inputTokens": 100, "outputTokens": 0},
-		}))),
-		time.Now(),
-		"claude-opus-4-7",
-		10,
-		nil,
-		0,
-		0,
-		false,
-		false,
-	)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rec := newKiroStreamTestContext()
+			svc := &KiroGatewayService{}
+			resp := newKiroStreamHTTPResponse(string(tc.frame))
+			resp.Header.Set("x-amzn-requestid", "req-norender-1")
 
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if result == nil || result.usage == nil {
-		t.Fatalf("result/usage should not be nil: %+v", result)
-	}
-	body := rec.Body.String()
-	for _, want := range []string{"event: message_start", "event: error", "kiro_empty_stream"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("response body missing %q: %s", want, body)
-		}
-	}
-}
+			result, err := svc.handleStreamingResponse(
+				c, resp, time.Now(), "claude-opus-4-7", 10, nil, 0, 0, false, false,
+			)
 
-func TestKiroStreamingStopOnlyReturnsSSEErrorAfterCommit(t *testing.T) {
-	c, rec := newKiroStreamTestContext()
-	svc := &KiroGatewayService{}
-
-	result, err := svc.handleStreamingResponse(
-		c,
-		newKiroStreamHTTPResponse(string(mustKiroEventFrame(t, "toolUseEvent", map[string]any{"stop": true}))),
-		time.Now(),
-		"claude-sonnet-4-6",
-		10,
-		nil,
-		0,
-		0,
-		false,
-		false,
-	)
-
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if result == nil || result.usage == nil {
-		t.Fatalf("result/usage should not be nil: %+v", result)
-	}
-	body := rec.Body.String()
-	for _, want := range []string{"event: message_start", "event: error", "toolUseEvent missing toolUseId"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("response body missing %q: %s", want, body)
-		}
-	}
-	if strings.Contains(body, "event: message_delta") || strings.Contains(body, "event: message_stop") {
-		t.Fatalf("response body contains normal completion after malformed tool frame: %s", body)
+			if result != nil {
+				t.Fatalf("result = %+v, want nil so the caller can fail over", result)
+			}
+			var failoverErr *UpstreamFailoverError
+			if !errors.As(err, &failoverErr) {
+				t.Fatalf("err = %v, want UpstreamFailoverError", err)
+			}
+			// 上游返回的是 HTTP 200，报 502 会让上游查无此单
+			if failoverErr.StatusCode == http.StatusBadGateway {
+				t.Fatal("status = 502, want non-502 for an upstream-200 response")
+			}
+			info := DecodeKiroFailureMessage(failoverErr.Message)
+			if info == nil || info.RequestID != "req-norender-1" {
+				t.Fatalf("request id not preserved for reconciliation: %+v", info)
+			}
+			if rec.Body.Len() != 0 {
+				t.Fatalf("response body = %q, want empty before commit", rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -597,7 +608,14 @@ func TestKiroOpenAIStreamingBadCRCDoesNotSendNormalCompletion(t *testing.T) {
 	}
 }
 
-func TestKiroOpenAIStreamingEmptyBodyReturnsSSEError(t *testing.T) {
+// TestKiroOpenAIStreamingEmptyBodyTriggersFailoverBeforeCommit 验证空流在
+// SSE 信封提交**之前**就失败转移，而不是以 200 + SSE error 事件收场。
+//
+// 行为变更说明：这条路径以前在函数入口就写 c.Status(200) + initial chunk，
+// 于是任何失败都只能以 SSE error 事件呈现，HTTP 状态仍是 200，
+// 既无法换账号重试，也让"上游 200 空流"这类故障对客户端表现为成功。
+// 现在信封延迟到确有内容才提交，提交前的失败走正常分类 + failover。
+func TestKiroOpenAIStreamingEmptyBodyTriggersFailoverBeforeCommit(t *testing.T) {
 	c, rec := newKiroStreamTestContext()
 	svc := &KiroGatewayService{}
 
@@ -613,21 +631,182 @@ func TestKiroOpenAIStreamingEmptyBodyReturnsSSEError(t *testing.T) {
 		false,
 	)
 
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	}
+	info := DecodeKiroFailureMessage(failoverErr.Message)
+	if info == nil {
+		t.Fatalf("message = %q, want a decodable kiro failure envelope", failoverErr.Message)
+	}
+	if info.Class != kiroFailureInBand {
+		t.Fatalf("class = %q, want %q", info.Class, kiroFailureInBand)
+	}
+	// 上游返回的是 HTTP 200，报 502 会让上游查无此单
+	if failoverErr.StatusCode == http.StatusBadGateway {
+		t.Fatal("status = 502, want non-502 for an upstream-200 empty stream")
+	}
+	// 未提交信封 —— 不能有任何响应体漏给客户端
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())
+	}
+}
+
+// TestKiroStreamingThrottlingBeforeCommitMapsTo429 是整条修复链路最关键的
+// 端到端断言：上游 HTTP 200 + ThrottlingException 必须映射成 429 并 failover，
+// 而不是 502。
+//
+// 上游侧记录的是 200，如果我们对外报 502，上游就会说"没收到这些 502 请求"。
+func TestKiroStreamingThrottlingBeforeCommitMapsTo429(t *testing.T) {
+	frame := mustKiroExceptionFrame(t, "ThrottlingException",
+		map[string]string{"message": "Too many requests"})
+
+	t.Run("claude", func(t *testing.T) {
+		c, rec := newKiroStreamTestContext()
+		svc := &KiroGatewayService{}
+		resp := newKiroStreamHTTPResponse(string(frame))
+		resp.Header.Set("x-amzn-requestid", "req-throttle-1")
+
+		result, err := svc.handleStreamingResponse(
+			c, resp, time.Now(), "claude-sonnet-4-6", 10, nil, 0, 0, false, false,
+		)
+		assertThrottlingFailover(t, result == nil, err, rec.Body.Len())
+	})
+
+	t.Run("openai", func(t *testing.T) {
+		c, rec := newKiroStreamTestContext()
+		svc := &KiroGatewayService{}
+		resp := newKiroStreamHTTPResponse(string(frame))
+		resp.Header.Set("x-amzn-requestid", "req-throttle-1")
+
+		result, err := svc.handleOpenAIStreamingResponse(
+			c, resp, time.Now(), "gpt-5.6-sol", 10, nil, 0, 0, false,
+		)
+		assertThrottlingFailover(t, result == nil, err, rec.Body.Len())
+	})
+}
+
+func assertThrottlingFailover(t *testing.T, resultIsNil bool, err error, bodyLen int) {
+	t.Helper()
+	if !resultIsNil {
+		t.Fatal("result should be nil so the caller can fail over")
+	}
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("err = %v, want UpstreamFailoverError", err)
+	}
+	if failoverErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (upstream returned HTTP 200 + ThrottlingException)",
+			failoverErr.StatusCode)
+	}
+	info := DecodeKiroFailureMessage(failoverErr.Message)
+	if info == nil {
+		t.Fatalf("message = %q, want decodable envelope", failoverErr.Message)
+	}
+	if info.ExceptionType != "ThrottlingException" {
+		t.Fatalf("exception = %q, want ThrottlingException", info.ExceptionType)
+	}
+	if info.RequestID != "req-throttle-1" {
+		t.Fatalf("request_id = %q, want req-throttle-1 (needed to reconcile with upstream)", info.RequestID)
+	}
+	if info.RetryAfterSeconds <= 0 {
+		t.Fatalf("retryAfter = %d, want > 0 for throttling", info.RetryAfterSeconds)
+	}
+	if bodyLen != 0 {
+		t.Fatalf("body len = %d, want 0 before commit", bodyLen)
+	}
+}
+
+// TestKiroOpenAIStreamingCommitDeadlineCommitsWithoutData 验证上游迟迟不发
+// 第一帧时，到达提交上限后仍会提交 SSE 信封。
+//
+// 这是延迟提交的安全阀：不提交虽然保住了 failover 机会，但客户端和中间层
+// （Cloudflare 约 120s）在收到任何字节前会超时断开。到点必须先保住连接。
+func TestKiroOpenAIStreamingCommitDeadlineCommitsWithoutData(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{openAICommitDeadline: 30 * time.Millisecond}
+
+	// 上游连接挂住不发数据，直到 body 被关闭
+	blocking := newBlockingReadCloser()
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = blocking.Close()
+	}()
+
+	result, err := svc.handleOpenAIStreamingResponse(
+		c,
+		newBlockingKiroStreamHTTPResponse(blocking),
+		time.Now(),
+		"gpt-5.6-sol",
+		10,
+		nil,
+		0,
+		0,
+		false,
+	)
 	if err != nil {
 		t.Fatalf("handleOpenAIStreamingResponse error: %v", err)
 	}
-	if result == nil || result.usage == nil {
-		t.Fatalf("result/usage should not be nil: %+v", result)
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+	// 到点提交后，即使上游最终什么都没发，客户端也已收到信封
+	body := rec.Body.String()
+	if !strings.Contains(body, "data: ") {
+		t.Fatalf("expected SSE envelope to be committed at deadline: %q", body)
+	}
+	// 提交后才发现空流 → 以 SSE error 收场，并标记供调用方落 ops
+	if !result.failedAfterCommit {
+		t.Fatal("failedAfterCommit = false, want true")
+	}
+	if !strings.Contains(body, "upstream_empty_stream") {
+		t.Fatalf("expected empty-stream SSE error after commit: %q", body)
+	}
+}
+
+// TestKiroOpenAIStreamingEmptyAfterCommitSendsSSEError 验证信封已提交后才发现
+// 空流时，仍以 SSE error 事件收场（此时状态码已无法更改）。
+//
+// 构造方式：先发一个只含 usage 的非可渲染帧让信封提交，再结束流。
+func TestKiroOpenAIStreamingEmptyAfterCommitSendsSSEError(t *testing.T) {
+	c, rec := newKiroStreamTestContext()
+	svc := &KiroGatewayService{}
+
+	// 一个可渲染帧先提交信封，随后 CRC 损坏帧在提交后触发错误
+	validFrame := mustContentPayload(t, "hi")
+	broken := mustContentPayload(t, "x")
+	broken[len(broken)-1] ^= 0xff
+
+	result, err := svc.handleOpenAIStreamingResponse(
+		c,
+		newKiroStreamHTTPResponse(string(append(validFrame, broken...))),
+		time.Now(),
+		"gpt-5.6-sol",
+		10,
+		nil,
+		0,
+		0,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("handleOpenAIStreamingResponse error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil after commit")
+	}
+	// 提交后失败要把信息带回调用方落 ops，否则这类故障不可查
+	if !result.failedAfterCommit {
+		t.Fatal("failedAfterCommit = false, want true so the caller records ops")
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `"type":"upstream_empty_stream"`) || !strings.Contains(body, "kiro_empty_stream") {
-		t.Fatalf("response body missing empty stream error: %s", body)
+	if !strings.Contains(body, "data: ") {
+		t.Fatalf("expected SSE payload after commit: %s", body)
 	}
 	if strings.Contains(body, `"finish_reason":"stop"`) {
-		t.Fatalf("response body contains normal completion after empty stream: %s", body)
-	}
-	if strings.Count(body, "data: [DONE]") != 1 {
-		t.Fatalf("response body should contain exactly one [DONE]: %s", body)
+		t.Fatalf("must not send a normal completion after failure: %s", body)
 	}
 }
 
@@ -686,8 +865,20 @@ func TestKiroNonStreamingEmptyBodyTriggersFailoverBeforeCommit(t *testing.T) {
 	if !errors.As(err, &failoverErr) {
 		t.Fatalf("err = %v, want UpstreamFailoverError", err)
 	}
-	if failoverErr.Message != "kiro_empty_response" {
-		t.Fatalf("message = %q, want kiro_empty_response", failoverErr.Message)
+	// Message 现在携带故障分类（class/exception/request_id/reason），需要解码后断言。
+	info := DecodeKiroFailureMessage(failoverErr.Message)
+	if info == nil {
+		t.Fatalf("message = %q, want a decodable kiro failure envelope", failoverErr.Message)
+	}
+	if info.Reason != "kiro_empty_response" {
+		t.Fatalf("reason = %q, want kiro_empty_response", info.Reason)
+	}
+	// 上游返回 HTTP 200 + 空 body 属于 A 类：不能报 502，否则上游查无此单
+	if info.Class != kiroFailureInBand {
+		t.Fatalf("class = %q, want %q", info.Class, kiroFailureInBand)
+	}
+	if failoverErr.StatusCode == http.StatusBadGateway {
+		t.Fatalf("status = 502, want a non-502 status for an upstream-200 empty response")
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("response body = %q, want empty before failover", rec.Body.String())

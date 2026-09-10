@@ -59,7 +59,7 @@ func TestSimpleModeBypassesQuotaCheck(t *testing.T) {
 
 	t.Run("simple_mode_bypasses_quota_check", func(t *testing.T) {
 		cfg := &config.Config{RunMode: config.RunModeSimple}
-		apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, cfg)
+		apiKeyService := service.NewAPIKeyService(apiKeyRepo, stubUserRepo{}, nil, nil, nil, cfg)
 		subscriptionService := service.NewSubscriptionService(nil, &stubUserSubscriptionRepo{}, nil)
 		router := newAuthTestRouter(apiKeyService, subscriptionService, cfg)
 
@@ -73,7 +73,7 @@ func TestSimpleModeBypassesQuotaCheck(t *testing.T) {
 
 	t.Run("standard_mode_enforces_quota_check", func(t *testing.T) {
 		cfg := &config.Config{RunMode: config.RunModeStandard}
-		apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, cfg)
+		apiKeyService := service.NewAPIKeyService(apiKeyRepo, stubUserRepo{}, nil, nil, nil, cfg)
 
 		now := time.Now()
 		sub := &service.UserSubscription{
@@ -150,9 +150,9 @@ func TestAPIKeyAuthSetsGroupContext(t *testing.T) {
 	}
 
 	cfg := &config.Config{RunMode: config.RunModeSimple}
-	apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, cfg)
+	apiKeyService := service.NewAPIKeyService(apiKeyRepo, stubUserRepo{}, nil, nil, nil, cfg)
 	router := gin.New()
-	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, nil, cfg)))
+	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, nil, nil, cfg)))
 	router.GET("/t", func(c *gin.Context) {
 		groupFromCtx, ok := c.Request.Context().Value(ctxkey.Group).(*service.Group)
 		if !ok || groupFromCtx == nil || groupFromCtx.ID != group.ID {
@@ -208,9 +208,9 @@ func TestAPIKeyAuthOverwritesInvalidContextGroup(t *testing.T) {
 	}
 
 	cfg := &config.Config{RunMode: config.RunModeSimple}
-	apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, cfg)
+	apiKeyService := service.NewAPIKeyService(apiKeyRepo, stubUserRepo{}, nil, nil, nil, cfg)
 	router := gin.New()
-	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, nil, cfg)))
+	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, nil, nil, cfg)))
 
 	invalidGroup := &service.Group{
 		ID:       group.ID,
@@ -237,11 +237,84 @@ func TestAPIKeyAuthOverwritesInvalidContextGroup(t *testing.T) {
 
 func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) *gin.Engine {
 	router := gin.New()
-	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, cfg)))
+	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, nil, cfg)))
 	router.GET("/t", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 	return router
+}
+
+// stubUserRepo 是 UserRepository 的最小实现。
+//
+// APIKeyService 的鉴权路径（loadAuthCacheEntry / GetByKey 的 DB fallback）
+// 会在 apiKey.User != nil && apiKey.GroupID != nil 时调用
+// userRepo.GetUserGroupRate 加载分组倍率覆盖。这些测试的 API Key 两者都有，
+// 所以 userRepo 不能再传 nil —— 否则鉴权时空指针 panic。
+type stubUserRepo struct{}
+
+func (stubUserRepo) GetUserGroupRate(ctx context.Context, userID int64, groupID int64) (*float64, error) {
+	// 无倍率覆盖：返回 (nil, nil)，调用方会跳过覆盖逻辑
+	return nil, nil
+}
+
+func (stubUserRepo) GetUserGroupRates(ctx context.Context, userID int64) (map[int64]*float64, error) {
+	return nil, nil
+}
+
+func (stubUserRepo) SetUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) Create(ctx context.Context, user *service.User) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) GetByID(ctx context.Context, id int64) (*service.User, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserRepo) GetByEmail(ctx context.Context, email string) (*service.User, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserRepo) GetFirstAdmin(ctx context.Context) (*service.User, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserRepo) Update(ctx context.Context, user *service.User) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) Delete(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) List(ctx context.Context, params pagination.PaginationParams) ([]service.User, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubUserRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.UserListFilters) ([]service.User, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubUserRepo) UpdateBalance(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) DeductBalance(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) UpdateConcurrency(ctx context.Context, id int64, amount int) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (stubUserRepo) RemoveGroupFromAllowedGroups(ctx context.Context, groupID int64) (int64, error) {
+	return 0, errors.New("not implemented")
 }
 
 type stubApiKeyRepo struct {
@@ -249,6 +322,14 @@ type stubApiKeyRepo struct {
 }
 
 func (r *stubApiKeyRepo) Create(ctx context.Context, key *service.APIKey) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) ResetQuotaUsed(ctx context.Context, id int64) error {
 	return errors.New("not implemented")
 }
 
@@ -279,7 +360,7 @@ func (r *stubApiKeyRepo) Delete(ctx context.Context, id int64) error {
 	return errors.New("not implemented")
 }
 
-func (r *stubApiKeyRepo) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
+func (r *stubApiKeyRepo) ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
 	return nil, nil, errors.New("not implemented")
 }
 

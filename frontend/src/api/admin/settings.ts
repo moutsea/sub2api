@@ -15,6 +15,7 @@ export interface SystemSettings {
   // Default settings
   default_balance: number
   default_concurrency: number
+  kiro_simulated_cache_read_ratio: number
   // OEM settings
   site_name: string
   site_logo: string
@@ -66,6 +67,7 @@ export interface UpdateSettingsRequest {
   email_verify_enabled?: boolean
   default_balance?: number
   default_concurrency?: number
+  kiro_simulated_cache_read_ratio?: number
   site_name?: string
   site_logo?: string
   site_subtitle?: string

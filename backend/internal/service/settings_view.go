@@ -37,6 +37,9 @@ type SystemSettings struct {
 	DefaultConcurrency int
 	DefaultBalance     float64
 
+	// Kiro OAuth simulated cache read billing ratio (0..1).
+	KiroSimulatedCacheReadRatio float64 `json:"kiro_simulated_cache_read_ratio"`
+
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`
 	FallbackModelAnthropic   string `json:"fallback_model_anthropic"`

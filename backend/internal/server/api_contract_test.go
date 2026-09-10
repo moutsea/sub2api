@@ -40,6 +40,9 @@ func TestAPIContracts(t *testing.T) {
 		wantJSON   string
 	}{
 		{
+			// 注意：普通用户接口**不得**返回 notes（管理员备注）。
+			// notes 只存在于 dto.AdminUser 上；这里的期望值刻意不含该字段，
+			// 若将来它重新出现在 /auth/me 响应里，这个契约测试应当失败。
 			name:       "GET /api/v1/auth/me",
 			method:     http.MethodGet,
 			path:       "/api/v1/auth/me",
@@ -51,7 +54,6 @@ func TestAPIContracts(t *testing.T) {
 					"id": 1,
 					"email": "alice@example.com",
 					"username": "alice",
-					"notes": "hello",
 					"role": "user",
 					"balance": 12.5,
 					"concurrency": 5,
@@ -82,6 +84,8 @@ func TestAPIContracts(t *testing.T) {
 					"name": "Key One",
 					"group_id": null,
 					"status": "active",
+					"quota_limit_usd": null,
+					"quota_used_usd": 0,
 					"ip_whitelist": null,
 					"ip_blacklist": null,
 					"created_at": "2025-01-02T03:04:05Z",
@@ -118,6 +122,8 @@ func TestAPIContracts(t *testing.T) {
 							"name": "Key One",
 							"group_id": null,
 							"status": "active",
+							"quota_limit_usd": null,
+							"quota_used_usd": 0,
 							"ip_whitelist": null,
 							"ip_blacklist": null,
 							"created_at": "2025-01-02T03:04:05Z",
@@ -173,6 +179,8 @@ func TestAPIContracts(t *testing.T) {
 						"is_exclusive": false,
 						"status": "active",
 						"subscription_type": "standard",
+						"kiro_opus_47_downgrade": false,
+						"supported_models": null,
 						"daily_limit_usd": null,
 						"weekly_limit_usd": null,
 						"monthly_limit_usd": null,
@@ -195,7 +203,7 @@ func TestAPIContracts(t *testing.T) {
 					{
 						ID:                  1,
 						UserID:              1,
-						APIKeyID:            100,
+						APIKeyID:            ptr[int64](100),
 						AccountID:           200,
 						Model:               "claude-3",
 						InputTokens:         10,
@@ -210,7 +218,7 @@ func TestAPIContracts(t *testing.T) {
 					{
 						ID:           2,
 						UserID:       1,
-						APIKeyID:     100,
+						APIKeyID:     ptr[int64](100),
 						AccountID:    200,
 						Model:        "claude-3",
 						InputTokens:  5,
@@ -248,7 +256,7 @@ func TestAPIContracts(t *testing.T) {
 					{
 						ID:                    1,
 						UserID:                1,
-						APIKeyID:              100,
+						APIKeyID:              ptr[int64](100),
 						AccountID:             200,
 						AccountRateMultiplier: ptr(0.5),
 						RequestID:             "req_123",
@@ -386,6 +394,7 @@ func TestAPIContracts(t *testing.T) {
 					"doc_url": "https://docs.example.com",
 					"default_concurrency": 5,
 					"default_balance": 1.25,
+					"kiro_simulated_cache_read_ratio": 1,
 					"enable_model_fallback": false,
 					"fallback_model_anthropic": "claude-3-5-sonnet-20241022",
 					"fallback_model_antigravity": "gemini-2.5-pro",
@@ -393,6 +402,7 @@ func TestAPIContracts(t *testing.T) {
 					"fallback_model_openai": "gpt-4o",
 					"enable_identity_patch": true,
 					"identity_patch_prompt": "",
+					"hide_ccs_import_button": false,
 					"home_content": ""
 				}
 			}`,
@@ -499,7 +509,15 @@ func newContractDeps(t *testing.T) *contractDeps {
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService)
 	adminSettingHandler := adminhandler.NewSettingHandler(settingService, nil, nil, nil)
-	adminAccountHandler := adminhandler.NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	// 依次为 adminService + oauth×5 + rateLimit / accountUsage / accountTest /
+	// concurrency / crsSync + sessionLimitCache / tokenCacheInvalidator /
+	// kiroTokenProvider；契约测试只覆盖不依赖这些的 admin 端点，故传 nil。
+	adminAccountHandler := adminhandler.NewAccountHandler(
+		adminService,
+		nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
+		nil, nil, nil,
+	)
 
 	jwtAuth := func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{
@@ -577,6 +595,18 @@ type stubUserRepo struct {
 }
 
 func (r *stubUserRepo) Create(ctx context.Context, user *service.User) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) GetUserGroupRate(ctx context.Context, userID int64, groupID int64) (*float64, error) {
+	return nil, nil
+}
+
+func (r *stubUserRepo) GetUserGroupRates(ctx context.Context, userID int64) (map[int64]*float64, error) {
+	return nil, nil
+}
+
+func (r *stubUserRepo) SetUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
 	return errors.New("not implemented")
 }
 
@@ -776,6 +806,22 @@ func (s *stubAccountRepo) ExistsByID(ctx context.Context, id int64) (bool, error
 
 func (s *stubAccountRepo) GetByCRSAccountID(ctx context.Context, crsAccountID string) (*service.Account, error) {
 	return nil, errors.New("not implemented")
+}
+
+func (s *stubAccountRepo) FindByKiroRefreshToken(ctx context.Context, refreshToken string) (*service.Account, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubAccountRepo) ListErrorByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubAccountRepo) ListDeletedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubAccountRepo) RestoreAccount(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
 }
 
 func (s *stubAccountRepo) Update(ctx context.Context, account *service.Account) error {
@@ -1111,6 +1157,14 @@ func (r *stubApiKeyRepo) MustSeed(key *service.APIKey) {
 	r.byKey[clone.Key] = &clone
 }
 
+func (r *stubApiKeyRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) ResetQuotaUsed(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
 func (r *stubApiKeyRepo) Create(ctx context.Context, key *service.APIKey) error {
 	if key == nil {
 		return errors.New("nil key")
@@ -1187,12 +1241,21 @@ func (r *stubApiKeyRepo) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (r *stubApiKeyRepo) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
+// ListByUserID 支持可选的 groupID 过滤（groupID 为 nil 表示不按分组过滤）。
+// 这里如实实现该过滤，而不是忽略参数 —— 否则契约测试会掩盖真实的过滤行为。
+func (r *stubApiKeyRepo) ListByUserID(ctx context.Context, userID int64, groupID *int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
 	ids := make([]int64, 0, len(r.byID))
 	for id := range r.byID {
-		if r.byID[id].UserID == userID {
-			ids = append(ids, id)
+		if r.byID[id].UserID != userID {
+			continue
 		}
+		if groupID != nil {
+			keyGroupID := r.byID[id].GroupID
+			if keyGroupID == nil || *keyGroupID != *groupID {
+				continue
+			}
+		}
+		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] > ids[j] })
 
@@ -1297,6 +1360,10 @@ func (r *stubUsageLogRepo) SetUserLogs(userID int64, logs []service.UsageLog) {
 
 func (r *stubUsageLogRepo) Create(ctx context.Context, log *service.UsageLog) (bool, error) {
 	return false, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListByTempAPIKey(ctx context.Context, tempAPIKeyID int64, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
 }
 
 func (r *stubUsageLogRepo) GetByID(ctx context.Context, id int64) (*service.UsageLog, error) {
@@ -1454,8 +1521,10 @@ func (r *stubUsageLogRepo) ListWithFilters(ctx context.Context, params paginatio
 	// Apply filters
 	var filtered []service.UsageLog
 	for _, log := range logs {
-		// Apply APIKeyID filter
-		if filters.APIKeyID > 0 && log.APIKeyID != filters.APIKeyID {
+		// Apply APIKeyID filter.
+		// UsageLog.APIKeyID 是 *int64（使用临时 API Key 时为 nil），
+		// 所以要先判空再比值，不能直接比较指针。
+		if filters.APIKeyID > 0 && (log.APIKeyID == nil || *log.APIKeyID != filters.APIKeyID) {
 			continue
 		}
 		// Apply Model filter

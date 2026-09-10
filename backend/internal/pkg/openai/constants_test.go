@@ -65,6 +65,18 @@ func TestDefaultModelsForAccount_OAuthIncludesNewestGPTModels(t *testing.T) {
 	}
 }
 
+func TestDefaultModelsIncludeGPTImage25Models(t *testing.T) {
+	found := map[string]bool{}
+	for _, model := range DefaultModels {
+		found[model.ID] = true
+	}
+	for _, modelID := range []string{"gpt-image-2.5-sunburst", "gpt-image-2.5-flare"} {
+		if !found[modelID] {
+			t.Fatalf("expected default model list to include %s", modelID)
+		}
+	}
+}
+
 func TestDefaultTestModelForAccount(t *testing.T) {
 	if got := DefaultTestModelForAccount(true); got != DefaultOAuthTestModel {
 		t.Fatalf("oauth test model = %q, want %q", got, DefaultOAuthTestModel)
