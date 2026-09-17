@@ -52,7 +52,7 @@ func NewOpenAIGatewayHandler(
 }
 
 // Responses handles OpenAI Responses API endpoint
-// POST /openai/v1/responses
+// POST /v1/responses (also /responses)
 func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// Get apiKey and user from context (set by ApiKeyAuth middleware)
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -109,6 +109,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	if effectiveModel, effectiveBody, downgraded, rewriteErr := applyKiroOpus47GroupDowngrade(apiKey.Group, reqModel, body); rewriteErr != nil {
+		log.Printf("[OpenAI Handler] kiro_opus_47_downgrade rewrite failed group_id=%d model=%s error=%v", apiKey.Group.ID, reqModel, rewriteErr)
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "failed to rewrite downgraded model request")
+		return
+	} else if downgraded {
+		log.Printf("[OpenAI Handler] kiro_opus_47_downgrade group_id=%d model=%s -> %s", apiKey.Group.ID, reqModel, effectiveModel)
+		reqModel = effectiveModel
+		reqBody["model"] = effectiveModel
+		body = effectiveBody
+	}
+
 	userAgent := c.GetHeader("User-Agent")
 	if !openai.IsCodexCLIRequest(userAgent) {
 		existingInstructions, _ := reqBody["instructions"].(string)
@@ -150,6 +161,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
+	requestStartedAt := time.Now()
 
 	// Get subscription info (may be nil)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
@@ -238,13 +250,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		log.Printf("[OpenAI Handler] Selected account: id=%d name=%s", account.ID, account.Name)
 		setOpsSelectedAccount(c, account.ID)
 
-		// Skip Kiro accounts — Responses API is not supported for Kiro platform
-		if account.Platform == service.PlatformKiro {
+		// Kiro Responses uses the OAuth runtime; API key accounts remain unsupported.
+		if account.Platform == service.PlatformKiro && (account.IsKiroApiKey() || account.Type == service.AccountTypeAPIKey) {
 			if selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()
 			}
 			failedAccountIDs[account.ID] = struct{}{}
-			log.Printf("[OpenAI Handler] Account %d is Kiro platform, skipping (Responses API unsupported)", account.ID)
+			log.Printf("[OpenAI Handler] Account %d is Kiro API key, skipping (Responses API requires OAuth)", account.ID)
 			continue
 		}
 
@@ -298,7 +310,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
 		// Forward request
-		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, body)
+		var result *service.OpenAIForwardResult
+		if account.Platform == service.PlatformKiro {
+			result, err = h.kiroGatewayService.ForwardResponses(c.Request.Context(), c, account, body)
+		} else {
+			result, err = h.gatewayService.Forward(c.Request.Context(), c, account, body)
+		}
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
@@ -308,6 +325,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverStatus = failoverErr.StatusCode
 				lastFailoverMsg = failoverErr.Message
+				if shouldStopKiroOAuthInitialFailover(account, failoverErr, requestStartedAt) {
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
+					return
+				}
 				// 全局硬上限：单请求内最多切换 10 次，避免过长链路。
 				if totalSwitchCount >= maxTotalSwitches {
 					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
@@ -331,6 +353,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					log.Printf("Account %d: upstream error %d, switching account %d/%d (total=%d/%d)", account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches, totalSwitchCount, maxTotalSwitches)
 				}
 				continue
+			}
+			if account.Platform == service.PlatformKiro && !c.Writer.Written() {
+				h.handleStreamingAwareError(c, http.StatusBadGateway, "api_error", "Kiro request failed", streamStarted)
 			}
 			// Error response already handled in Forward, just log
 			log.Printf("Account %d: Forward request failed: %v", account.ID, err)

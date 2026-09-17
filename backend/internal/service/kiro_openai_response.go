@@ -32,6 +32,17 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	cacheCreationTokens, cacheReadTokens int,
 	thinkingEnabled bool,
 ) (*kiroOpenAIStreamResult, error) {
+	return s.handleKiroOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, false)
+}
+
+func (s *KiroGatewayService) handleKiroOpenAIStreamingResponse(
+	c *gin.Context, resp *http.Response, startTime time.Time,
+	originalModel string, inputTokens int,
+	toolNameReverseMap map[string]string,
+	cacheCreationTokens, cacheReadTokens int,
+	thinkingEnabled bool,
+	responses bool,
+) (*kiroOpenAIStreamResult, error) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return nil, fmt.Errorf("streaming not supported")
@@ -43,9 +54,13 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	parser := kiro.NewAwsEventStreamParser(messageID, originalModel)
 	parser.SetThinkingEnabled(thinkingEnabled)
 
-	// OpenAI stream converter
-	converter := kiro.NewOpenAIStreamConverter(messageID, originalModel, inputTokens)
+	// Select only the wire format; upstream parsing and failure handling stay shared.
+	var converter kiroOpenAIEventConverter = kiro.NewOpenAIStreamConverter(messageID, originalModel, inputTokens)
+	if responses {
+		converter = kiro.NewKiroResponsesConverter("resp_"+uuid.NewString(), originalModel, inputTokens)
+	}
 	converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
+	initialEvent := converter.BuildInitialEvent()
 
 	upstreamRequestID := resp.Header.Get("x-amzn-requestid")
 	if upstreamRequestID != "" {
@@ -70,7 +85,7 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(http.StatusOK)
 
-		if _, err := c.Writer.Write([]byte(converter.BuildInitialEvent())); err != nil {
+		if _, err := c.Writer.Write([]byte(initialEvent)); err != nil {
 			return err
 		}
 		streamCommitted = true
@@ -325,6 +340,18 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 	thinkingEnabled bool,
 	initialResponseTimeout time.Duration,
 ) (*kiroOpenAIStreamResult, error) {
+	return s.handleKiroOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, initialResponseTimeout, false)
+}
+
+func (s *KiroGatewayService) handleKiroOpenAINonStreamingResponse(
+	c *gin.Context, resp *http.Response,
+	originalModel string, inputTokens int,
+	toolNameReverseMap map[string]string,
+	cacheCreationTokens, cacheReadTokens int,
+	thinkingEnabled bool,
+	initialResponseTimeout time.Duration,
+	responses bool,
+) (*kiroOpenAIStreamResult, error) {
 	messageID := "chatcmpl-" + uuid.New().String()[:24]
 
 	// Read full response body
@@ -351,6 +378,32 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 		log.Printf("Kiro in-band exception (openai non-stream): type=%s request_id=%s message=%s",
 			event.ErrorType, upstreamRequestID, event.ErrorMessage)
 		return nil, newKiroInBandFailure(event.ErrorType, event.ErrorMessage, upstreamRequestID).failoverError()
+	}
+
+	if responses {
+		converter := kiro.NewKiroResponsesConverter("resp_"+uuid.NewString(), originalModel, inputTokens)
+		converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
+		renderable := false
+		for _, event := range events {
+			if isRenderableKiroStreamEvent(event) {
+				renderable = true
+			}
+			if event.Type == kiro.EventContentBlockStart && event.BlockType.Kind == kiro.BlockToolUse {
+				if name, ok := toolNameReverseMap[event.BlockType.ToolName]; ok {
+					event.BlockType.ToolName = name
+				}
+			}
+			converter.ConvertEvent(event)
+		}
+		if !renderable {
+			return nil, newKiroEmptyFailure("kiro_empty_response", upstreamRequestID).failoverError()
+		}
+		converter.BuildFinalEvent()
+		c.JSON(http.StatusOK, converter.Response())
+		return &kiroOpenAIStreamResult{usage: &OpenAIUsage{
+			InputTokens: inputTokens, OutputTokens: converter.TotalOutputTokens(),
+			CacheCreationInputTokens: cacheCreationTokens, CacheReadInputTokens: cacheReadTokens,
+		}}, nil
 	}
 
 	// Collect text and tool calls from events
@@ -432,4 +485,14 @@ func (s *KiroGatewayService) writeOpenAIError(c *gin.Context, status int, errTyp
 		},
 	})
 	return fmt.Errorf("%s: %s", errType, message)
+}
+
+// Both public OpenAI protocols consume the same native Kiro events.
+type kiroOpenAIEventConverter interface {
+	SetCacheTokens(int, int)
+	BuildInitialEvent() string
+	ConvertEvent(kiro.StreamEvent) string
+	BuildFinalEvent() string
+	BuildErrorEvent(string, string) string
+	TotalOutputTokens() int
 }

@@ -1132,6 +1132,19 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	}
 }
 
+func TestOpenAIBuildUpstreamRequestAPIKeyUsesV1ResponsesByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}}}
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte("{}"), "real-token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses", req.URL.String())
+}
+
 func TestOpenAIBuildUpstreamRequestRejectsDisallowedGrokBaseURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

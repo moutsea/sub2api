@@ -21,14 +21,30 @@ import (
 // and converts the response back to OpenAI format.
 // This enables OpenAI-compatible clients (e.g. Cursor) to use Kiro accounts.
 func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
-	startTime := time.Now()
-	prefix := fmt.Sprintf("[kiro-OpenAI] account=%s", account.Name)
-
-	// 1. Convert OpenAI request to Claude format
+	// Convert OpenAI request to Claude format
 	claudeReq, err := kiro.ConvertOpenAIToClaude(body)
 	if err != nil {
 		return nil, fmt.Errorf("convert openai to claude: %w", err)
 	}
+
+	return s.forwardKiroOpenAIRequest(ctx, c, account, claudeReq, false)
+}
+
+// ForwardResponses forwards stateless Responses requests through Kiro OAuth.
+func (s *KiroGatewayService) ForwardResponses(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	if account == nil || account.Platform != PlatformKiro || account.IsKiroApiKey() || account.Type == AccountTypeAPIKey {
+		return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", "Kiro Responses requires an OAuth account")
+	}
+	req, err := kiro.ConvertResponsesToClaude(body)
+	if err != nil {
+		return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+	return s.forwardKiroOpenAIRequest(ctx, c, account, req, true)
+}
+
+func (s *KiroGatewayService) forwardKiroOpenAIRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest, responses bool) (*OpenAIForwardResult, error) {
+	startTime := time.Now()
+	prefix := fmt.Sprintf("[kiro-OpenAI] account=%s", account.Name)
 
 	// Preserve the downstream response mode; Kiro still streams internally.
 	wantStream := claudeReq.Stream
@@ -352,7 +368,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 		var firstTokenMs *int
 
 		if wantStream {
-			result, err := s.handleOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled)
+			result, err := s.handleKiroOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, responses)
 			if err != nil {
 				recordKiroFailureOps(c, account, err)
 				return nil, err
@@ -363,7 +379,7 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 			usage = result.usage
 			firstTokenMs = result.firstTokenMs
 		} else {
-			result, err := s.handleOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, respDeadline.remaining())
+			result, err := s.handleKiroOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, respDeadline.remaining(), responses)
 			if err != nil {
 				if timeoutErr, ok := isKiroInitialResponseTimeout(err); ok {
 					log.Printf("%s status=initial_response_timeout phase=%s timeout=%s", prefix, timeoutErr.Phase, timeoutErr.Timeout)

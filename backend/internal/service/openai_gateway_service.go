@@ -1413,7 +1413,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			targetURL = chatgptCodexURL
 		case AccountTypeAPIKey:
 			// API Key accounts use Platform API or custom base URL
-			baseURL := account.GetOpenAIBaseURL()
+			baseURL := strings.TrimSpace(account.GetCredential("base_url"))
 			if baseURL == "" {
 				targetURL = openaiPlatformAPIURL
 			} else {

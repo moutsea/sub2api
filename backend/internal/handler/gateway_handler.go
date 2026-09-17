@@ -227,6 +227,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	if platform == service.PlatformKiro && apiKey.User != nil && !apiKey.User.IsAdmin() {
+		sessionKey = h.gatewayService.HashContent(fmt.Sprintf("kiro-user:%d-apikey:%d", apiKey.UserID, apiKey.ID))
+	}
 	selectionCtx := c.Request.Context()
 	if platform == service.PlatformGrok {
 		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
