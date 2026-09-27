@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,8 +27,16 @@ func (s *KiroGatewayService) ForwardChatCompletions(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, fmt.Errorf("convert openai to claude: %w", err)
 	}
+	var options struct {
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal(body, &options); err != nil {
+		return nil, fmt.Errorf("parse openai stream options: %w", err)
+	}
 
-	return s.forwardKiroOpenAIRequest(ctx, c, account, claudeReq, false)
+	return s.forwardKiroOpenAIRequest(ctx, c, account, claudeReq, nil, body, options.StreamOptions.IncludeUsage)
 }
 
 // ForwardResponses forwards stateless Responses requests through Kiro OAuth.
@@ -35,16 +44,25 @@ func (s *KiroGatewayService) ForwardResponses(ctx context.Context, c *gin.Contex
 	if account == nil || account.Platform != PlatformKiro || account.IsKiroApiKey() || account.Type == AccountTypeAPIKey {
 		return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", "Kiro Responses requires an OAuth account")
 	}
-	req, err := kiro.ConvertResponsesToClaude(body)
+	req, clientTools, err := kiro.ConvertResponsesToClaudeWithTools(body)
 	if err != nil {
 		return nil, s.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
-	return s.forwardKiroOpenAIRequest(ctx, c, account, req, true)
+	return s.forwardKiroOpenAIRequest(ctx, c, account, req, &kiroResponsesMode{clientTools: clientTools}, nil, false)
 }
 
-func (s *KiroGatewayService) forwardKiroOpenAIRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest, responses bool) (*OpenAIForwardResult, error) {
+// kiroResponsesMode marks the Responses wire format and carries the Codex tool
+// mapping needed to restore client item types. A nil value means Chat Completions.
+type kiroResponsesMode struct {
+	clientTools kiro.ResponsesClientTools
+}
+
+func (s *KiroGatewayService) forwardKiroOpenAIRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest, responses *kiroResponsesMode, openAIRequest []byte, includeUsage bool) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 	prefix := fmt.Sprintf("[kiro-OpenAI] account=%s", account.Name)
+	if !account.IsKiroApiKey() && isClaudeOpus55Model(claudeReq.Model) {
+		return nil, fmt.Errorf("%s: %w", claudeReq.Model, ErrModelNotSupported)
+	}
 
 	// Preserve the downstream response mode; Kiro still streams internally.
 	wantStream := claudeReq.Stream
@@ -67,7 +85,25 @@ func (s *KiroGatewayService) forwardKiroOpenAIRequest(ctx context.Context, c *gi
 			claudeReq.Model = mappedModel
 			log.Printf("%s apikey_model_mapping: %s -> %s", prefix, originalModel, mappedModel)
 		}
-		return s.forwardKiroAPIKeyChatCompletions(ctx, c, account, claudeReq, originalModel, startTime)
+		if isClaudeOpus55Model(claudeReq.Model) && len(openAIRequest) > 0 {
+			var options struct {
+				OutputConfig    map[string]any `json:"output_config"`
+				ReasoningEffort string         `json:"reasoning_effort"`
+			}
+			if err := json.Unmarshal(openAIRequest, &options); err != nil {
+				return nil, fmt.Errorf("parse Opus 5.5 options: %w", err)
+			}
+			claudeReq.OutputConfig = options.OutputConfig
+			if _, explicit := claudeReq.OutputConfig["effort"]; !explicit {
+				switch options.ReasoningEffort {
+				case "low", "medium", "high", "xhigh", "max":
+					setOpus55EffortIfUnset(claudeReq, options.ReasoningEffort)
+				case "none", "minimal":
+					setOpus55EffortIfUnset(claudeReq, "low")
+				}
+			}
+		}
+		return s.forwardKiroAPIKeyChatCompletions(ctx, c, account, claudeReq, originalModel, startTime, includeUsage)
 	}
 	if injectKiroOAuthIdentitySystemPrompt(account, claudeReq) {
 		log.Printf("%s injected Kiro OAuth identity system prompt", prefix)
@@ -368,7 +404,7 @@ func (s *KiroGatewayService) forwardKiroOpenAIRequest(ctx context.Context, c *gi
 		var firstTokenMs *int
 
 		if wantStream {
-			result, err := s.handleKiroOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, responses)
+			result, err := s.handleKiroOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, responses, includeUsage)
 			if err != nil {
 				recordKiroFailureOps(c, account, err)
 				return nil, err

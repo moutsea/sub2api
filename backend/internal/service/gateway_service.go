@@ -159,6 +159,8 @@ type ClaudeUsage struct {
 	OutputTokens             int     `json:"output_tokens"`
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	CacheCreation5mTokens    int     `json:"-"`
+	CacheCreation1hTokens    int     `json:"-"`
 	ContextUsagePercent      float64 `json:"context_usage_percent,omitempty"`
 }
 
@@ -2215,6 +2217,9 @@ func IsKiroModelSupported(requestedModel string) bool {
 // IsKiroModelSupportedByAccount checks Kiro model support with the account auth type.
 func IsKiroModelSupportedByAccount(account *Account, requestedModel string) bool {
 	if account == nil || !account.IsKiro() {
+		return false
+	}
+	if !account.IsKiroApiKey() && isClaudeOpus55Model(requestedModel) {
 		return false
 	}
 	mapping := account.GetModelMapping()
@@ -4340,10 +4345,12 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	} else {
 		// Token 计费
 		tokens := UsageTokens{
-			InputTokens:         result.Usage.InputTokens,
-			OutputTokens:        result.Usage.OutputTokens,
-			CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-			CacheReadTokens:     result.Usage.CacheReadInputTokens,
+			InputTokens:           result.Usage.InputTokens,
+			OutputTokens:          result.Usage.OutputTokens,
+			CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+			CacheReadTokens:       result.Usage.CacheReadInputTokens,
+			CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+			CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		}
 		var err error
 		cost, err = s.billingService.CalculateCost(result.Model, tokens, multiplier)
@@ -4380,6 +4387,8 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		InputTokens:           result.Usage.InputTokens,
 		OutputTokens:          result.Usage.OutputTokens,
 		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		CacheReadTokens:       result.Usage.CacheReadInputTokens,
 		InputCost:             cost.InputCost,
 		OutputCost:            cost.OutputCost,
@@ -4797,6 +4806,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		if len(mapping) > 0 {
 			hasAnyMapping = true
 			for model := range mapping {
+				if acc.Platform == PlatformKiro && !acc.IsKiroApiKey() && isClaudeOpus55Model(model) {
+					continue
+				}
 				modelSet[model] = struct{}{}
 			}
 			continue

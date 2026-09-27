@@ -708,6 +708,7 @@ const groupIds = ref<number[]>([])
 // All models list (combined Anthropic + OpenAI)
 const allModels = [
   { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+  { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
   { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
   { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
@@ -718,6 +719,8 @@ const allModels = [
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
   { value: 'gpt-6-astra', label: 'GPT-6 Astra' },
+  { value: 'gpt-6-sol', label: 'GPT-6 Sol' },
+  { value: 'gpt-6-luna', label: 'GPT-6 Luna' },
   { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
   { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
   { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
@@ -740,6 +743,18 @@ const presetMappings = [
     from: 'gpt-6-astra',
     to: 'gpt-6-astra',
     color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
+  },
+  {
+    label: 'GPT-6 Sol',
+    from: 'gpt-6-sol',
+    to: 'gpt-6-sol',
+    color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400'
+  },
+  {
+    label: 'GPT-6 Luna',
+    from: 'gpt-6-luna',
+    to: 'gpt-6-luna',
+    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
   },
   {
     label: 'Sonnet 5',

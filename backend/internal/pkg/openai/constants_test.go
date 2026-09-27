@@ -24,7 +24,7 @@ func TestDefaultModelsForAccount_APIKeyExcludesOAuthOnlyModels(t *testing.T) {
 	for _, model := range models {
 		foundModels[model.ID] = true
 	}
-	for _, modelID := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"} {
+	for _, modelID := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"} {
 		if !foundModels[modelID] {
 			t.Fatalf("expected API key model list to include %s", modelID)
 		}
@@ -58,7 +58,7 @@ func TestDefaultModelsForAccount_OAuthIncludesNewestGPTModels(t *testing.T) {
 	for _, model := range models {
 		found[model.ID] = true
 	}
-	for _, modelID := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review"} {
+	for _, modelID := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review"} {
 		if !found[modelID] {
 			t.Fatalf("expected OAuth model list to include %s", modelID)
 		}

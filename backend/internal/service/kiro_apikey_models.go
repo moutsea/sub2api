@@ -7,6 +7,14 @@ import (
 
 const KiroModelOpus48 = "claude-opus-4-8"
 const KiroModelOpus5 = "claude-opus-5"
+const KiroModelOpus55 = "claude-opus-5-5"
+
+var kiroAPIKeyOpus55Model = claude.Model{
+	ID:          KiroModelOpus55,
+	Type:        "model",
+	DisplayName: "Claude Opus 5.5",
+	CreatedAt:   "2026-09-22T00:00:00Z",
+}
 
 var kiroAPIKeyOpus48Model = claude.Model{
 	ID:          KiroModelOpus48,
@@ -32,7 +40,7 @@ func KiroAPIKeyDefaultModels() []claude.Model {
 }
 
 func buildKiroAPIKeyDefaultModels() []claude.Model {
-	models := make([]claude.Model, 0, len(kiro.DefaultModels)+len(claude.DefaultModels)+2)
+	models := make([]claude.Model, 0, len(kiro.DefaultModels)+len(claude.DefaultModels)+3)
 	seen := make(map[string]struct{}, cap(models))
 	appendModel := func(model claude.Model) {
 		if _, exists := seen[model.ID]; exists {
@@ -42,6 +50,7 @@ func buildKiroAPIKeyDefaultModels() []claude.Model {
 		models = append(models, model)
 	}
 
+	appendModel(kiroAPIKeyOpus55Model)
 	appendModel(kiroAPIKeyOpus5Model)
 	appendModel(kiroAPIKeyOpus48Model)
 	for _, model := range kiro.DefaultModels {

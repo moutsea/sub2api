@@ -35,8 +35,8 @@ type ModelPricing struct {
 	CacheCreationPricePerToken     float64 // 缓存创建每token价格 (USD)
 	CacheReadPricePerToken         float64 // 缓存读取每token价格 (USD)
 	CacheReadPricePerTokenPriority float64 // priority service tier 下缓存读取每token价格 (USD)
-	CacheCreation5mPrice           float64 // 5分钟缓存创建价格（每百万token）- 仅用于硬编码回退
-	CacheCreation1hPrice           float64 // 1小时缓存创建价格（每百万token）- 仅用于硬编码回退
+	CacheCreation5mPrice           float64 // 5分钟缓存创建价格（每百万token）
+	CacheCreation1hPrice           float64 // 1小时缓存创建价格（每百万token）
 	SupportsCacheBreakdown         bool    // 是否支持详细的缓存分类
 	LongContextInputThreshold      int     // 超过阈值后按整次会话提升输入价格
 	LongContextThresholdInclusive  bool    // true 时阈值本身也按长上下文计价
@@ -123,6 +123,17 @@ func NewBillingService(cfg *config.Config, pricingService *PricingService) *Bill
 // initFallbackPricing 初始化硬编码回退价格（当动态价格不可用时使用）
 // 价格单位：USD per token（与LiteLLM格式一致）
 func (s *BillingService) initFallbackPricing() {
+	// Claude Opus 5.5
+	s.fallbackPrices["claude-opus-5-5"] = &ModelPricing{
+		InputPricePerToken:         4e-6,
+		OutputPricePerToken:        20e-6,
+		CacheCreationPricePerToken: 5e-6,
+		CacheReadPricePerToken:     0.2e-6,
+		CacheCreation5mPrice:       5,
+		CacheCreation1hPrice:       8,
+		SupportsCacheBreakdown:     true,
+	}
+
 	// Claude Opus 5 (same pricing as Opus 4.8)
 	s.fallbackPrices["claude-opus-5"] = &ModelPricing{
 		InputPricePerToken:         5e-6,
@@ -364,6 +375,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 	// 按模型系列匹配
 	if strings.Contains(modelLower, "opus") {
+		if isClaudeOpus55Model(modelLower) {
+			return s.fallbackPrices["claude-opus-5-5"]
+		}
 		if isClaudeOpus5Model(modelLower) {
 			return s.fallbackPrices["claude-opus-5"]
 		}
@@ -406,7 +420,11 @@ func isClaudeSonnet5Model(model string) bool {
 }
 
 func isClaudeOpus5Model(model string) bool {
-	return containsModelFamilyToken(model, "opus-5")
+	return containsModelFamilyToken(model, "opus-5") && !isClaudeOpus55Model(model)
+}
+
+func isClaudeOpus55Model(model string) bool {
+	return containsModelFamilyToken(model, "opus-5-5") || containsModelFamilyToken(model, "opus-5.5")
 }
 
 func isClaudeOpus48Model(model string) bool {
@@ -522,6 +540,16 @@ func applyModelSpecificPricingPolicy(model string, pricing *ModelPricing) *Model
 	}
 
 	normalized := *pricing
+	if isClaudeOpus55Model(model) {
+		// The dynamic catalog exposes the aggregate cache-write rate but not
+		// Anthropic's one-hour rate. Keep its 5m rate when supplied.
+		if normalized.CacheCreationPricePerToken <= 0 {
+			normalized.CacheCreationPricePerToken = 5e-6
+		}
+		normalized.CacheCreation5mPrice = normalized.CacheCreationPricePerToken * 1_000_000
+		normalized.CacheCreation1hPrice = 8
+		normalized.SupportsCacheBreakdown = true
+	}
 	if hasOpenAINoSeparateCacheCreationPrice(model) {
 		normalized.CacheCreationPricePerToken = 0
 		normalized.CacheCreation5mPrice = 0
@@ -664,10 +692,17 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 	breakdown.OutputCost = float64(tokens.OutputTokens) * outputPrice
 
 	// 计算缓存费用
-	if pricing.SupportsCacheBreakdown && (pricing.CacheCreation5mPrice > 0 || pricing.CacheCreation1hPrice > 0) {
+	if pricing.SupportsCacheBreakdown && (pricing.CacheCreation5mPrice > 0 || pricing.CacheCreation1hPrice > 0) &&
+		(tokens.CacheCreation5mTokens > 0 || tokens.CacheCreation1hTokens > 0) {
 		// 支持详细缓存分类的模型（5分钟/1小时缓存）
 		breakdown.CacheCreationCost = float64(tokens.CacheCreation5mTokens)/1_000_000*pricing.CacheCreation5mPrice*longContextInputMultiplier +
 			float64(tokens.CacheCreation1hTokens)/1_000_000*pricing.CacheCreation1hPrice*longContextInputMultiplier
+		// Some upstreams include additional writes in the aggregate count.
+		// Charge the unclassified remainder at the default cache-write rate.
+		unclassified := tokens.CacheCreationTokens - tokens.CacheCreation5mTokens - tokens.CacheCreation1hTokens
+		if unclassified > 0 {
+			breakdown.CacheCreationCost += float64(unclassified) * cacheCreationPrice
+		}
 	} else {
 		// 标准缓存创建价格（per-token）
 		breakdown.CacheCreationCost = float64(tokens.CacheCreationTokens) * cacheCreationPrice

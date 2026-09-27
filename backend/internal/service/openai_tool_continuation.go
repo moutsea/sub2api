@@ -106,7 +106,7 @@ func HasFunctionCallOutput(reqBody map[string]any) bool {
 	return inputHasType(reqBody, "function_call_output")
 }
 
-// HasToolCallContext 判断 input 是否包含带 call_id 的 tool_call/function_call，
+// HasToolCallContext 判断 input 是否包含带 call_id 的工具调用项，
 // 用于判断 function_call_output 是否具备可关联的上下文。
 func HasToolCallContext(reqBody map[string]any) bool {
 	if reqBody == nil {
@@ -122,7 +122,8 @@ func HasToolCallContext(reqBody map[string]any) bool {
 			continue
 		}
 		itemType, _ := itemMap["type"].(string)
-		if itemType != "tool_call" && itemType != "function_call" {
+		isToolCall := itemType == "tool_call" || (isCodexToolCallItemType(itemType) && strings.HasSuffix(itemType, "_call"))
+		if !isToolCall {
 			continue
 		}
 		if callID, ok := itemMap["call_id"].(string); ok && strings.TrimSpace(callID) != "" {

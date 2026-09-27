@@ -124,6 +124,30 @@ func TestHasToolCallContext(t *testing.T) {
 	}))
 }
 
+func TestHasToolCallContextCodexToolAliases(t *testing.T) {
+	for _, itemType := range []string{"tool_call", "function_call", "local_shell_call", "shell_call", "custom_tool_call", "apply_patch_call", "computer_call", "tool_search_call"} {
+		t.Run(itemType, func(t *testing.T) {
+			for _, callID := range []string{"call_1", "", "  "} {
+				require.Equal(t, callID == "call_1", HasToolCallContext(map[string]any{"input": []any{
+					map[string]any{"type": itemType, "call_id": callID},
+					map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "done"},
+				}}))
+			}
+		})
+	}
+}
+
+func TestHasToolCallContextRejectsOutputItems(t *testing.T) {
+	for _, itemType := range []string{"function_call_output", "local_shell_call_output", "shell_call_output", "custom_tool_call_output", "apply_patch_call_output", "computer_call_output", "tool_search_output", "program_output", "message", "unknown_call"} {
+		t.Run(itemType, func(t *testing.T) {
+			require.False(t, HasToolCallContext(map[string]any{"input": []any{
+				map[string]any{"type": itemType, "call_id": "call_1"},
+				map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "done"},
+			}}))
+		})
+	}
+}
+
 func TestFunctionCallOutputCallIDs(t *testing.T) {
 	// 仅提取非空 call_id，去重后返回。
 	require.Empty(t, FunctionCallOutputCallIDs(nil))

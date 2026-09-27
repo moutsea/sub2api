@@ -81,6 +81,61 @@ func TestKiroOAuthForwardResponses(t *testing.T) {
 	}
 }
 
+// A Codex-shaped request carries tools inside input and expects its own item
+// types back, so the whole lower/restore round trip is exercised end to end.
+func TestKiroOAuthForwardResponsesCodexClientTools(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			wire := mustKiroEventFrame(t, "toolUseEvent", map[string]any{"toolUseId": "call_1", "name": "local_shell", "input": `{"command":["ls","-la"]}`, "stop": true})
+			wire = append(wire, mustKiroEventFrame(t, "toolUseEvent", map[string]any{"toolUseId": "call_2", "name": "apply_patch", "input": `{"input":"*** Begin Patch"}`, "stop": true})...)
+			upstream := &kiroAPIKeyProtocolUpstream{responseBody: string(wire)}
+			svc, account := newKiroResponsesTestService(upstream)
+			body := []byte(fmt.Sprintf(`{"model":"gpt-5.6-sol","stream":%v,"store":false,"input":[
+				{"type":"additional_tools","tools":[{"type":"local_shell"},{"type":"custom","name":"apply_patch","description":"Edit files"}]},
+				{"role":"user","content":"list files then patch"},
+				{"type":"local_shell_call","call_id":"prev_1","action":{"type":"exec","command":["pwd"]}},
+				{"type":"local_shell_call_output","call_id":"prev_1","output":"/repo"}
+			]}`, stream))
+			c, rec := newOpenAIKiroTestContext(body)
+			result, err := svc.ForwardResponses(context.Background(), c, account, body)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			// Replayed Codex history must reach the upstream as normal tool traffic.
+			require.Contains(t, string(upstream.requestBody), "prev_1")
+			require.Contains(t, string(upstream.requestBody), "local_shell")
+
+			var response map[string]any
+			if stream {
+				for _, line := range strings.Split(rec.Body.String(), "\n") {
+					if !strings.HasPrefix(line, "data: ") {
+						continue
+					}
+					var event map[string]any
+					require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event))
+					if event["type"] == "response.completed" {
+						response = event["response"].(map[string]any)
+					}
+				}
+				require.Contains(t, rec.Body.String(), "response.custom_tool_call_input.done")
+			} else {
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+			}
+			require.NotNil(t, response)
+			output := response["output"].([]any)
+			require.Len(t, output, 2)
+
+			shell := output[0].(map[string]any)
+			require.Equal(t, "local_shell_call", shell["type"])
+			require.Equal(t, []any{"ls", "-la"}, shell["action"].(map[string]any)["command"])
+
+			custom := output[1].(map[string]any)
+			require.Equal(t, "custom_tool_call", custom["type"])
+			require.Equal(t, "apply_patch", custom["name"])
+			require.Equal(t, "*** Begin Patch", custom["input"])
+		})
+	}
+}
+
 func TestKiroOAuthResponsesRejectsStatefulRequestsBeforeUpstream(t *testing.T) {
 	upstream := &kiroAPIKeyProtocolUpstream{}
 	svc, account := newKiroResponsesTestService(upstream)

@@ -14,6 +14,7 @@ type OpenAIStreamConverter struct {
 	model        string
 	inputTokens  int
 	finishReason string
+	includeUsage bool
 
 	// State tracking
 	sawToolUse        bool
@@ -48,6 +49,11 @@ func (c *OpenAIStreamConverter) SetUsage(input, output, cacheCreation, cacheRead
 	c.totalOutputTokens = output
 	c.cacheCreationTokens = cacheCreation
 	c.cacheReadTokens = cacheRead
+}
+
+// SetIncludeUsage controls the optional final usage chunk in Chat Completions streams.
+func (c *OpenAIStreamConverter) SetIncludeUsage(include bool) {
+	c.includeUsage = include
 }
 
 func (c *OpenAIStreamConverter) SetFinishReason(reason string) {
@@ -104,7 +110,7 @@ func (c *OpenAIStreamConverter) BuildInitialEvent() string {
 	return formatOpenAISSE(chunk)
 }
 
-// BuildFinalEvent builds the final SSE events: finish chunk + usage chunk + [DONE].
+// BuildFinalEvent builds the final SSE events, with usage when requested.
 func (c *OpenAIStreamConverter) BuildFinalEvent() string {
 	var sb strings.Builder
 
@@ -121,22 +127,28 @@ func (c *OpenAIStreamConverter) BuildFinalEvent() string {
 	finishChunk := c.buildChunk(map[string]any{}, &finishReason)
 	sb.WriteString(formatOpenAISSE(finishChunk))
 
-	// Usage chunk (separate chunk with usage field)
-	usageChunk := map[string]any{
-		"id":      c.messageID,
-		"object":  "chat.completion.chunk",
-		"created": 0,
-		"model":   c.model,
-		"choices": []any{},
-		"usage": map[string]any{
-			"prompt_tokens":               c.inputTokens,
-			"completion_tokens":           c.totalOutputTokens,
-			"total_tokens":                c.inputTokens + c.totalOutputTokens,
-			"cache_creation_input_tokens": c.cacheCreationTokens,
-			"cache_read_input_tokens":     c.cacheReadTokens,
-		},
+	if c.includeUsage {
+		// Usage chunk (separate chunk with usage field)
+		usageChunk := map[string]any{
+			"id":      c.messageID,
+			"object":  "chat.completion.chunk",
+			"created": 0,
+			"model":   c.model,
+			"choices": []any{},
+			"usage": map[string]any{
+				"prompt_tokens":     c.inputTokens,
+				"completion_tokens": c.totalOutputTokens,
+				"total_tokens":      c.inputTokens + c.totalOutputTokens,
+				"prompt_tokens_details": map[string]any{
+					"cached_tokens":      c.cacheReadTokens,
+					"cache_write_tokens": c.cacheCreationTokens,
+				},
+				"cache_creation_input_tokens": c.cacheCreationTokens,
+				"cache_read_input_tokens":     c.cacheReadTokens,
+			},
+		}
+		sb.WriteString(formatOpenAISSE(usageChunk))
 	}
-	sb.WriteString(formatOpenAISSE(usageChunk))
 
 	// [DONE]
 	sb.WriteString("data: [DONE]\n\n")
@@ -208,9 +220,13 @@ func BuildOpenAINonStreamResponse(messageID, model string, inputTokens, outputTo
 			},
 		},
 		"usage": map[string]any{
-			"prompt_tokens":               inputTokens,
-			"completion_tokens":           outputTokens,
-			"total_tokens":                inputTokens + outputTokens,
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+			"prompt_tokens_details": map[string]any{
+				"cached_tokens":      cacheRead,
+				"cache_write_tokens": cacheCreation,
+			},
 			"cache_creation_input_tokens": cacheCreation,
 			"cache_read_input_tokens":     cacheRead,
 		},
@@ -295,13 +311,17 @@ func (c *OpenAIStreamConverter) buildChunk(delta map[string]any, finishReason *s
 		choice["finish_reason"] = *finishReason
 	}
 
-	return map[string]any{
+	chunk := map[string]any{
 		"id":      c.messageID,
 		"object":  "chat.completion.chunk",
 		"created": 0,
 		"model":   c.model,
 		"choices": []any{choice},
 	}
+	if c.includeUsage {
+		chunk["usage"] = nil
+	}
+	return chunk
 }
 
 // formatOpenAISSE formats a chunk as an SSE data line.

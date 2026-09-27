@@ -37,6 +37,12 @@ const (
 	// OpenAI Platform API for API Key accounts (fallback)
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
+
+	// openAI7dQuotaExhaustedThreshold 周（7d）窗口的额度耗尽阈值。
+	// 5h 窗口用 quotaHealthyThreshold（80%）做提前预判是安全的，因为最多几小时就恢复；
+	// 但 7d 窗口的 reset 时间可长达一周，80% 就停止调度会让账号白白闲置剩余的 20%。
+	// 因此周窗口只在真正打满（100%）时才标记，中间状态由上游 429 兜底。
+	openAI7dQuotaExhaustedThreshold = 100.0
 )
 
 type openAIRequestPlatformContextKey struct{}
@@ -187,6 +193,8 @@ type OpenAIUsage struct {
 	OutputTokens             int     `json:"output_tokens"`
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation5mTokens    int     `json:"-"`
+	CacheCreation1hTokens    int     `json:"-"`
 	ImageOutputTokens        int     `json:"image_output_tokens,omitempty"`
 	ServiceTier              *string `json:"-"`
 	ServiceTierPresent       bool    `json:"-"`
@@ -2377,6 +2385,10 @@ func normalizeOpenAIResponseModel(model string) string {
 	switch {
 	case hasOpenAIModelPrefix(model, "gpt-6-astra"):
 		return "gpt-6-astra"
+	case hasOpenAIModelPrefix(model, "gpt-6-sol"):
+		return "gpt-6-sol"
+	case hasOpenAIModelPrefix(model, "gpt-6-luna"):
+		return "gpt-6-luna"
 	case hasOpenAIModelPrefix(model, "gpt-5.6-sol"):
 		return "gpt-5.6-sol"
 	case hasOpenAIModelPrefix(model, "gpt-5.6-terra"):
@@ -2483,10 +2495,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		actualInputTokens = openAIActualInputTokens(result, account)
 
 		tokens := UsageTokens{
-			InputTokens:         actualInputTokens,
-			OutputTokens:        result.Usage.OutputTokens,
-			CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-			CacheReadTokens:     result.Usage.CacheReadInputTokens,
+			InputTokens:           actualInputTokens,
+			OutputTokens:          result.Usage.OutputTokens,
+			CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+			CacheReadTokens:       result.Usage.CacheReadInputTokens,
+			CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+			CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		}
 
 		serviceTier := ""
@@ -2528,6 +2542,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		InputTokens:           actualInputTokens,
 		OutputTokens:          result.Usage.OutputTokens,
 		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		CacheReadTokens:       result.Usage.CacheReadInputTokens,
 		InputCost:             cost.InputCost,
 		OutputCost:            cost.OutputCost,
@@ -2621,6 +2637,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 func openAIActualInputTokens(result *OpenAIForwardResult, account *Account) int {
 	if result == nil {
 		return 0
+	}
+	// Anthropic usage already reports uncached input separately from cache reads
+	// and writes. Kiro API Key forwards that usage without transformation.
+	if account != nil && account.IsKiroApiKey() {
+		return max(result.Usage.InputTokens, 0)
 	}
 	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens
 	if account != nil && account.IsKiro() && !account.IsKiroApiKey() {
@@ -2860,8 +2881,11 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 			}
 		}
 		// Check codex_7d_used_percent
+		// 周窗口不做 80% 预判：7d 重置时间最长可达 7 天，一旦提前标记会把账号
+		// 长时间排除在调度之外。只有周额度真正用尽（100%）时才标记，其余情况
+		// 交给上游 429 响应（ratelimit_service）兜底。
 		if v, ok := updates["codex_7d_used_percent"]; ok {
-			if pct, ok := v.(float64); ok && pct >= quotaHealthyThreshold {
+			if pct, ok := v.(float64); ok && pct >= openAI7dQuotaExhaustedThreshold {
 				anyOverThreshold = true
 				if rs, ok := updates["codex_7d_reset_after_seconds"]; ok {
 					if sec, ok := rs.(int); ok && sec > maxResetSeconds {

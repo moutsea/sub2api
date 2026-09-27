@@ -42,6 +42,30 @@ var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
 		Mode:                            "chat",
 		SupportsPromptCaching:           true,
 	},
+	"gpt-6-sol": {
+		InputCostPerToken:               2e-06,
+		OutputCostPerToken:              10e-06,
+		CacheCreationInputTokenCost:     2.5e-06,
+		CacheReadInputTokenCost:         0.2e-06,
+		LongContextInputTokenThreshold:  272000,
+		LongContextInputCostMultiplier:  2.0,
+		LongContextOutputCostMultiplier: 1.5,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
+	"gpt-6-luna": {
+		InputCostPerToken:               0.1e-06,
+		OutputCostPerToken:              0.5e-06,
+		CacheCreationInputTokenCost:     0.125e-06,
+		CacheReadInputTokenCost:         0.01e-06,
+		LongContextInputTokenThreshold:  272000,
+		LongContextInputCostMultiplier:  2.0,
+		LongContextOutputCostMultiplier: 1.5,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
 	"gpt-5.6": {
 		InputCostPerToken:               5e-06,
 		OutputCostPerToken:              30e-06,
@@ -146,6 +170,16 @@ var claudeOpus48EquivalentStaticPricing = &LiteLLMModelPricing{
 	OutputCostPerToken:          25e-06,
 	CacheCreationInputTokenCost: 6.25e-06,
 	CacheReadInputTokenCost:     0.5e-06,
+	LiteLLMProvider:             "anthropic",
+	Mode:                        "chat",
+	SupportsPromptCaching:       true,
+}
+
+var claudeOpus55StaticPricing = &LiteLLMModelPricing{
+	InputCostPerToken:           4e-06,
+	OutputCostPerToken:          20e-06,
+	CacheCreationInputTokenCost: 5e-06,
+	CacheReadInputTokenCost:     0.2e-06,
 	LiteLLMProvider:             "anthropic",
 	Mode:                        "chat",
 	SupportsPromptCaching:       true,
@@ -655,6 +689,9 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	if pricing := s.matchByModelFamily(lookupCandidates[0]); pricing != nil {
 		return pricing
 	}
+	if isClaudeOpus55Model(lookupCandidates[0]) {
+		return cloneLiteLLMModelPricing(claudeOpus55StaticPricing)
+	}
 	if isClaudeOpus5Model(lookupCandidates[0]) || isClaudeOpus48Model(lookupCandidates[0]) {
 		return cloneLiteLLMModelPricing(claudeOpus48EquivalentStaticPricing)
 	}
@@ -819,6 +856,7 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 		patterns []string
 	}
 	familyPatterns := []familyPattern{
+		{name: "opus-5.5", patterns: []string{"claude-opus-5-5", "claude-opus-5.5"}},
 		{name: "opus-5", patterns: []string{"claude-opus-5"}},
 		{name: "opus-4.8", patterns: []string{"claude-opus-4.8", "claude-opus-4-8"}},
 		{name: "opus-4.6", patterns: []string{"claude-opus-4.6", "claude-opus-4-6"}},
@@ -897,6 +935,9 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	for _, pattern := range matchedPatterns {
 		for key, pricing := range s.pricingData {
 			keyLower := strings.ToLower(key)
+			if matchedFamily == "opus-5" && isClaudeOpus55Model(keyLower) {
+				continue
+			}
 			if containsModelFamilyToken(keyLower, pattern) {
 				log.Printf("[Pricing] Fuzzy matched %s -> %s", model, key)
 				return pricing

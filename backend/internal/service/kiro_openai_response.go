@@ -32,7 +32,7 @@ func (s *KiroGatewayService) handleOpenAIStreamingResponse(
 	cacheCreationTokens, cacheReadTokens int,
 	thinkingEnabled bool,
 ) (*kiroOpenAIStreamResult, error) {
-	return s.handleKiroOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, false)
+	return s.handleKiroOpenAIStreamingResponse(c, resp, startTime, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, nil, false)
 }
 
 func (s *KiroGatewayService) handleKiroOpenAIStreamingResponse(
@@ -41,7 +41,8 @@ func (s *KiroGatewayService) handleKiroOpenAIStreamingResponse(
 	toolNameReverseMap map[string]string,
 	cacheCreationTokens, cacheReadTokens int,
 	thinkingEnabled bool,
-	responses bool,
+	responses *kiroResponsesMode,
+	includeUsage bool,
 ) (*kiroOpenAIStreamResult, error) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -55,9 +56,13 @@ func (s *KiroGatewayService) handleKiroOpenAIStreamingResponse(
 	parser.SetThinkingEnabled(thinkingEnabled)
 
 	// Select only the wire format; upstream parsing and failure handling stay shared.
-	var converter kiroOpenAIEventConverter = kiro.NewOpenAIStreamConverter(messageID, originalModel, inputTokens)
-	if responses {
-		converter = kiro.NewKiroResponsesConverter("resp_"+uuid.NewString(), originalModel, inputTokens)
+	chatConverter := kiro.NewOpenAIStreamConverter(messageID, originalModel, inputTokens)
+	chatConverter.SetIncludeUsage(includeUsage)
+	var converter kiroOpenAIEventConverter = chatConverter
+	if responses != nil {
+		responsesConverter := kiro.NewKiroResponsesConverter("resp_"+uuid.NewString(), originalModel, inputTokens)
+		responsesConverter.SetClientTools(responses.clientTools)
+		converter = responsesConverter
 	}
 	converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
 	initialEvent := converter.BuildInitialEvent()
@@ -300,7 +305,7 @@ readLoop:
 		streamFailed = true
 	}
 
-	// Send final events (finish_reason + usage + [DONE])
+	// Send final events (finish_reason + optional usage + [DONE])
 	if !streamFailed {
 		// 正常收尾也要确保信封已提交（例如上游只回了 usage 帧的边界情况）
 		if err := commitStream(); err != nil {
@@ -340,7 +345,7 @@ func (s *KiroGatewayService) handleOpenAINonStreamingResponse(
 	thinkingEnabled bool,
 	initialResponseTimeout time.Duration,
 ) (*kiroOpenAIStreamResult, error) {
-	return s.handleKiroOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, initialResponseTimeout, false)
+	return s.handleKiroOpenAINonStreamingResponse(c, resp, originalModel, inputTokens, toolNameReverseMap, cacheCreationTokens, cacheReadTokens, thinkingEnabled, initialResponseTimeout, nil)
 }
 
 func (s *KiroGatewayService) handleKiroOpenAINonStreamingResponse(
@@ -350,7 +355,7 @@ func (s *KiroGatewayService) handleKiroOpenAINonStreamingResponse(
 	cacheCreationTokens, cacheReadTokens int,
 	thinkingEnabled bool,
 	initialResponseTimeout time.Duration,
-	responses bool,
+	responses *kiroResponsesMode,
 ) (*kiroOpenAIStreamResult, error) {
 	messageID := "chatcmpl-" + uuid.New().String()[:24]
 
@@ -380,8 +385,9 @@ func (s *KiroGatewayService) handleKiroOpenAINonStreamingResponse(
 		return nil, newKiroInBandFailure(event.ErrorType, event.ErrorMessage, upstreamRequestID).failoverError()
 	}
 
-	if responses {
+	if responses != nil {
 		converter := kiro.NewKiroResponsesConverter("resp_"+uuid.NewString(), originalModel, inputTokens)
+		converter.SetClientTools(responses.clientTools)
 		converter.SetCacheTokens(cacheCreationTokens, cacheReadTokens)
 		renderable := false
 		for _, event := range events {

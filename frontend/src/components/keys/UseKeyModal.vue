@@ -663,6 +663,30 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         store: false
       }
     },
+    'gpt-6-sol': {
+      name: 'GPT-6 Sol',
+      options: {
+        store: false
+      },
+      variants: {
+        low: {},
+        medium: {},
+        high: {},
+        xhigh: {}
+      }
+    },
+    'gpt-6-luna': {
+      name: 'GPT-6 Luna',
+      options: {
+        store: false
+      },
+      variants: {
+        low: {},
+        medium: {},
+        high: {},
+        xhigh: {}
+      }
+    },
     'gpt-5.6-sol': {
       name: 'GPT-5.6 Sol',
       options: {

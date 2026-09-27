@@ -69,13 +69,27 @@ func ConvertOpenAIToClaude(body []byte) (*ClaudeRequest, error) {
 func convertOpenAIMessages(messages []any) (any, []ClaudeMessage) {
 	var systemParts []string
 	var claudeMessages []ClaudeMessage
+	var toolResults []any
+	flushToolResults := func() {
+		if len(toolResults) == 0 {
+			return
+		}
+		claudeMessages = append(claudeMessages, ClaudeMessage{Role: "user", Content: toolResults})
+		toolResults = nil
+	}
 
 	for _, msg := range messages {
 		m, ok := msg.(map[string]any)
 		if !ok {
+			flushToolResults()
 			continue
 		}
 		role, _ := m["role"].(string)
+		if role == "tool" {
+			toolResults = append(toolResults, convertOpenAIToolResultBlock(m))
+			continue
+		}
+		flushToolResults()
 
 		switch role {
 		case "system":
@@ -92,11 +106,9 @@ func convertOpenAIMessages(messages []any) (any, []ClaudeMessage) {
 
 		case "assistant":
 			claudeMessages = append(claudeMessages, convertOpenAIAssistantMessage(m))
-
-		case "tool":
-			claudeMessages = append(claudeMessages, convertOpenAIToolResultMessage(m))
 		}
 	}
+	flushToolResults()
 
 	var system any
 	if len(systemParts) > 0 {
@@ -163,20 +175,15 @@ func convertOpenAIAssistantMessage(m map[string]any) ClaudeMessage {
 	}
 }
 
-// convertOpenAIToolResultMessage converts an OpenAI tool result message to Claude format.
-func convertOpenAIToolResultMessage(m map[string]any) ClaudeMessage {
+// convertOpenAIToolResultBlock converts an OpenAI tool result to a Claude content block.
+func convertOpenAIToolResultBlock(m map[string]any) map[string]any {
 	toolCallID, _ := m["tool_call_id"].(string)
 	content := extractOpenAIContentText(m["content"])
 
-	return ClaudeMessage{
-		Role: "user",
-		Content: []any{
-			map[string]any{
-				"type":        "tool_result",
-				"tool_use_id": toolCallID,
-				"content":     content,
-			},
-		},
+	return map[string]any{
+		"type":        "tool_result",
+		"tool_use_id": toolCallID,
+		"content":     content,
 	}
 }
 

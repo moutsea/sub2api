@@ -22,10 +22,18 @@ type KiroResponsesConverter struct {
 	failure                                             any
 	incomplete                                          any
 	terminal                                            bool
+	// clientTools restores the Codex item types that were lowered to plain
+	// function tools on the way in.
+	clientTools ResponsesClientTools
 }
 
 func NewKiroResponsesConverter(id, model string, inputTokens int) *KiroResponsesConverter {
 	return &KiroResponsesConverter{id: id, model: model, created: time.Now().Unix(), inputTokens: inputTokens, items: []map[string]any{}, active: map[uint32]int{}, texts: map[int]*strings.Builder{}, status: "in_progress"}
+}
+
+// SetClientTools enables restoring Codex-private tool item types on output.
+func (c *KiroResponsesConverter) SetClientTools(tools ResponsesClientTools) {
+	c.clientTools = tools
 }
 
 func (c *KiroResponsesConverter) SetCacheTokens(creation, read int) {
@@ -77,7 +85,7 @@ func (c *KiroResponsesConverter) ConvertEvent(e StreamEvent) string {
 			item := c.items[candidate]
 			if (e.Type == EventTextDelta && item["type"] == "message") ||
 				(e.Type == EventThinkingDelta && item["type"] == "reasoning") ||
-				(e.Type == EventToolUseInputDelta && item["type"] == "function_call" && item["call_id"] == e.ToolID) {
+				(e.Type == EventToolUseInputDelta && isToolCallItem(item) && item["call_id"] == e.ToolID) {
 				index = candidate
 				break
 			}
@@ -97,10 +105,12 @@ func (c *KiroResponsesConverter) ConvertEvent(e StreamEvent) string {
 		}
 		fields := map[string]any{"item_id": item["id"], "output_index": index, "delta": delta}
 		event := "response.output_text.delta"
-		switch item["type"] {
-		case "function_call":
+		switch {
+		case item["type"] == "custom_tool_call":
+			event = "response.custom_tool_call_input.delta"
+		case isToolCallItem(item):
 			event = "response.function_call_arguments.delta"
-		case "reasoning":
+		case item["type"] == "reasoning":
 			event = "response.reasoning_summary_text.delta"
 			fields["summary_index"] = 0
 		default:
@@ -134,7 +144,7 @@ func (c *KiroResponsesConverter) start(e StreamEvent) string {
 	item := map[string]any{"id": id, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}
 	switch e.BlockType.Kind {
 	case BlockToolUse:
-		item = map[string]any{"id": fmt.Sprintf("fc_%s_%d", strings.TrimPrefix(c.id, "resp_"), index), "type": "function_call", "status": "in_progress", "call_id": e.BlockType.ToolID, "name": e.BlockType.ToolName, "arguments": ""}
+		item = c.newToolCallItem(index, e.BlockType.ToolID, e.BlockType.ToolName)
 	case BlockThinking:
 		item = map[string]any{"id": fmt.Sprintf("rs_%s_%d", strings.TrimPrefix(c.id, "resp_"), index), "type": "reasoning", "summary": []any{}}
 	}
@@ -155,17 +165,92 @@ func responseTextPart(text string) map[string]any {
 	return map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}
 }
 
+// newToolCallItem emits the item type the client declared. Codex rejects a
+// function_call for a tool it registered as local_shell or custom, so the
+// lowered name is mapped back here and the id prefix follows suit.
+func (c *KiroResponsesConverter) newToolCallItem(index int, callID, name string) map[string]any {
+	suffix := fmt.Sprintf("%s_%d", strings.TrimPrefix(c.id, "resp_"), index)
+	switch c.clientTools.Kind(name) {
+	case "local_shell":
+		return map[string]any{"id": "lsh_" + suffix, "type": "local_shell_call", "status": "in_progress",
+			"call_id": callID, "action": map[string]any{"type": "exec", "command": []any{}}}
+	case "custom":
+		return map[string]any{"id": "ctc_" + suffix, "type": "custom_tool_call", "status": "in_progress",
+			"call_id": callID, "name": name, "input": ""}
+	default:
+		return map[string]any{"id": "fc_" + suffix, "type": "function_call", "status": "in_progress",
+			"call_id": callID, "name": name, "arguments": ""}
+	}
+}
+
+// isToolCallItem covers the restored Codex types as well as function_call, so
+// delta routing and completion stay correct after a rewrite.
+func isToolCallItem(item map[string]any) bool {
+	switch item["type"] {
+	case "function_call", "local_shell_call", "custom_tool_call":
+		return true
+	default:
+		return false
+	}
+}
+
+// finishToolCallItem writes the accumulated argument text into whichever field
+// the restored item type uses.
+func finishToolCallItem(item map[string]any, text string) {
+	switch item["type"] {
+	case "local_shell_call":
+		action := map[string]any{"type": "exec"}
+		var parsed map[string]any
+		if json.Unmarshal([]byte(text), &parsed) == nil {
+			for key, value := range parsed {
+				action[key] = value
+			}
+		}
+		if _, ok := action["command"]; !ok {
+			action["command"] = []any{}
+		}
+		item["action"] = action
+	case "custom_tool_call":
+		item["input"] = extractResponsesCustomInput(text)
+	default:
+		item["arguments"] = text
+	}
+}
+
+// extractResponsesCustomInput unwraps the {"input": "..."} envelope that a
+// freeform tool was lowered into, falling back to the raw text.
+func extractResponsesCustomInput(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	var object map[string]any
+	if json.Unmarshal([]byte(trimmed), &object) == nil {
+		if input, ok := object["input"].(string); ok {
+			return input
+		}
+	}
+	return trimmed
+}
+
 func (c *KiroResponsesConverter) finishItem(index int) string {
 	item := c.items[index]
 	text := c.texts[index].String()
 	fields := map[string]any{"item_id": item["id"], "output_index": index}
 	result := ""
-	switch item["type"] {
-	case "function_call":
-		item["arguments"] = text
+	switch {
+	case item["type"] == "custom_tool_call":
+		finishToolCallItem(item, text)
+		fields["call_id"] = item["call_id"]
+		fields["name"] = item["name"]
+		fields["input"] = item["input"]
+		result = c.event("response.custom_tool_call_input.done", fields)
+	case isToolCallItem(item):
+		finishToolCallItem(item, text)
+		// Codex reads argv from the item; the done event keeps the raw JSON.
 		fields["arguments"] = text
 		result = c.event("response.function_call_arguments.done", fields)
-	case "reasoning":
+	case item["type"] == "reasoning":
 		part := map[string]any{"type": "summary_text", "text": text}
 		item["summary"] = []any{part}
 		fields["summary_index"] = 0
@@ -196,8 +281,8 @@ func (c *KiroResponsesConverter) BuildFinalEvent() string {
 	for index := range c.items {
 		for block, active := range c.active {
 			if active == index {
-				result.WriteString(c.finishItem(index))
 				delete(c.active, block)
+				result.WriteString(c.finishItem(index))
 			}
 		}
 	}
@@ -223,10 +308,10 @@ func (c *KiroResponsesConverter) BuildErrorEvent(code, message string) string {
 	for _, index := range c.active {
 		item := c.items[index]
 		text := c.texts[index].String()
-		switch item["type"] {
-		case "function_call":
-			item["arguments"] = text
-		case "reasoning":
+		switch {
+		case isToolCallItem(item):
+			finishToolCallItem(item, text)
+		case item["type"] == "reasoning":
 			item["summary"] = []any{map[string]any{"type": "summary_text", "text": text}}
 		default:
 			item["content"] = []any{responseTextPart(text)}

@@ -24,6 +24,10 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 	}{
 		{model: "gpt-6-astra", input: 10e-06, output: 50e-06},
 		{model: "gpt-6-astra-2026-09-04", input: 10e-06, output: 50e-06},
+		{model: "gpt-6-sol", input: 2e-06, output: 10e-06},
+		{model: "gpt-6-sol-20260923", input: 2e-06, output: 10e-06},
+		{model: "gpt-6-luna", input: 0.1e-06, output: 0.5e-06},
+		{model: "gpt-6-luna-20260923", input: 0.1e-06, output: 0.5e-06},
 		{model: "gpt-5.3", input: 1.75e-06, output: 14e-06},
 		{model: "gpt-5.6", input: 5e-06, output: 30e-06},
 		{model: "gpt-5.6-sol", input: 5e-06, output: 30e-06},
@@ -74,6 +78,57 @@ func TestPricingServiceGetModelPricing_GPT6AstraUsesGPT56Policy(t *testing.T) {
 	}
 	if !pricing.SupportsPromptCaching {
 		t.Fatal("expected gpt-6-astra to support prompt caching")
+	}
+}
+
+func TestPricingServiceGetModelPricing_GPT6SolAndLunaUseOfficialStandardRates(t *testing.T) {
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}
+
+	tests := []struct {
+		model          string
+		input          float64
+		cachedInput    float64
+		cacheWrites    float64
+		output         float64
+		inputLongMult  float64
+		outputLongMult float64
+	}{
+		{
+			model:          "gpt-6-sol",
+			input:          2e-06,
+			cachedInput:    0.2e-06,
+			cacheWrites:    2.5e-06,
+			output:         10e-06,
+			inputLongMult:  2,
+			outputLongMult: 1.5,
+		},
+		{
+			model:          "gpt-6-luna",
+			input:          0.1e-06,
+			cachedInput:    0.01e-06,
+			cacheWrites:    0.125e-06,
+			output:         0.5e-06,
+			inputLongMult:  2,
+			outputLongMult: 1.5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing := svc.GetModelPricing(tt.model)
+			if pricing == nil {
+				t.Fatalf("expected pricing for %q", tt.model)
+			}
+			if pricing.InputCostPerToken != tt.input || pricing.CacheReadInputTokenCost != tt.cachedInput ||
+				pricing.CacheCreationInputTokenCost != tt.cacheWrites || pricing.OutputCostPerToken != tt.output {
+				t.Fatalf("pricing = %#v", pricing)
+			}
+			if pricing.LongContextInputTokenThreshold != 272000 ||
+				pricing.LongContextInputCostMultiplier != tt.inputLongMult ||
+				pricing.LongContextOutputCostMultiplier != tt.outputLongMult {
+				t.Fatalf("long-context pricing = %#v", pricing)
+			}
+		})
 	}
 }
 
@@ -350,6 +405,74 @@ func TestPricingServiceGetModelPricing_Opus5And48UseExplicitStaticPricing(t *tes
 				t.Fatalf("cache read pricing = %v, want %v", pricing.CacheReadInputTokenCost, 0.5e-6)
 			}
 		})
+	}
+}
+
+func TestPricingServiceGetModelPricing_Opus55HasSeparatePrice(t *testing.T) {
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"claude-opus-5": {
+			InputCostPerToken:  5e-6,
+			OutputCostPerToken: 25e-6,
+		},
+	}}
+
+	pricing := svc.GetModelPricing(KiroModelOpus55)
+	if pricing == nil || pricing.InputCostPerToken != 4e-6 || pricing.OutputCostPerToken != 20e-6 ||
+		pricing.CacheCreationInputTokenCost != 5e-6 || pricing.CacheReadInputTokenCost != 0.2e-6 {
+		t.Fatalf("Opus 5.5 fallback pricing = %+v", pricing)
+	}
+
+	svc.pricingData[KiroModelOpus55] = &LiteLLMModelPricing{InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6}
+	pricing = svc.GetModelPricing("claude-opus-5-5-thinking")
+	if pricing == nil || pricing.InputCostPerToken != 3e-6 || pricing.OutputCostPerToken != 15e-6 {
+		t.Fatalf("Opus 5.5 dynamic pricing = %+v", pricing)
+	}
+
+	delete(svc.pricingData, "claude-opus-5")
+	pricing = svc.GetModelPricing("claude-opus-5-thinking")
+	if pricing == nil || pricing.InputCostPerToken != 5e-6 || pricing.OutputCostPerToken != 25e-6 {
+		t.Fatalf("Opus 5 must not use Opus 5.5 pricing: %+v", pricing)
+	}
+}
+
+func TestBillingServiceCalculateCost_Opus55CacheDuration(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+	pricing, err := svc.GetModelPricing(KiroModelOpus55)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pricing.SupportsCacheBreakdown || pricing.CacheCreation5mPrice != 5 || pricing.CacheCreation1hPrice != 8 {
+		t.Fatalf("Opus 5.5 cache pricing = %+v", pricing)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		tokens UsageTokens
+		want   float64
+	}{
+		{name: "split", tokens: UsageTokens{CacheCreationTokens: 300000, CacheCreation5mTokens: 100000, CacheCreation1hTokens: 200000}, want: 2.1},
+		{name: "aggregate fallback", tokens: UsageTokens{CacheCreationTokens: 300000}, want: 1.5},
+		{name: "unclassified remainder", tokens: UsageTokens{CacheCreationTokens: 300000, CacheCreation5mTokens: 100000, CacheCreation1hTokens: 100000}, want: 1.8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost, err := svc.CalculateCost(KiroModelOpus55, tc.tokens, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if math.Abs(cost.CacheCreationCost-tc.want) > 1e-12 {
+				t.Fatalf("cache creation cost = %v, want %v", cost.CacheCreationCost, tc.want)
+			}
+		})
+	}
+
+	svc.pricingService.pricingData[KiroModelOpus55] = &LiteLLMModelPricing{
+		InputCostPerToken:           4e-6,
+		OutputCostPerToken:          20e-6,
+		CacheCreationInputTokenCost: 5e-6,
+	}
+	pricing, err = svc.GetModelPricing(KiroModelOpus55)
+	if err != nil || !pricing.SupportsCacheBreakdown || pricing.CacheCreation1hPrice != 8 {
+		t.Fatalf("dynamic Opus 5.5 cache pricing = %+v, err = %v", pricing, err)
 	}
 }
 

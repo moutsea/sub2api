@@ -110,6 +110,7 @@ type KiroGatewayService struct {
 	httpUpstream         HTTPUpstream
 	settingService       *SettingService
 	usageCache           *UsageCache
+	thinkingCache        KiroThinkingCache
 	cfg                  *config.Config
 	proxyRepo            ProxyRepository    // proxy pool data source for Free-tier rotation
 	proxyPool            []Proxy            // cached active proxy list
@@ -132,6 +133,7 @@ func NewKiroGatewayService(
 	httpUpstream HTTPUpstream,
 	settingService *SettingService,
 	usageCache *UsageCache,
+	thinkingCache KiroThinkingCache,
 	proxyRepo ProxyRepository,
 	cfg *config.Config,
 ) *KiroGatewayService {
@@ -142,6 +144,7 @@ func NewKiroGatewayService(
 		httpUpstream:     httpUpstream,
 		settingService:   settingService,
 		usageCache:       usageCache,
+		thinkingCache:    thinkingCache,
 		proxyRepo:        proxyRepo,
 		cfg:              cfg,
 	}
@@ -582,6 +585,9 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 	if strings.TrimSpace(claudeReq.Model) == "" {
 		return nil, fmt.Errorf("missing model")
+	}
+	if !account.IsKiroApiKey() && isClaudeOpus55Model(claudeReq.Model) {
+		return nil, fmt.Errorf("%s: %w", claudeReq.Model, ErrModelNotSupported)
 	}
 
 	// Clean orphan tool_uses that have no matching tool_result.
@@ -2281,6 +2287,9 @@ func sleepKiroBackoffWithContext(ctx context.Context, attempt int) bool {
 
 // TestConnection tests Kiro account connection
 func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
+	if !account.IsKiroApiKey() && isClaudeOpus55Model(modelID) {
+		return nil, fmt.Errorf("%s: %w", modelID, ErrModelNotSupported)
+	}
 	// Get token
 	if s.tokenProvider == nil {
 		return nil, errors.New("kiro token provider not configured")
@@ -2916,6 +2925,10 @@ func applyClaudeUsageMap(usageMap map[string]any, usage *ClaudeUsage, overwrite 
 	setIf(&usage.InputTokens, usageMap, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens")
 	setIf(&usage.OutputTokens, usageMap, "output_tokens", "outputTokens", "completion_tokens", "completionTokens")
 	setIf(&usage.CacheCreationInputTokens, usageMap, "cache_creation_input_tokens", "cacheCreationInputTokens")
+	if cacheCreation, ok := usageMap["cache_creation"].(map[string]any); ok {
+		setIf(&usage.CacheCreation5mTokens, cacheCreation, "ephemeral_5m_input_tokens")
+		setIf(&usage.CacheCreation1hTokens, cacheCreation, "ephemeral_1h_input_tokens")
+	}
 	setIf(&usage.CacheReadInputTokens, usageMap, "cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens")
 	if usage.CacheReadInputTokens == 0 {
 		if details, ok := usageMap["input_tokens_details"].(map[string]any); ok && details != nil {

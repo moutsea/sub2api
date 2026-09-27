@@ -9,28 +9,44 @@ import (
 // ConvertResponsesToClaude accepts stateless Responses requests. History must be
 // supplied in input because Kiro has no OpenAI response store or item lookup.
 func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
+	req, _, err := ConvertResponsesToClaudeWithTools(body)
+	return req, err
+}
+
+// ConvertResponsesToClaudeWithTools also reports the Codex-private tool shapes
+// that were lowered to plain functions, so the response path can restore them.
+func ConvertResponsesToClaudeWithTools(body []byte) (*ClaudeRequest, ResponsesClientTools, error) {
+	request, tools, err := convertResponsesToClaude(body)
+	if err != nil {
+		return nil, ResponsesClientTools{}, err
+	}
+	return request, tools, nil
+}
+
+func convertResponsesToClaude(body []byte) (*ClaudeRequest, ResponsesClientTools, error) {
+	var clientTools ResponsesClientTools
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
+		return nil, clientTools, fmt.Errorf("invalid JSON: %w", err)
 	}
 	for _, field := range []string{"previous_response_id", "conversation"} {
 		if value := req[field]; value != nil && value != "" {
-			return nil, fmt.Errorf("%s is not supported by Kiro; supply full history in input", field)
+			return nil, clientTools, fmt.Errorf("%s is not supported by Kiro; supply full history in input", field)
 		}
 	}
 	for _, field := range []string{"store", "background"} {
 		if value, exists := req[field]; exists && value != nil && value != false {
-			return nil, fmt.Errorf("Kiro requires %s=false", field)
+			return nil, clientTools, fmt.Errorf("Kiro requires %s=false", field)
 		}
 	}
 	if text, ok := req["text"].(map[string]any); ok {
 		if format, ok := text["format"].(map[string]any); ok && format["type"] != nil && format["type"] != "text" {
-			return nil, fmt.Errorf("structured text formats are not supported by Kiro")
+			return nil, clientTools, fmt.Errorf("structured text formats are not supported by Kiro")
 		}
 	}
 	model, _ := req["model"].(string)
 	if strings.TrimSpace(model) == "" {
-		return nil, fmt.Errorf("model is required")
+		return nil, clientTools, fmt.Errorf("model is required")
 	}
 	cc := map[string]any{"model": model}
 	for _, field := range []string{"stream", "temperature", "thinking"} {
@@ -40,13 +56,13 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 	}
 	if stream, exists := req["stream"]; exists {
 		if _, ok := stream.(bool); !ok {
-			return nil, fmt.Errorf("stream must be a boolean")
+			return nil, clientTools, fmt.Errorf("stream must be a boolean")
 		}
 	}
 	if value, exists := req["max_output_tokens"]; exists && value != nil {
 		n, ok := value.(float64)
 		if !ok || n <= 0 || n != float64(int(n)) {
-			return nil, fmt.Errorf("max_output_tokens must be a positive integer")
+			return nil, clientTools, fmt.Errorf("max_output_tokens must be a positive integer")
 		}
 		cc["max_completion_tokens"] = value
 	}
@@ -54,12 +70,15 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 	if value := req["instructions"]; value != nil {
 		instructions, ok := value.(string)
 		if !ok {
-			return nil, fmt.Errorf("instructions must be a string")
+			return nil, clientTools, fmt.Errorf("instructions must be a string")
 		}
 		if instructions != "" {
 			messages = append(messages, map[string]any{"role": "system", "content": instructions})
 		}
 	}
+	// Codex carries tool declarations inside input; promote them before the
+	// item loop so they are validated with the top-level tools array.
+	promoteResponsesAdditionalTools(req)
 	var items []any
 	switch input := req["input"].(type) {
 	case string:
@@ -69,15 +88,19 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 	case []any:
 		items = input
 	default:
-		return nil, fmt.Errorf("input must be a string or an array")
+		return nil, clientTools, fmt.Errorf("input must be a string or an array")
 	}
 	if len(items) == 0 {
-		return nil, fmt.Errorf("input must not be empty")
+		return nil, clientTools, fmt.Errorf("input must not be empty")
+	}
+	items = normalizeResponsesCodexItems(items)
+	if len(items) == 0 {
+		return nil, clientTools, fmt.Errorf("input must contain conversation messages or function calls")
 	}
 	for i, value := range items {
 		item, ok := value.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("input[%d] must be an object", i)
+			return nil, clientTools, fmt.Errorf("input[%d] must be an object", i)
 		}
 		kind, _ := item["type"].(string)
 		switch kind {
@@ -87,11 +110,11 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 				role = "system"
 			}
 			if role != "system" && role != "user" && role != "assistant" {
-				return nil, fmt.Errorf("unsupported input role %q", role)
+				return nil, clientTools, fmt.Errorf("unsupported input role %q", role)
 			}
 			content, err := responsesContentToChat(item["content"])
 			if err != nil {
-				return nil, fmt.Errorf("input[%d]: %w", i, err)
+				return nil, clientTools, fmt.Errorf("input[%d]: %w", i, err)
 			}
 			messages = append(messages, map[string]any{"role": role, "content": content})
 		case "function_call":
@@ -100,23 +123,23 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 			args, _ := item["arguments"].(string)
 			var object map[string]any
 			if callID == "" || name == "" || json.Unmarshal([]byte(args), &object) != nil || object == nil {
-				return nil, fmt.Errorf("function_call requires call_id, name and JSON object arguments")
+				return nil, clientTools, fmt.Errorf("function_call requires call_id, name and JSON object arguments")
 			}
 			messages = append(messages, map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": callID, "type": "function", "function": map[string]any{"name": name, "arguments": args}}}})
 		case "function_call_output":
 			callID, _ := item["call_id"].(string)
 			if callID == "" {
-				return nil, fmt.Errorf("function_call_output requires call_id")
+				return nil, clientTools, fmt.Errorf("function_call_output requires call_id")
 			}
 			content, err := responsesContentToChat(item["output"])
 			if err != nil {
-				return nil, fmt.Errorf("function_call_output: %w", err)
+				return nil, clientTools, fmt.Errorf("function_call_output: %w", err)
 			}
 			// The shared Chat adapter only supports text tool results.
 			if parts, ok := content.([]any); ok {
 				for _, part := range parts {
 					if part.(map[string]any)["type"] != "text" {
-						return nil, fmt.Errorf("Kiro function_call_output supports text only")
+						return nil, clientTools, fmt.Errorf("Kiro function_call_output supports text only")
 					}
 				}
 			}
@@ -124,24 +147,31 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 		case "reasoning":
 			// Client-replayed reasoning items are not conversation messages.
 		default:
-			return nil, fmt.Errorf("unsupported input item type %q; supply full messages and function calls", kind)
+			return nil, clientTools, fmt.Errorf("unsupported input item type %q; supply full messages and function calls", kind)
 		}
 	}
 	cc["messages"] = messages
 	if value := req["tools"]; value != nil {
 		tools, ok := value.([]any)
 		if !ok {
-			return nil, fmt.Errorf("tools must be an array")
+			return nil, clientTools, fmt.Errorf("tools must be an array")
+		}
+		// Lower Codex local_shell/custom tools to functions and remember the
+		// mapping; anything still non-function is rejected below.
+		var lowerErr error
+		tools, clientTools, lowerErr = lowerResponsesClientTools(tools)
+		if lowerErr != nil {
+			return nil, clientTools, lowerErr
 		}
 		converted := make([]any, 0, len(tools))
 		for _, value := range tools {
 			tool, ok := value.(map[string]any)
 			if !ok || tool["type"] != "function" {
-				return nil, fmt.Errorf("Kiro Responses supports function tools only")
+				return nil, clientTools, fmt.Errorf("Kiro Responses supports function tools only")
 			}
 			name, _ := tool["name"].(string)
 			if name == "" {
-				return nil, fmt.Errorf("function tool name is required")
+				return nil, clientTools, fmt.Errorf("function tool name is required")
 			}
 			converted = append(converted, map[string]any{"type": "function", "function": tool})
 		}
@@ -151,17 +181,22 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 		switch choice := value.(type) {
 		case string:
 			if choice != "auto" && choice != "none" && choice != "required" {
-				return nil, fmt.Errorf("unsupported tool_choice %q", choice)
+				return nil, clientTools, fmt.Errorf("unsupported tool_choice %q", choice)
 			}
 			cc["tool_choice"] = choice
 		case map[string]any:
 			name, _ := choice["name"].(string)
-			if choice["type"] != "function" || name == "" {
-				return nil, fmt.Errorf("tool_choice must select a named function")
+			// Codex selects its built-in shell by bare type, with no name.
+			if kind, _ := choice["type"].(string); kind == localShellToolName && clientTools.LocalShell {
+				name = localShellToolName
+			} else if kind == "custom" && clientTools.Custom[name] {
+				// A lowered freeform tool is now a function of the same name.
+			} else if kind != "function" || name == "" {
+				return nil, clientTools, fmt.Errorf("tool_choice must select a named function")
 			}
 			cc["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": name}}
 		default:
-			return nil, fmt.Errorf("invalid tool_choice")
+			return nil, clientTools, fmt.Errorf("invalid tool_choice")
 		}
 	}
 	if reasoning, ok := req["reasoning"].(map[string]any); ok {
@@ -177,7 +212,7 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 			case "high", "xhigh":
 				budget = 16384
 			default:
-				return nil, fmt.Errorf("unsupported reasoning effort %q", effort)
+				return nil, clientTools, fmt.Errorf("unsupported reasoning effort %q", effort)
 			}
 			if budget > 0 {
 				cc["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
@@ -186,13 +221,16 @@ func ConvertResponsesToClaude(body []byte) (*ClaudeRequest, error) {
 	}
 	encoded, err := json.Marshal(cc)
 	if err != nil {
-		return nil, err
+		return nil, clientTools, err
 	}
 	result, err := ConvertOpenAIToClaude(encoded)
-	if err == nil && len(result.Messages) == 0 {
-		return nil, fmt.Errorf("input must contain conversation messages or function calls")
+	if err != nil {
+		return nil, clientTools, err
 	}
-	return result, err
+	if len(result.Messages) == 0 {
+		return nil, clientTools, fmt.Errorf("input must contain conversation messages or function calls")
+	}
+	return result, clientTools, nil
 }
 
 func responsesContentToChat(value any) (any, error) {

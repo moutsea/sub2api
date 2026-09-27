@@ -55,6 +55,7 @@ func TestIsOAuthModelSupported(t *testing.T) {
 		"claude-sonnet-5-thinking": true,
 		"claude-opus-5":            true,
 		"claude-opus-5-thinking":   true,
+		"claude-opus-5-5":          false,
 		"claude-opus-4-8":          true,
 		"claude-opus-4.8":          true,
 		"claude-opus-4-8-thinking": true,

@@ -21,8 +21,8 @@ func TestOpenAIActualInputTokensKiroAPIKeyKeepsUpstreamSemantics(t *testing.T) {
 	result.Usage.CacheReadInputTokens = 600
 	result.Usage.CacheCreationInputTokens = 250
 
-	if got := openAIActualInputTokens(result, account); got != 400 {
-		t.Fatalf("actual input tokens = %d, want 400", got)
+	if got := openAIActualInputTokens(result, account); got != 1000 {
+		t.Fatalf("actual input tokens = %d, want 1000", got)
 	}
 }
 

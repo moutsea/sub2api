@@ -34,6 +34,14 @@ func TestUpdateClaudeUsageFromSSEData_MessageStartAndDelta(t *testing.T) {
 	}
 }
 
+func TestUpdateClaudeUsageFromSSEData_CacheCreationBreakdown(t *testing.T) {
+	usage := &ClaudeUsage{}
+	updated := updateClaudeUsageFromSSEData(`{"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":20}}}}`, usage)
+	if !updated || usage.CacheCreation5mTokens != 10 || usage.CacheCreation1hTokens != 20 {
+		t.Fatalf("stream cache creation usage = %+v, updated = %v", usage, updated)
+	}
+}
+
 func TestApplyClaudeUsageMap_ExplicitZeroOverwritesExistingValue(t *testing.T) {
 	usage := &ClaudeUsage{InputTokens: 123, CacheReadInputTokens: 456}
 
@@ -54,7 +62,7 @@ func TestApplyClaudeUsageMap_ExplicitZeroOverwritesExistingValue(t *testing.T) {
 }
 
 func TestExtractClaudeUsageFromJSON(t *testing.T) {
-	body := []byte(`{"type":"message","usage":{"input_tokens":77,"output_tokens":13,"cache_creation_input_tokens":8,"cache_read_input_tokens":9}}`)
+	body := []byte(`{"type":"message","usage":{"input_tokens":77,"output_tokens":13,"cache_creation_input_tokens":8,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":5},"cache_read_input_tokens":9}}`)
 
 	usage, ok := extractClaudeUsageFromJSON(body)
 	if !ok {
@@ -68,6 +76,9 @@ func TestExtractClaudeUsageFromJSON(t *testing.T) {
 	}
 	if usage.CacheCreationInputTokens != 8 {
 		t.Fatalf("cache_creation_input_tokens=%d, want 8", usage.CacheCreationInputTokens)
+	}
+	if usage.CacheCreation5mTokens != 3 || usage.CacheCreation1hTokens != 5 {
+		t.Fatalf("cache creation breakdown=%d/%d, want 3/5", usage.CacheCreation5mTokens, usage.CacheCreation1hTokens)
 	}
 	if usage.CacheReadInputTokens != 9 {
 		t.Fatalf("cache_read_input_tokens=%d, want 9", usage.CacheReadInputTokens)

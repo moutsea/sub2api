@@ -22,7 +22,19 @@ func kiroAPIKeyOpenAIDefaultMaxTokens(req *kiro.ClaudeRequest) int {
 	if kiro.IsThinkingConfigEnabled(req) {
 		return kiro.KiroFixedMaxTokens
 	}
+	if req != nil && isClaudeOpus55Model(req.Model) {
+		effort, _ := req.OutputConfig["effort"].(string)
+		if effort == "xhigh" || effort == "max" {
+			return kiro.KiroFixedMaxTokens
+		}
+	}
 	return defaultKiroAPIKeyOpenAIMaxTokens
+}
+
+// Claude reports uncached input separately from cache reads and writes.
+// OpenAI prompt_tokens includes all three categories.
+func kiroAPIKeyOpenAITotalInputTokens(usage *OpenAIUsage) int {
+	return usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
 }
 
 func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
@@ -32,8 +44,31 @@ func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
 	claudeReq *kiro.ClaudeRequest,
 	originalModel string,
 	startTime time.Time,
+	includeUsage bool,
 ) (*OpenAIForwardResult, error) {
 	prefix := fmt.Sprintf("[kiro-apikey-OpenAI] account=%s", account.Name)
+	if isClaudeOpus55Model(claudeReq.Model) {
+		// OpenAI clients commonly set temperature=0; Opus 5.5 rejects
+		// non-default sampling values, so omit this incompatible option.
+		claudeReq.Temperature = nil
+		if choice, ok := claudeReq.ToolChoice.(map[string]any); ok {
+			if kind, _ := choice["type"].(string); kind == "any" || kind == "tool" {
+				return nil, fmt.Errorf("tool_choice %q is not supported by %s; use auto or none", kind, claudeReq.Model)
+			}
+		}
+		if thinkingType, _ := claudeReq.Thinking["type"].(string); thinkingType == "enabled" {
+			// Opus 5.5 accepts adaptive thinking, without a fixed budget.
+			claudeReq.Thinking = map[string]any{"type": "adaptive"}
+			setOpus55EffortIfUnset(claudeReq, "high")
+		} else if thinkingType == "disabled" {
+			// This model defaults to adaptive thinking when the field is absent.
+			claudeReq.Thinking = nil
+			setOpus55EffortIfUnset(claudeReq, "low")
+		}
+		if err := s.restoreKiroThinkingTurn(ctx, kiro.ExtractAPIKey(c), claudeReq); err != nil {
+			return nil, err
+		}
+	}
 	if claudeReq.MaxTokens <= 0 {
 		claudeReq.MaxTokens = kiroAPIKeyOpenAIDefaultMaxTokens(claudeReq)
 	}
@@ -121,9 +156,9 @@ func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 	if claudeReq.Stream {
-		usage, firstTokenMs, err = s.handleClaudeAPIAsOpenAIStream(c, resp, originalModel, inputTokens, startTime)
+		usage, firstTokenMs, err = s.handleClaudeAPIAsOpenAIStream(c, resp, originalModel, claudeReq.Model, len(claudeReq.Tools) > 0, inputTokens, startTime, includeUsage)
 	} else {
-		usage, firstTokenMs, err = s.handleClaudeAPIAsOpenAIResponse(c, resp, originalModel, inputTokens, startTime)
+		usage, firstTokenMs, err = s.handleClaudeAPIAsOpenAIResponse(c, resp, originalModel, claudeReq.Model, inputTokens, startTime)
 	}
 	if err != nil {
 		return nil, err
@@ -139,10 +174,20 @@ func (s *KiroGatewayService) forwardKiroAPIKeyChatCompletions(
 	}, nil
 }
 
+func setOpus55EffortIfUnset(req *kiro.ClaudeRequest, effort string) {
+	if req.OutputConfig == nil {
+		req.OutputConfig = map[string]any{}
+	}
+	if _, exists := req.OutputConfig["effort"]; !exists {
+		req.OutputConfig["effort"] = effort
+	}
+}
+
 func (s *KiroGatewayService) handleClaudeAPIAsOpenAIResponse(
 	c *gin.Context,
 	resp *http.Response,
 	model string,
+	upstreamModel string,
 	estimatedInputTokens int,
 	startTime time.Time,
 ) (*OpenAIUsage, *int, error) {
@@ -154,12 +199,23 @@ func (s *KiroGatewayService) handleClaudeAPIAsOpenAIResponse(
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse claude response: %s", sanitizeKiroClientErrorMessage(err.Error()))
 	}
+	if isClaudeOpus55Model(upstreamModel) && len(complete.ToolCalls) > 0 {
+		var payload struct {
+			Content []json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, nil, err
+		}
+		if err := s.saveKiroThinkingTurn(c.Request.Context(), kiro.ExtractAPIKey(c), upstreamModel, payload.Content); err != nil {
+			return nil, nil, fmt.Errorf("save Opus 5.5 tool continuation: %w", err)
+		}
+	}
 
 	messageID := "chatcmpl-" + uuid.New().String()[:24]
 	result := kiro.BuildOpenAINonStreamResponse(
 		messageID,
 		model,
-		usage.InputTokens,
+		kiroAPIKeyOpenAITotalInputTokens(usage),
 		usage.OutputTokens,
 		complete,
 		usage.CacheCreationInputTokens,
@@ -225,8 +281,11 @@ func (s *KiroGatewayService) handleClaudeAPIAsOpenAIStream(
 	c *gin.Context,
 	resp *http.Response,
 	model string,
+	upstreamModel string,
+	hasClientTools bool,
 	estimatedInputTokens int,
 	startTime time.Time,
+	includeUsage bool,
 ) (*OpenAIUsage, *int, error) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -239,12 +298,17 @@ func (s *KiroGatewayService) handleClaudeAPIAsOpenAIStream(
 	c.Status(http.StatusOK)
 
 	converter := kiro.NewOpenAIStreamConverter("chatcmpl-"+uuid.New().String()[:24], model, estimatedInputTokens)
+	converter.SetIncludeUsage(includeUsage)
 	if _, err := c.Writer.Write([]byte(converter.BuildInitialEvent())); err != nil {
 		return nil, nil, err
 	}
 	flusher.Flush()
 
 	usage := &OpenAIUsage{InputTokens: estimatedInputTokens}
+	var contentCollector *kiroClaudeContentCollector
+	if isClaudeOpus55Model(upstreamModel) && hasClientTools {
+		contentCollector = &kiroClaudeContentCollector{}
+	}
 	var firstTokenMs *int
 	reader := bufio.NewReader(resp.Body)
 	dataLines := make([]string, 0, 1)
@@ -295,6 +359,14 @@ func (s *KiroGatewayService) handleClaudeAPIAsOpenAIStream(
 		if data == "[DONE]" {
 			streamStopped = true
 			return nil
+		}
+		if contentCollector != nil {
+			if err := contentCollector.Add([]byte(data)); err != nil {
+				streamFailed = true
+				_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_parse_error", sanitizeKiroClientErrorMessage(err.Error()))))
+				flusher.Flush()
+				return nil
+			}
 		}
 		events, stopReason, stopped, err := parseClaudeSSEData([]byte(data), usage)
 		if err != nil {
@@ -380,11 +452,24 @@ streamLoop:
 	if streamFailed {
 		return usage, firstTokenMs, nil
 	}
+	if contentCollector != nil {
+		content, err := contentCollector.Content()
+		if err != nil {
+			_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("upstream_parse_error", sanitizeKiroClientErrorMessage(err.Error()))))
+			flusher.Flush()
+			return usage, firstTokenMs, nil
+		}
+		if err := s.saveKiroThinkingTurn(c.Request.Context(), kiro.ExtractAPIKey(c), upstreamModel, content); err != nil {
+			_, _ = c.Writer.Write([]byte(converter.BuildErrorEvent("tool_continuation_unavailable", sanitizeKiroClientErrorMessage(err.Error()))))
+			flusher.Flush()
+			return usage, firstTokenMs, nil
+		}
+	}
 	if usage.OutputTokens <= 0 {
 		usage.OutputTokens = converter.TotalOutputTokens()
 	}
 	converter.SetUsage(
-		usage.InputTokens,
+		kiroAPIKeyOpenAITotalInputTokens(usage),
 		usage.OutputTokens,
 		usage.CacheCreationInputTokens,
 		usage.CacheReadInputTokens,
@@ -499,6 +584,14 @@ func mergeClaudeAPIUsage(target *OpenAIUsage, usage map[string]any) {
 	setUsageValue(&target.OutputTokens, "output_tokens", "outputTokens")
 	setUsageValue(&target.CacheCreationInputTokens, "cache_creation_input_tokens", "cacheCreationInputTokens")
 	setUsageValue(&target.CacheReadInputTokens, "cache_read_input_tokens", "cacheReadInputTokens")
+	if cacheCreation, ok := usage["cache_creation"].(map[string]any); ok {
+		if count, ok := usageIntByKeys(cacheCreation, "ephemeral_5m_input_tokens"); ok && count >= 0 {
+			target.CacheCreation5mTokens = count
+		}
+		if count, ok := usageIntByKeys(cacheCreation, "ephemeral_1h_input_tokens"); ok && count >= 0 {
+			target.CacheCreation1hTokens = count
+		}
+	}
 }
 
 func estimateOpenAIOutputTokens(response *kiro.CompleteResponse) int {

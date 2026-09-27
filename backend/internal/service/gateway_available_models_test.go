@@ -56,3 +56,26 @@ func TestGatewayServiceGetAvailableModelsOpenAIDefaultsWithoutPlatformFilter(t *
 	require.Contains(t, models, "gpt-6-astra")
 	require.Contains(t, models, "gpt-5.6")
 }
+
+func TestGatewayServiceGetAvailableModelsKiroOpus55RequiresAPIKey(t *testing.T) {
+	groupID := int64(10)
+	repo := &availableModelsAccountRepo{
+		accounts: []Account{{
+			Platform:    PlatformKiro,
+			Type:        AccountTypeOAuth,
+			Credentials: map[string]any{"auth_type": KiroAuthMethodSocial},
+		}},
+	}
+	svc := &GatewayService{accountRepo: repo}
+
+	require.NotContains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
+	repo.accounts[0].Credentials["model_mapping"] = map[string]any{KiroModelOpus55: KiroModelOpus55}
+	require.NotContains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
+
+	repo.accounts = append(repo.accounts, Account{
+		Platform:    PlatformKiro,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"auth_type": KiroAuthMethodAPIKey},
+	})
+	require.Contains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
+}

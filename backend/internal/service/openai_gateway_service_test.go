@@ -874,6 +874,25 @@ func TestOpenAIResponseModelMatches_NormalizesGPT6AstraSnapshot(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponseModelMatches_NormalizesGPT6SolAndLunaSnapshots(t *testing.T) {
+	for _, tt := range []struct {
+		actual string
+		want   string
+	}{
+		{actual: "gpt-6-sol-2026-09-23", want: "gpt-6-sol"},
+		{actual: "gpt-6-luna-2026-09-23", want: "gpt-6-luna"},
+	} {
+		t.Run(tt.actual, func(t *testing.T) {
+			if !openAIResponseModelMatches(tt.actual, tt.want) {
+				t.Fatalf("expected %q to match %q", tt.actual, tt.want)
+			}
+			if normalized := normalizeOpenAIResponseModel(tt.actual); normalized != tt.want {
+				t.Fatalf("normalized model = %q, want %q", normalized, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenAIResponseModelMatches_NormalizesGPT56Models(t *testing.T) {
 	tests := []struct {
 		actual string

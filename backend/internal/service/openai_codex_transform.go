@@ -31,6 +31,18 @@ var codexModelMap = map[string]string{
 	"gpt-6-astra-medium":         "gpt-6-astra",
 	"gpt-6-astra-high":           "gpt-6-astra",
 	"gpt-6-astra-xhigh":          "gpt-6-astra",
+	"gpt-6-sol":                  "gpt-6-sol",
+	"gpt-6-sol-none":             "gpt-6-sol",
+	"gpt-6-sol-low":              "gpt-6-sol",
+	"gpt-6-sol-medium":           "gpt-6-sol",
+	"gpt-6-sol-high":             "gpt-6-sol",
+	"gpt-6-sol-xhigh":            "gpt-6-sol",
+	"gpt-6-luna":                 "gpt-6-luna",
+	"gpt-6-luna-none":            "gpt-6-luna",
+	"gpt-6-luna-low":             "gpt-6-luna",
+	"gpt-6-luna-medium":          "gpt-6-luna",
+	"gpt-6-luna-high":            "gpt-6-luna",
+	"gpt-6-luna-xhigh":           "gpt-6-luna",
 	"gpt-5.6":                    "gpt-5.6",
 	"gpt-5.6-none":               "gpt-5.6",
 	"gpt-5.6-low":                "gpt-5.6",
@@ -312,6 +324,12 @@ func normalizeCodexModel(model string) string {
 
 	if hasOpenAIModelPrefix(normalized, "gpt-6-astra") {
 		return "gpt-6-astra"
+	}
+	if hasOpenAIModelPrefix(normalized, "gpt-6-sol") {
+		return "gpt-6-sol"
+	}
+	if hasOpenAIModelPrefix(normalized, "gpt-6-luna") {
+		return "gpt-6-luna"
 	}
 	if hasOpenAIModelPrefix(normalized, "gpt-5.6-sol") {
 		return "gpt-5.6-sol"

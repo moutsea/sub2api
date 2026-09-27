@@ -128,16 +128,20 @@ func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-luna"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus48))
+	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "deepseek-3.2"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6-sol"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "claude-sonnet-4-5"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, KiroModelOpus48))
+	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, KiroModelOpus55))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "custom-upstream-model"))
 
 	oauthAccount.Credentials["model_mapping"] = map[string]any{"glm-5": "glm-5"}
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "glm-5"))
 	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, "deepseek-3.2"))
+	oauthAccount.Credentials["model_mapping"] = map[string]any{KiroModelOpus55: KiroModelOpus55}
+	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
 
 	apiKeyAccount.Credentials["model_mapping"] = map[string]any{"claude-opus-4-8": "claude-opus-4-8"}
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, KiroModelOpus48))
@@ -151,9 +155,10 @@ func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 func TestKiroAPIKeyDefaultModelsIncludesNewestOpusModels(t *testing.T) {
 	models := KiroAPIKeyDefaultModels()
 	require.NotEmpty(t, models)
-	// Newest Opus first, then the previous generation.
-	require.Equal(t, KiroModelOpus5, models[0].ID)
-	require.Equal(t, KiroModelOpus48, models[1].ID)
+	// Newest Opus first, then the previous generations.
+	require.Equal(t, KiroModelOpus55, models[0].ID)
+	require.Equal(t, KiroModelOpus5, models[1].ID)
+	require.Equal(t, KiroModelOpus48, models[2].ID)
 
 	counts := make(map[string]int)
 	found := make(map[string]bool)
@@ -163,11 +168,13 @@ func TestKiroAPIKeyDefaultModelsIncludesNewestOpusModels(t *testing.T) {
 	}
 	require.Equal(t, 1, counts[KiroModelOpus48])
 	require.Equal(t, 1, counts[KiroModelOpus5])
+	require.Equal(t, 1, counts[KiroModelOpus55])
 	require.True(t, found["gpt-5.6-sol"])
 	require.True(t, found["gpt-5.6-terra"])
 	require.True(t, found["gpt-5.6-luna"])
 	require.True(t, IsKiroModelSupported(KiroModelOpus48))
 	require.True(t, IsKiroModelSupported(KiroModelOpus5))
+	require.False(t, IsKiroModelSupported(KiroModelOpus55))
 }
 
 func TestKiroAPIKeyConnectionPassesGPTModelToCustomUpstream(t *testing.T) {

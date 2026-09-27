@@ -182,6 +182,46 @@ func TestConvertOpenAIToClaude_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToClaude_GroupsParallelToolResults(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-opus-5-5",
+		"messages":[
+			{"role":"user","content":"Check both cities"},
+			{"role":"assistant","tool_calls":[
+				{"id":"call_tokyo","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Tokyo\"}"}},
+				{"id":"call_paris","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}
+			]},
+			{"role":"tool","tool_call_id":"call_tokyo","content":"Sunny"},
+			{"role":"tool","tool_call_id":"call_paris","content":"Rainy"},
+			{"role":"user","content":"Summarize"}
+		]
+	}`)
+
+	req, err := ConvertOpenAIToClaude(body)
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	if len(req.Messages) != 4 {
+		t.Fatalf("messages: got %d, want 4", len(req.Messages))
+	}
+	if req.Messages[2].Role != "user" {
+		t.Fatalf("tool results role: got %s, want user", req.Messages[2].Role)
+	}
+	blocks, ok := req.Messages[2].Content.([]any)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("tool result blocks: got %v, want two in one user message", req.Messages[2].Content)
+	}
+	for i, id := range []string{"call_tokyo", "call_paris"} {
+		block, ok := blocks[i].(map[string]any)
+		if !ok || block["type"] != "tool_result" || block["tool_use_id"] != id {
+			t.Fatalf("tool result %d: got %v, want id %s", i, blocks[i], id)
+		}
+	}
+	if req.Messages[3].Role != "user" || req.Messages[3].Content != "Summarize" {
+		t.Fatalf("following user message was not preserved: %+v", req.Messages[3])
+	}
+}
+
 func TestConvertOpenAIToClaude_ToolChoice(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -389,6 +429,7 @@ func TestOpenAIStreamConverter_ThinkingSkipped(t *testing.T) {
 
 func TestOpenAIStreamConverter_FinalEvent(t *testing.T) {
 	conv := NewOpenAIStreamConverter("chatcmpl-test", "test-model", 100)
+	conv.SetIncludeUsage(true)
 	conv.SetCacheTokens(50, 30)
 
 	// Simulate some text output
@@ -405,6 +446,21 @@ func TestOpenAIStreamConverter_FinalEvent(t *testing.T) {
 	}
 	if !strings.Contains(final, "prompt_tokens") {
 		t.Error("final should contain usage")
+	}
+	if !strings.Contains(conv.BuildInitialEvent(), `"usage":null`) {
+		t.Error("non-final chunks should contain null usage when requested")
+	}
+}
+
+func TestOpenAIStreamConverter_OmitsUnrequestedUsage(t *testing.T) {
+	conv := NewOpenAIStreamConverter("chatcmpl-test", "test-model", 100)
+	conv.SetCacheTokens(50, 30)
+	final := conv.BuildFinalEvent()
+	if strings.Contains(final, `"usage"`) {
+		t.Errorf("unrequested usage should be omitted, got: %s", final)
+	}
+	if strings.Count(final, "data: ") != 2 {
+		t.Errorf("final stream should contain only finish chunk and [DONE], got: %s", final)
 	}
 }
 
@@ -488,6 +544,10 @@ func TestBuildOpenAINonStreamResponse_WithCache(t *testing.T) {
 	result := BuildOpenAINonStreamResponse("chatcmpl-test", "test-model", 100, 5, resp, 50, 30)
 
 	usage := result["usage"].(map[string]any)
+	details := usage["prompt_tokens_details"].(map[string]any)
+	if details["cached_tokens"] != 30 || details["cache_write_tokens"] != 50 {
+		t.Errorf("prompt_tokens_details: got %v, want cached=30 and cache_write=50", details)
+	}
 	if usage["cache_creation_input_tokens"] != 50 {
 		t.Errorf("cache_creation: got %v, want 50", usage["cache_creation_input_tokens"])
 	}
