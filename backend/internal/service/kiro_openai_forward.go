@@ -60,9 +60,6 @@ type kiroResponsesMode struct {
 func (s *KiroGatewayService) forwardKiroOpenAIRequest(ctx context.Context, c *gin.Context, account *Account, claudeReq *kiro.ClaudeRequest, responses *kiroResponsesMode, openAIRequest []byte, includeUsage bool) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 	prefix := fmt.Sprintf("[kiro-OpenAI] account=%s", account.Name)
-	if !account.IsKiroApiKey() && isClaudeOpus55Model(claudeReq.Model) {
-		return nil, fmt.Errorf("%s: %w", claudeReq.Model, ErrModelNotSupported)
-	}
 
 	// Preserve the downstream response mode; Kiro still streams internally.
 	wantStream := claudeReq.Stream

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -253,7 +255,7 @@ func cachePrefixHashes(req *ClaudeRequest) (stableHash [sha256.Size]byte, chain 
 	stable, err := json.Marshal(struct {
 		System any          `json:"system"`
 		Tools  []ClaudeTool `json:"tools"`
-	}{System: req.System, Tools: req.Tools})
+	}{System: cacheContentForHash(req.System), Tools: req.Tools})
 	if err != nil {
 		return stableHash, nil, false
 	}
@@ -268,6 +270,7 @@ func cachePrefixHashes(req *ClaudeRequest) (stableHash [sha256.Size]byte, chain 
 	hasher := sha256.New()
 	var running [sha256.Size]byte
 	for _, message := range req.Messages[:historyLen] {
+		message.Content = cacheContentForHash(message.Content)
 		// json.Marshal 对 map 键已是确定性排序，且被哈希的类型里没有
 		// json.RawMessage，所以单次 marshal 已经足够规范化 —— 之前的
 		// marshal→decode→marshal round-trip 是纯开销（实测约 7.7 倍）。
@@ -286,6 +289,37 @@ func cachePrefixHashes(req *ClaudeRequest) (stableHash [sha256.Size]byte, chain 
 		chain = append(chain, running)
 	}
 	return stableHash, chain, true
+}
+
+// cacheContentForHash ignores cache breakpoints, which are not forwarded to CW.
+// OpenCode moves them as history grows. Hashing them would turn unchanged
+// history into new cache_creation usage. Clone only the affected containers so
+// the request is untouched, and preserve tool input/schema fields of that name.
+func cacheContentForHash(content any) any {
+	blocks, ok := content.([]any)
+	if !ok {
+		return content
+	}
+	var normalized []any
+	for i, item := range blocks {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := block["cache_control"]; !exists {
+			continue
+		}
+		if normalized == nil {
+			normalized = slices.Clone(blocks)
+		}
+		clean := maps.Clone(block)
+		delete(clean, "cache_control")
+		normalized[i] = clean
+	}
+	if normalized != nil {
+		return normalized
+	}
+	return content
 }
 
 // cleanupLoop runs the background cleanup goroutine

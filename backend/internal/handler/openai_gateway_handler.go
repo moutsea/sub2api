@@ -120,6 +120,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		body = effectiveBody
 	}
 
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformOpenAI {
+		if err := service.ValidateOpenAIEnvironmentContext(body, "input"); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+	}
+
 	userAgent := c.GetHeader("User-Agent")
 	if !openai.IsCodexCLIRequest(userAgent) {
 		existingInstructions, _ := reqBody["instructions"].(string)
@@ -458,6 +465,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		reqModel = effectiveModel
 		reqBody["model"] = effectiveModel
 		body = effectiveBody
+	}
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformOpenAI {
+		if err := service.ValidateOpenAIEnvironmentContext(body, "messages"); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream, body)

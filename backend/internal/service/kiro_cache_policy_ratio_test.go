@@ -1,10 +1,48 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
+
+type cacheRatioSettingRepository struct {
+	SettingRepository
+	value string
+	err   error
+}
+
+func (r *cacheRatioSettingRepository) GetValue(context.Context, string) (string, error) {
+	return r.value, r.err
+}
+
+func TestKiroCacheReadRatioRetriesAfterDatabaseFailure(t *testing.T) {
+	repository := &cacheRatioSettingRepository{value: "0.5", err: errors.New("temporary failure")}
+	service := NewSettingService(repository, nil)
+	if got := service.GetKiroSimulatedCacheReadRatio(context.Background()); got != 1 {
+		t.Fatalf("initial database failure ratio = %v, want fallback 1", got)
+	}
+	repository.err = nil
+	service.kiroCacheReadRatioRetryAt = service.kiroCacheReadRatioRetryAt.Add(-kiroCacheReadRatioRetryInterval)
+	if got := service.GetKiroSimulatedCacheReadRatio(context.Background()); got != 0.5 {
+		t.Fatalf("recovered database ratio = %v, want 0.5", got)
+	}
+}
+
+func TestKiroCacheReadRatioRefreshesAcrossInstances(t *testing.T) {
+	repository := &cacheRatioSettingRepository{value: "1"}
+	service := NewSettingService(repository, nil)
+	if got := service.GetKiroSimulatedCacheReadRatio(context.Background()); got != 1 {
+		t.Fatalf("initial ratio = %v, want 1", got)
+	}
+	repository.value = "0.5"
+	service.kiroCacheReadRatioAt = service.kiroCacheReadRatioAt.Add(-kiroCacheReadRatioRefreshInterval)
+	if got := service.GetKiroSimulatedCacheReadRatio(context.Background()); got != 0.5 {
+		t.Fatalf("refreshed ratio = %v, want 0.5", got)
+	}
+}
 
 // TestUnsetSimulatedCacheReadRatioDefaultsToOne 是一条计费方向的回归测试。
 //

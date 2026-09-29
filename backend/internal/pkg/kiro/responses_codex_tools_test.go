@@ -211,6 +211,25 @@ func TestResponsesConverterRestoresClientToolItems(t *testing.T) {
 	require.Equal(t, `{"path":"a.go"}`, plain["arguments"])
 }
 
+func TestResponsesConverterStreamsCustomToolInputWithoutEnvelope(t *testing.T) {
+	c := NewKiroResponsesConverter("resp_test", "auto", 1)
+	c.SetClientTools(ResponsesClientTools{Custom: map[string]bool{"apply_patch": true}})
+	c.BuildInitialEvent()
+	c.ConvertEvent(StreamEvent{Type: EventContentBlockStart, Index: 0, BlockType: ContentBlockType{Kind: BlockToolUse, ToolID: "call_1", ToolName: "apply_patch"}})
+	input := "*** Begin Patch\n*** End Patch"
+	encoded, err := json.Marshal(map[string]string{"input": input})
+	require.NoError(t, err)
+	wire := c.ConvertEvent(StreamEvent{Type: EventToolUseInputDelta, ToolID: "call_1", PartialJSON: string(encoded)})
+	require.Empty(t, wire)
+	wire = c.ConvertEvent(StreamEvent{Type: EventContentBlockStop, Index: 0})
+	decoded := decodeResponsesEvents(t, wire)
+	require.Len(t, decoded, 3)
+	require.Equal(t, "response.custom_tool_call_input.delta", decoded[0]["type"])
+	require.Equal(t, input, decoded[0]["delta"])
+	require.Equal(t, "response.custom_tool_call_input.done", decoded[1]["type"])
+	require.Equal(t, input, decoded[1]["input"])
+}
+
 // Without a mapping every tool stays a function_call, preserving the shape
 // non-Codex clients already rely on.
 func TestResponsesConverterKeepsFunctionCallWithoutMapping(t *testing.T) {

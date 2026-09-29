@@ -1538,6 +1538,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthResponses(
 		wrappedErr := fmt.Errorf("serialize OpenAI image Responses request: %w", err)
 		return nil, finishOpenAIImagesError(c, heartbeat, wrappedErr, "upstream_error", wrappedErr.Error())
 	}
+	encodedBody, err = prepareOpenAIEnvironmentContext(account, encodedBody, "input")
+	if err != nil {
+		return nil, finishOpenAIImagesError(c, heartbeat, err, "upstream_error", err.Error())
+	}
 	if c != nil {
 		c.Set(OpsUpstreamRequestBodyKey, string(encodedBody))
 	}

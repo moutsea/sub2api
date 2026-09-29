@@ -586,9 +586,6 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if strings.TrimSpace(claudeReq.Model) == "" {
 		return nil, fmt.Errorf("missing model")
 	}
-	if !account.IsKiroApiKey() && isClaudeOpus55Model(claudeReq.Model) {
-		return nil, fmt.Errorf("%s: %w", claudeReq.Model, ErrModelNotSupported)
-	}
 
 	// Clean orphan tool_uses that have no matching tool_result.
 	// Claude API requires every tool_use to have a corresponding tool_result in the next user message.
@@ -2287,9 +2284,6 @@ func sleepKiroBackoffWithContext(ctx context.Context, attempt int) bool {
 
 // TestConnection tests Kiro account connection
 func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
-	if !account.IsKiroApiKey() && isClaudeOpus55Model(modelID) {
-		return nil, fmt.Errorf("%s: %w", modelID, ErrModelNotSupported)
-	}
 	// Get token
 	if s.tokenProvider == nil {
 		return nil, errors.New("kiro token provider not configured")

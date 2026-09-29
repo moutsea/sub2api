@@ -38,6 +38,17 @@ func TestGenerateStableConversationID_XConversationID(t *testing.T) {
 	require.Equal(t, "conv-abc", GenerateStableConversationID(c))
 }
 
+func TestGenerateStableConversationID_OpenCode(t *testing.T) {
+	t.Parallel()
+	c := newTestContext(map[string]string{"X-OpenCode-Session": "opencode-session"})
+	require.Equal(t, "opencode-session", GenerateStableConversationID(c))
+
+	c.Request.Header.Set("X-Conversation-ID", "conversation-wins")
+	require.Equal(t, "conversation-wins", GenerateStableConversationID(c))
+	c.Request.Header.Set("X-Session-ID", "session-wins")
+	require.Equal(t, "session-wins", GenerateStableConversationID(c))
+}
+
 func TestGenerateStableConversationID_SessionIDTakesPriority(t *testing.T) {
 	t.Parallel()
 	c := newTestContext(map[string]string{

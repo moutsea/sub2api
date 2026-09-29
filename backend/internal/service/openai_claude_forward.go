@@ -88,6 +88,10 @@ func (s *OpenAIGatewayService) forwardClaudeViaChatCompletions(ctx context.Conte
 		requestCtx, releaseRequestCtx = grokUpstreamContext(ctx, false)
 	}
 	defer releaseRequestCtx()
+	openaiBody, err = prepareOpenAIEnvironmentContext(account, openaiBody, "messages")
+	if err != nil {
+		return nil, err
+	}
 	upstreamReq, err := s.buildChatCompletionsRequest(requestCtx, c, account, openaiBody, token, grokCacheKey)
 	if err != nil {
 		return nil, err
@@ -173,6 +177,10 @@ func (s *OpenAIGatewayService) forwardClaudeViaResponsesAPI(ctx context.Context,
 	}
 
 	// 4. Build upstream request using standard OAuth path (chatgpt.com)
+	responsesBody, err = prepareOpenAIEnvironmentContext(account, responsesBody, "input")
+	if err != nil {
+		return nil, err
+	}
 	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, wantStream, promptCacheKey, false)
 	if err != nil {
 		return nil, err

@@ -464,16 +464,6 @@ func TestKiroAPIKeyOpus55ToolContinuationWithoutCachedTurnFailsBeforeUpstream(t 
 	require.Empty(t, upstream.requestBody)
 }
 
-func TestKiroOAuthOpus55IsRejectedBeforeFallback(t *testing.T) {
-	svc := &KiroGatewayService{}
-	account := &Account{Platform: PlatformKiro, Credentials: map[string]any{"auth_type": KiroAuthMethodSocial}}
-	body := []byte(`{"model":"claude-opus-5-5","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`)
-	c, _ := newOpenAIKiroTestContext(body)
-
-	_, err := svc.Forward(context.Background(), c, account, body)
-	require.ErrorIs(t, err, ErrModelNotSupported)
-}
-
 func TestKiroAPIKeyClaudeDoesNotUseLocalSimulatedCache(t *testing.T) {
 	upstream := &kiroAPIKeyProtocolUpstream{
 		responseBody:   `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`,

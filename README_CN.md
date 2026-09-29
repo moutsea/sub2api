@@ -59,6 +59,7 @@ Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅（
 
 ## OpenAI Responses 兼容注意事项
 
+- OpenAI 账号（OAuth / API Key）的出站请求会将系统提示词中 `<environment_context>` 的 `<timezone>` 统一为 `Asia/Singapore`，并按新加坡当地日期更新 `<current_date>`。缺少环境块或字段时自动补齐，保留其他环境信息；覆盖 Responses、Chat Completions 及 Claude Messages 转接路径，不修改用户消息和工具内容。
 - 当请求包含 `function_call_output` 时，需要携带 `previous_response_id`，或在 `input` 中包含带 `call_id` 的 `tool_call`/`function_call`，或带非空 `id` 且与 `function_call_output.call_id` 匹配的 `item_reference`。
 - 若依赖上游历史记录，网关会强制 `store=true` 并需要复用 `previous_response_id`，以避免出现 “No tool call found for function call output” 错误。
 

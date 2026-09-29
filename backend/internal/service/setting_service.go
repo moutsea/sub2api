@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -34,13 +35,20 @@ type SettingRepository interface {
 
 // SettingService 系统设置服务
 type SettingService struct {
-	settingRepo            SettingRepository
-	cfg                    *config.Config
-	onUpdate               func() // Callback when settings are updated (for cache invalidation)
-	version                string // Application version
-	kiroCacheReadRatioBits atomic.Uint64
-	kiroCacheReadRatioOnce sync.Once
+	settingRepo               SettingRepository
+	cfg                       *config.Config
+	onUpdate                  func() // Callback when settings are updated (for cache invalidation)
+	version                   string // Application version
+	kiroCacheReadRatioBits    atomic.Uint64
+	kiroCacheReadRatioMu      sync.Mutex
+	kiroCacheReadRatioAt      time.Time
+	kiroCacheReadRatioRetryAt time.Time
 }
+
+const (
+	kiroCacheReadRatioRefreshInterval = 30 * time.Second
+	kiroCacheReadRatioRetryInterval   = 5 * time.Second
+)
 
 // NewSettingService 创建系统设置服务实例
 func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *SettingService {
@@ -240,6 +248,10 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	err := s.settingRepo.SetMultiple(ctx, updates)
 	if err == nil {
 		s.kiroCacheReadRatioBits.Store(math.Float64bits(settings.KiroSimulatedCacheReadRatio))
+		s.kiroCacheReadRatioMu.Lock()
+		s.kiroCacheReadRatioAt = time.Now()
+		s.kiroCacheReadRatioRetryAt = time.Time{}
+		s.kiroCacheReadRatioMu.Unlock()
 	}
 	if err == nil && s.onUpdate != nil {
 		s.onUpdate() // Invalidate cache after settings update
@@ -474,17 +486,40 @@ func (s *SettingService) kiroSimulatedCacheReadRatio(settings map[string]string)
 }
 
 // GetKiroSimulatedCacheReadRatio returns the current OAuth cache billing ratio.
-// The persisted value is loaded once; subsequent admin updates are applied atomically.
+// The persisted value is refreshed periodically so updates from other instances
+// become visible without querying the database on every request.
 func (s *SettingService) GetKiroSimulatedCacheReadRatio(ctx context.Context) float64 {
-	if s.settingRepo != nil {
-		s.kiroCacheReadRatioOnce.Do(func() {
-			if value, err := s.settingRepo.GetValue(ctx, SettingKeyKiroSimulatedCacheReadRatio); err == nil {
-				if ratio, parseErr := strconv.ParseFloat(value, 64); parseErr == nil && ratio >= 0 && ratio <= 1 {
-					s.kiroCacheReadRatioBits.Store(math.Float64bits(ratio))
-				}
-			}
-		})
+	if s.settingRepo == nil {
+		return s.currentKiroCacheReadRatio()
 	}
+
+	now := time.Now()
+	s.kiroCacheReadRatioMu.Lock()
+	if !s.kiroCacheReadRatioAt.IsZero() && now.Sub(s.kiroCacheReadRatioAt) < kiroCacheReadRatioRefreshInterval {
+		s.kiroCacheReadRatioMu.Unlock()
+		return s.currentKiroCacheReadRatio()
+	}
+	if !s.kiroCacheReadRatioRetryAt.IsZero() && now.Before(s.kiroCacheReadRatioRetryAt) {
+		s.kiroCacheReadRatioMu.Unlock()
+		return s.currentKiroCacheReadRatio()
+	}
+
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyKiroSimulatedCacheReadRatio)
+	if err == nil {
+		if ratio, parseErr := strconv.ParseFloat(value, 64); parseErr == nil && ratio >= 0 && ratio <= 1 {
+			s.kiroCacheReadRatioBits.Store(math.Float64bits(ratio))
+		}
+		s.kiroCacheReadRatioAt = now
+		s.kiroCacheReadRatioRetryAt = time.Time{}
+	} else {
+		s.kiroCacheReadRatioRetryAt = now.Add(kiroCacheReadRatioRetryInterval)
+	}
+	s.kiroCacheReadRatioMu.Unlock()
+
+	return s.currentKiroCacheReadRatio()
+}
+
+func (s *SettingService) currentKiroCacheReadRatio() float64 {
 	ratio := math.Float64frombits(s.kiroCacheReadRatioBits.Load())
 	if ratio < 0 || ratio > 1 {
 		return 1

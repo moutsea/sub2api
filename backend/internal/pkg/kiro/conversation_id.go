@@ -31,7 +31,8 @@ func NewConversationIDManager() *ConversationIDManager {
 // Priority:
 // 1. X-Session-ID header (client-provided)
 // 2. X-Conversation-ID header (backward compatibility)
-// 3. MD5 hash of IP + User-Agent + API-Key (stable generation)
+// 3. X-OpenCode-Session header
+// 4. MD5 hash of IP + User-Agent + API-Key (stable generation)
 func (m *ConversationIDManager) GenerateConversationID(ctx *gin.Context) string {
 	// 1. Prefer client-provided X-Session-ID
 	if sessionID := ctx.GetHeader("X-Session-ID"); sessionID != "" {
@@ -43,7 +44,12 @@ func (m *ConversationIDManager) GenerateConversationID(ctx *gin.Context) string 
 		return customConvID
 	}
 
-	// 3. Generate stable ID based on client characteristics
+	// 3. OpenCode conversations must not overwrite each other's cache history.
+	if sessionID := ctx.GetHeader("X-OpenCode-Session"); sessionID != "" {
+		return sessionID
+	}
+
+	// 4. Generate stable ID based on client characteristics
 	clientIP := getClientIP(ctx)
 	userAgent := ctx.GetHeader("User-Agent")
 	apiKey := extractAPIKey(ctx)

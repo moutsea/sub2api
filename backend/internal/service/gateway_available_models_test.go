@@ -57,7 +57,7 @@ func TestGatewayServiceGetAvailableModelsOpenAIDefaultsWithoutPlatformFilter(t *
 	require.Contains(t, models, "gpt-5.6")
 }
 
-func TestGatewayServiceGetAvailableModelsKiroOpus55RequiresAPIKey(t *testing.T) {
+func TestGatewayServiceGetAvailableModelsKiroOpus55SupportsOAuth(t *testing.T) {
 	groupID := int64(10)
 	repo := &availableModelsAccountRepo{
 		accounts: []Account{{
@@ -68,8 +68,11 @@ func TestGatewayServiceGetAvailableModelsKiroOpus55RequiresAPIKey(t *testing.T) 
 	}
 	svc := &GatewayService{accountRepo: repo}
 
-	require.NotContains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
+	require.Contains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
 	repo.accounts[0].Credentials["model_mapping"] = map[string]any{KiroModelOpus55: KiroModelOpus55}
+	require.Contains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
+
+	repo.accounts[0].Credentials["model_mapping"] = map[string]any{KiroModelOpus5: KiroModelOpus5}
 	require.NotContains(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformKiro), KiroModelOpus55)
 
 	repo.accounts = append(repo.accounts, Account{

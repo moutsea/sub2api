@@ -1168,7 +1168,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			bodyModified = true
 		}
 		if statelessErr := validateOpenAIStatelessInputReferences(reqBody); statelessErr != nil {
-			writeOpenAIInvalidRequest(c, statelessErr.ClientMessage())
+			writeOpenAIInvalidRequest(c, statelessErr.ClientMessage(), "input")
 			return nil, statelessErr
 		}
 	}
@@ -1207,6 +1207,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 retryWithFallbackModel:
+	preparedBody, err := prepareOpenAIEnvironmentContext(account, body, "input")
+	if err != nil {
+		writeOpenAIInvalidRequest(c, err.Error(), "instructions")
+		return nil, err
+	}
+	body = preparedBody
+
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -1521,18 +1528,24 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	return req, nil
 }
 
-func writeOpenAIInvalidRequest(c *gin.Context, message string) {
+func writeOpenAIInvalidRequest(c *gin.Context, message, param string) {
 	if c == nil {
 		return
 	}
-	c.JSON(http.StatusBadRequest, gin.H{
+	payload := gin.H{
 		"error": gin.H{
 			"code":    nil,
 			"message": message,
-			"param":   "input",
+			"param":   param,
 			"type":    "invalid_request_error",
 		},
-	})
+	}
+	if c.Writer.Written() {
+		c.SSEvent("error", payload)
+		c.Writer.Flush()
+		return
+	}
+	c.JSON(http.StatusBadRequest, payload)
 }
 
 func shouldGuardOpenAIStatelessReasoning(account *Account) bool {
@@ -2247,7 +2260,12 @@ func stripInjectedCodexInstructionsIfInjected(response map[string]any, injectedI
 		return false
 	}
 	instructions, _ := response["instructions"].(string)
-	if strings.TrimSpace(instructions) == injectedInstructions {
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return false
+	}
+	if instructions == injectedInstructions ||
+		normalizeOpenAIEnvironmentText(instructions, "") == normalizeOpenAIEnvironmentText(injectedInstructions, "") {
 		delete(response, "instructions")
 		return true
 	}
@@ -3060,6 +3078,10 @@ func (s *OpenAIGatewayService) ForwardChatCompletions(ctx context.Context, c *gi
 		requestCtx, releaseRequestCtx = grokUpstreamContext(ctx, false)
 	}
 	defer releaseRequestCtx()
+	body, err = prepareOpenAIEnvironmentContext(account, body, "messages")
+	if err != nil {
+		return nil, err
+	}
 	upstreamReq, err := s.buildChatCompletionsRequest(requestCtx, c, account, body, token, grokCacheKey)
 	if err != nil {
 		return nil, err
@@ -3684,7 +3706,7 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 
 	if shouldGuardOpenAIStatelessReasoning(account) {
 		if statelessErr := validateOpenAIStatelessInputReferences(responsesBody); statelessErr != nil {
-			writeOpenAIInvalidRequest(c, statelessErr.ClientMessage())
+			writeOpenAIInvalidRequest(c, statelessErr.ClientMessage(), "input")
 			return nil, statelessErr
 		}
 		ensureReasoningEncryptedContentInclude(responsesBody)
@@ -3697,6 +3719,11 @@ func (s *OpenAIGatewayService) ForwardChatCompletionsViaResponses(ctx context.Co
 	}
 
 retryWithCCFallbackModel:
+	convertedBody, err = prepareOpenAIEnvironmentContext(account, convertedBody, "input")
+	if err != nil {
+		return nil, err
+	}
+
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {

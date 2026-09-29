@@ -2219,9 +2219,6 @@ func IsKiroModelSupportedByAccount(account *Account, requestedModel string) bool
 	if account == nil || !account.IsKiro() {
 		return false
 	}
-	if !account.IsKiroApiKey() && isClaudeOpus55Model(requestedModel) {
-		return false
-	}
 	mapping := account.GetModelMapping()
 	if len(mapping) > 0 {
 		_, ok := mapping[requestedModel]
@@ -4806,9 +4803,6 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		if len(mapping) > 0 {
 			hasAnyMapping = true
 			for model := range mapping {
-				if acc.Platform == PlatformKiro && !acc.IsKiroApiKey() && isClaudeOpus55Model(model) {
-					continue
-				}
 				modelSet[model] = struct{}{}
 			}
 			continue

@@ -128,7 +128,9 @@ func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-luna"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus48))
-	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-opus-5.5"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-opus-5-5-thinking"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "deepseek-3.2"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6"))
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, "gpt-5.6-sol"))
@@ -140,8 +142,9 @@ func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 	oauthAccount.Credentials["model_mapping"] = map[string]any{"glm-5": "glm-5"}
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "glm-5"))
 	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, "deepseek-3.2"))
-	oauthAccount.Credentials["model_mapping"] = map[string]any{KiroModelOpus55: KiroModelOpus55}
 	require.False(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
+	oauthAccount.Credentials["model_mapping"] = map[string]any{KiroModelOpus55: KiroModelOpus55}
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
 
 	apiKeyAccount.Credentials["model_mapping"] = map[string]any{"claude-opus-4-8": "claude-opus-4-8"}
 	require.True(t, IsKiroModelSupportedByAccount(apiKeyAccount, KiroModelOpus48))
@@ -174,7 +177,7 @@ func TestKiroAPIKeyDefaultModelsIncludesNewestOpusModels(t *testing.T) {
 	require.True(t, found["gpt-5.6-luna"])
 	require.True(t, IsKiroModelSupported(KiroModelOpus48))
 	require.True(t, IsKiroModelSupported(KiroModelOpus5))
-	require.False(t, IsKiroModelSupported(KiroModelOpus55))
+	require.True(t, IsKiroModelSupported(KiroModelOpus55))
 }
 
 func TestKiroAPIKeyConnectionPassesGPTModelToCustomUpstream(t *testing.T) {

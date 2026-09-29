@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -22,6 +23,78 @@ type responsesPreflightConcurrencyCache struct {
 func (cache *responsesPreflightConcurrencyCache) IncrementWaitCount(context.Context, int64, int) (bool, error) {
 	cache.waitCountCalls++
 	return false, nil
+}
+
+func TestOpenAIEnvironmentContextPreflight(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, testCase := range []struct {
+		name    string
+		path    string
+		fields  string
+		message string
+	}{
+		{"numeric instructions", "/v1/responses", `"instructions":123`, "OpenAI instructions must be a string"},
+		{"boolean instructions", "/v1/responses", `"instructions":true`, "OpenAI instructions must be a string"},
+		{"array instructions", "/v1/responses", `"instructions":[]`, "OpenAI instructions must be a string"},
+		{"object instructions", "/v1/responses", `"instructions":{}`, "OpenAI instructions must be a string"},
+		{"invalid instructions with environment", "/v1/responses", `"instructions":123,"input":[{"role":"developer","content":"<environment_context><timezone>UTC</timezone></environment_context>"}]`, "OpenAI instructions must be a string"},
+		{"null instructions", "/v1/responses", `"instructions":null`, ""},
+		{"string instructions", "/v1/responses", `"instructions":"Be concise"`, ""},
+		{"missing instructions", "/v1/responses", `"input":"hello"`, ""},
+		{"null messages", "/v1/chat/completions", `"messages":null`, "OpenAI messages must be an array"},
+		{"object messages", "/v1/chat/completions", `"messages":{}`, "OpenAI messages must be an array"},
+		{"string messages", "/v1/chat/completions", `"messages":"hello"`, "OpenAI messages must be an array"},
+		{"missing messages", "/v1/chat/completions", `"instructions":"<environment_context></environment_context>"`, "OpenAI messages must be an array"},
+		{"array messages", "/v1/chat/completions", `"messages":[{"role":"user","content":"hello"}]`, ""},
+	} {
+		for _, platform := range []string{service.PlatformOpenAI, service.PlatformGrok, service.PlatformKiro} {
+			userAgents := []string{"codex_cli_rs/0.98.0"}
+			if platform == service.PlatformOpenAI && testCase.message != "" {
+				userAgents = append(userAgents, "other-client/1.0")
+			}
+			for _, userAgent := range userAgents {
+				t.Run(testCase.name+"/"+platform+"/"+userAgent, func(t *testing.T) {
+					cache := &responsesPreflightConcurrencyCache{}
+					handler := NewOpenAIGatewayHandler(nil, nil, service.NewConcurrencyService(cache), nil, nil)
+					router := gin.New()
+					router.POST(testCase.path, func(ctx *gin.Context) {
+						ctx.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{Platform: platform}})
+						ctx.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
+						if testCase.path == "/v1/responses" {
+							handler.Responses(ctx)
+						} else {
+							handler.ChatCompletions(ctx)
+						}
+					})
+					body := `{"model":"gpt-5.5","stream":true,` + testCase.fields + `}`
+					request := httptest.NewRequest(http.MethodPost, testCase.path, strings.NewReader(body))
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("User-Agent", userAgent)
+					recorder := httptest.NewRecorder()
+
+					router.ServeHTTP(recorder, request)
+
+					if platform == service.PlatformOpenAI && testCase.message != "" {
+						require.Zero(t, cache.waitCountCalls)
+						require.Equal(t, http.StatusBadRequest, recorder.Code)
+						require.Contains(t, recorder.Header().Get("Content-Type"), "application/json")
+						var payload struct {
+							Error struct {
+								Type    string `json:"type"`
+								Message string `json:"message"`
+							} `json:"error"`
+						}
+						require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &payload))
+						require.Equal(t, "invalid_request_error", payload.Error.Type)
+						require.Equal(t, testCase.message, payload.Error.Message)
+					} else {
+						require.Equal(t, 1, cache.waitCountCalls)
+						require.Equal(t, http.StatusTooManyRequests, recorder.Code)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestResponsesToolContinuationPreflight(t *testing.T) {

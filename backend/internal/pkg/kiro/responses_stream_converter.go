@@ -103,11 +103,12 @@ func (c *KiroResponsesConverter) ConvertEvent(e StreamEvent) string {
 		if e.Type == EventThinkingDelta {
 			c.reasoningTokens += (len(delta) + 3) / 4
 		}
+		if item["type"] == "custom_tool_call" {
+			return ""
+		}
 		fields := map[string]any{"item_id": item["id"], "output_index": index, "delta": delta}
 		event := "response.output_text.delta"
 		switch {
-		case item["type"] == "custom_tool_call":
-			event = "response.custom_tool_call_input.delta"
 		case isToolCallItem(item):
 			event = "response.function_call_arguments.delta"
 		case item["type"] == "reasoning":
@@ -240,11 +241,17 @@ func (c *KiroResponsesConverter) finishItem(index int) string {
 	result := ""
 	switch {
 	case item["type"] == "custom_tool_call":
-		finishToolCallItem(item, text)
+		input := extractResponsesCustomInput(text)
+		item["input"] = input
 		fields["call_id"] = item["call_id"]
 		fields["name"] = item["name"]
-		fields["input"] = item["input"]
-		result = c.event("response.custom_tool_call_input.done", fields)
+		fields["input"] = input
+		if input != "" {
+			result = c.event("response.custom_tool_call_input.delta", map[string]any{
+				"item_id": item["id"], "output_index": index, "delta": input,
+			})
+		}
+		result += c.event("response.custom_tool_call_input.done", fields)
 	case isToolCallItem(item):
 		finishToolCallItem(item, text)
 		// Codex reads argv from the item; the done event keeps the raw JSON.
