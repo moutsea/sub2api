@@ -657,6 +657,19 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     }
   }
   const openaiModels = {
+    'gpt-6.1-sol': {
+      name: 'GPT-6.1 Sol',
+      options: {
+        store: false
+      },
+      variants: {
+        low: {},
+        medium: {},
+        high: {},
+        xhigh: {},
+        max: {}
+      }
+    },
     'gpt-6-astra': {
       name: 'GPT-6 Astra',
       options: {

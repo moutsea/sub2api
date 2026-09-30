@@ -82,6 +82,24 @@ func TestNormalizeCodexModel_AcceptsGPT56Aliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodexModel_AcceptsGPT61SolAliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "gpt6.1 sol", input: "gpt-6.1-sol", want: "gpt-6.1-sol"},
+		{name: "gpt6.1 sol max", input: "gpt-6.1-sol-max", want: "gpt-6.1-sol"},
+		{name: "provider gpt6.1 sol", input: "provider/gpt-6.1-sol-20260930", want: "gpt-6.1-sol"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
+		})
+	}
+}
+
 func TestNormalizeCodexModel_AcceptsGPT6AstraAliases(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -98,6 +116,45 @@ func TestNormalizeCodexModel_AcceptsGPT6AstraAliases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, normalizeCodexModel(tt.input))
 		})
+	}
+}
+
+func TestExtractCodexModelEffortHonorsGPT61SolCapabilities(t *testing.T) {
+	tests := []struct {
+		name            string
+		originalModel   string
+		normalizedModel string
+		want            string
+	}{
+		{name: "gpt6.1 sol", originalModel: "gpt-6.1-sol-max", normalizedModel: "gpt-6.1-sol", want: "max"},
+		{name: "gpt6.1 sol none", originalModel: "gpt-6.1-sol-none", normalizedModel: "gpt-6.1-sol", want: ""},
+		{name: "gpt55", originalModel: "gpt-5.5-max", normalizedModel: "gpt-5.5", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractCodexModelEffort(tt.originalModel, tt.normalizedModel); got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_PreservesGPT61SolMaxEffort(t *testing.T) {
+	setupCodexCache(t)
+
+	body := map[string]any{"model": "gpt-6.1-sol-max"}
+
+	result := applyCodexOAuthTransform(body)
+	if result.NormalizedModel != "gpt-6.1-sol" {
+		t.Fatalf("normalized model = %q, want gpt-6.1-sol", result.NormalizedModel)
+	}
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reasoning object, got %#v", body["reasoning"])
+	}
+	if reasoning["effort"] != "max" {
+		t.Fatalf("reasoning effort = %#v, want max", reasoning["effort"])
 	}
 }
 

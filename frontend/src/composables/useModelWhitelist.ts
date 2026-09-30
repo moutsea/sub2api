@@ -28,6 +28,7 @@ const openaiModels = [
   // Codex 系列
   'codex-auto-review',
   // GPT-6 / GPT-5.5 / GPT-5.6 系列
+  'gpt-6.1-sol',
   'gpt-6-astra',
   'gpt-6-sol', 'gpt-6-luna',
   'gpt-5.5',
@@ -312,6 +313,7 @@ const kiroOAuthPresetMappings = [
 ]
 
 const openaiPresetMappings = [
+  { label: 'GPT-6.1 Sol', from: 'gpt-6.1-sol', to: 'gpt-6.1-sol', color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400' },
   { label: 'GPT-6 Astra', from: 'gpt-6-astra', to: 'gpt-6-astra', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: 'GPT-6 Sol', from: 'gpt-6-sol', to: 'gpt-6-sol', color: 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200 dark:bg-fuchsia-900/30 dark:text-fuchsia-400' },
   { label: 'GPT-6 Luna', from: 'gpt-6-luna', to: 'gpt-6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },

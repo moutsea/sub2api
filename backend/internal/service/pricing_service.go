@@ -30,6 +30,18 @@ const (
 )
 
 var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
+	"gpt-6.1-sol": {
+		InputCostPerToken:               2e-06,
+		OutputCostPerToken:              10e-06,
+		CacheCreationInputTokenCost:     2.5e-06,
+		CacheReadInputTokenCost:         0.1e-06,
+		LongContextInputTokenThreshold:  272000,
+		LongContextInputCostMultiplier:  2.0,
+		LongContextOutputCostMultiplier: 1.5,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
 	"gpt-6-astra": {
 		InputCostPerToken:               10e-06,
 		OutputCostPerToken:              50e-06,

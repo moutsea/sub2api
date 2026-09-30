@@ -22,6 +22,8 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 		input  float64
 		output float64
 	}{
+		{model: "gpt-6.1-sol", input: 2e-06, output: 10e-06},
+		{model: "gpt-6.1-sol-20260930", input: 2e-06, output: 10e-06},
 		{model: "gpt-6-astra", input: 10e-06, output: 50e-06},
 		{model: "gpt-6-astra-2026-09-04", input: 10e-06, output: 50e-06},
 		{model: "gpt-6-sol", input: 2e-06, output: 10e-06},
@@ -55,6 +57,24 @@ func TestPricingServiceGetModelPricing_UsesStaticGPT5xPricingOverrides(t *testin
 		})
 	}
 
+}
+
+func TestPricingServiceGetModelPricing_GPT61SolUsesOfficialStandardRates(t *testing.T) {
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}
+
+	pricing := svc.GetModelPricing("gpt-6.1-sol")
+	if pricing == nil {
+		t.Fatal("expected gpt-6.1-sol pricing")
+	}
+	if pricing.CacheCreationInputTokenCost != 2.5e-06 || pricing.CacheReadInputTokenCost != 0.1e-06 {
+		t.Fatalf("cache pricing = %v/%v, want %v/%v", pricing.CacheCreationInputTokenCost, pricing.CacheReadInputTokenCost, 2.5e-06, 0.1e-06)
+	}
+	if pricing.LongContextInputTokenThreshold != 272000 || pricing.LongContextInputCostMultiplier != 2 || pricing.LongContextOutputCostMultiplier != 1.5 {
+		t.Fatalf("long-context pricing = %#v", pricing)
+	}
+	if !pricing.SupportsPromptCaching {
+		t.Fatal("expected gpt-6.1-sol to support prompt caching")
+	}
 }
 
 func TestPricingServiceGetModelPricing_GPT6AstraUsesGPT56Policy(t *testing.T) {

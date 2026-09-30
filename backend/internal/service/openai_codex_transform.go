@@ -25,6 +25,12 @@ var codexCLIInstructions string
 
 var codexModelMap = map[string]string{
 	"codex-auto-review":          "codex-auto-review",
+	"gpt-6.1-sol":                "gpt-6.1-sol",
+	"gpt-6.1-sol-low":            "gpt-6.1-sol",
+	"gpt-6.1-sol-medium":         "gpt-6.1-sol",
+	"gpt-6.1-sol-high":           "gpt-6.1-sol",
+	"gpt-6.1-sol-xhigh":          "gpt-6.1-sol",
+	"gpt-6.1-sol-max":            "gpt-6.1-sol",
 	"gpt-6-astra":                "gpt-6-astra",
 	"gpt-6-astra-none":           "gpt-6-astra",
 	"gpt-6-astra-low":            "gpt-6-astra",
@@ -325,6 +331,9 @@ func normalizeCodexModel(model string) string {
 	if hasOpenAIModelPrefix(normalized, "gpt-6-astra") {
 		return "gpt-6-astra"
 	}
+	if hasOpenAIModelPrefix(normalized, "gpt-6.1-sol") {
+		return "gpt-6.1-sol"
+	}
 	if hasOpenAIModelPrefix(normalized, "gpt-6-sol") {
 		return "gpt-6-sol"
 	}
@@ -447,13 +456,13 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 	}
 
 	validEfforts := map[string]bool{
-		"none": true, "low": true, "medium": true, "high": true, "xhigh": true,
+		"none": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true,
 	}
 
 	// Primary: the effort suffix is the part after the normalized model name + "-"
 	if strings.HasPrefix(original, normalized+"-") {
 		suffix := original[len(normalized)+1:]
-		if validEfforts[suffix] {
+		if validEfforts[suffix] && isSupportedCodexModelEffort(normalized, suffix) {
 			return suffix
 		}
 	}
@@ -471,12 +480,19 @@ func extractCodexModelEffort(originalModel, normalizedModel string) string {
 	// the prefix won't match. Extract effort from the trailing segment directly.
 	if lastDash := strings.LastIndex(original, "-"); lastDash >= 0 {
 		suffix := original[lastDash+1:]
-		if validEfforts[suffix] {
+		if validEfforts[suffix] && isSupportedCodexModelEffort(normalized, suffix) {
 			return suffix
 		}
 	}
 
 	return ""
+}
+
+func isSupportedCodexModelEffort(normalizedModel, effort string) bool {
+	if normalizedModel == "gpt-6.1-sol" {
+		return effort != "none"
+	}
+	return effort != "max"
 }
 
 // stripCodexModelSuffix removes the "-codex" infix for models where the ChatGPT
