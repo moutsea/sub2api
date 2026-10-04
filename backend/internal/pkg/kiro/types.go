@@ -38,6 +38,8 @@ var ModelMap = map[string]string{
 	"claude-sonnet-5":   "claude-sonnet-5",
 	"claude-sonnet-5-0": "claude-sonnet-5",
 	"claude-sonnet-5.0": "claude-sonnet-5",
+	"claude-sonnet-5-5": "claude-sonnet-5.5",
+	"claude-sonnet-5.5": "claude-sonnet-5.5",
 	// Opus 5.5 series
 	"claude-opus-5-5": "claude-opus-5.5",
 	"claude-opus-5.5": "claude-opus-5.5",
@@ -107,6 +109,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-terra", Type: "model", DisplayName: "GPT-5.6 Terra", CreatedAt: "2026-07-09T00:00:00Z"},
 	{ID: "gpt-5.6-luna", Type: "model", DisplayName: "GPT-5.6 Luna", CreatedAt: "2026-07-09T00:00:00Z"},
 	{ID: "claude-sonnet-5", Type: "model", DisplayName: "Claude Sonnet 5", CreatedAt: "2026-07-01T00:00:00Z"},
+	{ID: "claude-sonnet-5-5", Type: "model", DisplayName: "Claude Sonnet 5.5", CreatedAt: "2026-09-29T00:00:00Z"},
 	{ID: "claude-opus-5-5", Type: "model", DisplayName: "Claude Opus 5.5", CreatedAt: "2026-09-22T00:00:00Z"},
 	{ID: "claude-opus-5", Type: "model", DisplayName: "Claude Opus 5", CreatedAt: "2026-07-25T00:00:00Z"},
 	{ID: "claude-opus-4-8", Type: "model", DisplayName: "Claude Opus 4.8", CreatedAt: "2026-05-29T00:00:00Z"},

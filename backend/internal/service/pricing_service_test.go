@@ -202,6 +202,49 @@ func TestBillingServiceGetModelPricingForDisplaySkipsProviderFallback(t *testing
 	}
 }
 
+func TestBillingServiceGetModelPricingForDisplaySonnet5FamilyMatchesBilling(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"claude-sonnet-5-5": {
+				InputCostPerToken:  2e-6,
+				OutputCostPerToken: 10e-6,
+			},
+		},
+	})
+
+	for _, model := range []string{
+		"claude-sonnet-5-5",
+		"claude-sonnet-5.5",
+		"claude-sonnet-5-5-thinking",
+		"claude-sonnet-5.5-thinking",
+	} {
+		t.Run(model, func(t *testing.T) {
+			display, err := svc.GetModelPricingForDisplay(model)
+			if err != nil {
+				t.Fatalf("expected display pricing for %s, got %v", model, err)
+			}
+			billing, err := svc.GetModelPricing(model)
+			if err != nil {
+				t.Fatalf("expected billing pricing for %s, got %v", model, err)
+			}
+			if display.InputPricePerToken != billing.InputPricePerToken ||
+				display.OutputPricePerToken != billing.OutputPricePerToken {
+				t.Fatalf("display pricing = %v/%v, billing pricing = %v/%v", display.InputPricePerToken, display.OutputPricePerToken, billing.InputPricePerToken, billing.OutputPricePerToken)
+			}
+			if display.InputPricePerToken != 3e-6 || display.OutputPricePerToken != 15e-6 {
+				t.Fatalf("pricing = %v/%v, want %v/%v", display.InputPricePerToken, display.OutputPricePerToken, 3e-6, 15e-6)
+			}
+		})
+	}
+}
+
+func TestPricingServiceGetModelPricingForDisplaySonnet5FamilyRejectsUnknownSnapshot(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+	if _, err := svc.GetModelPricingForDisplay("claude-sonnet-5-5-20261004"); err == nil {
+		t.Fatal("expected unknown Sonnet 5.5 snapshot to have no display pricing")
+	}
+}
+
 func TestPricingServiceGetModelPricing_Gemini38StaticFallback(t *testing.T) {
 	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}
 

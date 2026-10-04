@@ -127,6 +127,9 @@ func TestKiroAPIKeyModelsAreDeterminedByCustomUpstream(t *testing.T) {
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-terra"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "gpt-5.6-luna"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5-5"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5.5"))
+	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-sonnet-5-5-thinking"))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus48))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, KiroModelOpus55))
 	require.True(t, IsKiroModelSupportedByAccount(oauthAccount, "claude-opus-5.5"))
@@ -175,9 +178,11 @@ func TestKiroAPIKeyDefaultModelsIncludesNewestOpusModels(t *testing.T) {
 	require.True(t, found["gpt-5.6-sol"])
 	require.True(t, found["gpt-5.6-terra"])
 	require.True(t, found["gpt-5.6-luna"])
+	require.True(t, found["claude-sonnet-5-5"])
 	require.True(t, IsKiroModelSupported(KiroModelOpus48))
 	require.True(t, IsKiroModelSupported(KiroModelOpus5))
 	require.True(t, IsKiroModelSupported(KiroModelOpus55))
+	require.True(t, IsKiroModelSupported("claude-sonnet-5-5"))
 }
 
 func TestKiroAPIKeyConnectionPassesGPTModelToCustomUpstream(t *testing.T) {

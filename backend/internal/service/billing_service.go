@@ -419,6 +419,17 @@ func isClaudeSonnet5Model(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
 }
 
+func isKnownClaudeSonnet5Model(model string) bool {
+	model = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(model)), "-thinking")
+	switch model {
+	case "claude-sonnet-5", "claude-sonnet-5-0", "claude-sonnet-5.0",
+		"claude-sonnet-5-5", "claude-sonnet-5.5":
+		return true
+	default:
+		return false
+	}
+}
+
 func isClaudeOpus5Model(model string) bool {
 	return containsModelFamilyToken(model, "opus-5") && !isClaudeOpus55Model(model)
 }
@@ -496,6 +507,11 @@ func (s *BillingService) GetModelPricingForDisplay(model string) (*ModelPricing,
 		return nil, fmt.Errorf("billing service unavailable")
 	}
 	model = strings.ToLower(strings.TrimSpace(model))
+	if isKnownClaudeSonnet5Model(model) {
+		if pricing := s.getFallbackPricing(model); pricing != nil {
+			return applyModelSpecificPricingPolicy(model, pricing), nil
+		}
+	}
 	if s.pricingService != nil {
 		if litellmPricing := s.pricingService.GetModelPricingExact(model); litellmPricing != nil {
 			return applyModelSpecificPricingPolicy(model, modelPricingFromLiteLLM(litellmPricing)), nil

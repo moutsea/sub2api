@@ -107,13 +107,27 @@ func TestGetContextWindowLimitForKiroOAuthModels(t *testing.T) {
 	}
 }
 
-func TestDefaultModelsIncludeGPT56Series(t *testing.T) {
+func TestKiroSupportsSonnet55Aliases(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5-5", "claude-sonnet-5.5", "claude-sonnet-5-5-thinking", "claude-sonnet-5.5-thinking"} {
+		if got := GetModelID(model); got != "claude-sonnet-5.5" {
+			t.Fatalf("GetModelID(%q) = %q, want claude-sonnet-5.5", model, got)
+		}
+		if !IsOAuthModelSupported(model) {
+			t.Fatalf("IsOAuthModelSupported(%q) = false, want true", model)
+		}
+		if got := GetContextWindowLimit(model); got != KiroContextWindowLimit1M {
+			t.Fatalf("GetContextWindowLimit(%q) = %d, want %d", model, got, KiroContextWindowLimit1M)
+		}
+	}
+}
+
+func TestDefaultModelsIncludeLatestSeries(t *testing.T) {
 	found := make(map[string]bool, len(DefaultModels))
 	for _, model := range DefaultModels {
 		found[model.ID] = true
 	}
 
-	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5-5"} {
 		if !found[modelID] {
 			t.Fatalf("DefaultModels does not include %q", modelID)
 		}
