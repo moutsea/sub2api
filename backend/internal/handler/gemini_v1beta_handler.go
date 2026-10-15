@@ -2,18 +2,15 @@ package handler
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -322,6 +319,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			accountReleaseFunc()
 		}
 		if err != nil {
+			if result != nil && result.PartialUsage {
+				h.recordForwardUsage(c, result, apiKey, account, subscription)
+				log.Printf("Gemini native forward failed after billable upstream work: %v", err)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}
@@ -340,32 +342,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			return
 		}
 
-		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
-		userAgent := c.GetHeader("User-Agent")
-		clientIP := ip.GetClientIP(c)
-		var tempAPIKeyID *int64
-		if tempKey, ok := middleware.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
-			tempAPIKeyID = new(int64)
-			*tempAPIKeyID = tempKey.ID
-		}
-
-		// 6) record usage async
-		go func(result *service.ForwardResult, usedAccount *service.Account, ua, ip string, tempKeyID *int64) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-				Result:       result,
-				APIKey:       apiKey,
-				User:         apiKey.User,
-				Account:      usedAccount,
-				Subscription: subscription,
-				UserAgent:    ua,
-				IPAddress:    ip,
-				TempAPIKeyID: tempKeyID,
-			}); err != nil {
-				log.Printf("Record usage failed: %v", err)
-			}
-		}(result, account, userAgent, clientIP, tempAPIKeyID)
+		h.recordForwardUsage(c, result, apiKey, account, subscription)
 		return
 	}
 }

@@ -59,6 +59,8 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 
 ## Deployment
 
+For OpenAI image routing in standard mode, create an active OpenAI group named `gpt-image` and bind image-capable accounts to it. Image requests and Responses requests enabling the native `image_generation` tool automatically select accounts from that group. Setting `tool_choice` to `none`, selecting another tool, or excluding image generation from `allowed_tools` keeps Responses requests in the original group. The destination is a shared image account pool for all OpenAI API keys, including when it is marked exclusive or subscription-only; billing, subscription checks, and usage attribution retain the API key's original group. If no active `gpt-image` group exists, routing uses the original group. Responses image generation still requires a Responses-capable text model supported by the destination accounts; a `gpt-image-*` model belongs on the Images endpoint. Simple mode retains its existing platform-wide account selection.
+
 ### Method 1: Script Installation (Recommended)
 
 One-click installation script that downloads pre-built binaries from GitHub Releases.

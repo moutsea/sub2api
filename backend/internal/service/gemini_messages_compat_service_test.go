@@ -205,12 +205,12 @@ func TestCleanGeminiNativeThoughtSignatures_ReplacesNestedSignatures(t *testing.
 	}
 }
 
-func TestCollectGeminiSSE_MergesCumulativeTextChunks(t *testing.T) {
+func TestCollectGeminiSSE_MergesIncrementalTextChunks(t *testing.T) {
 	stream := `data: {"response":{"candidates":[{"content":{"parts":[{"text":"hel"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1}}}` + "\n\n" +
 		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":2}}}` + "\n\n" +
 		"data: [DONE]\n\n"
 
-	got, usage, err := collectGeminiSSE(strings.NewReader(stream), true)
+	got, usage, err := collectGeminiSSE(strings.NewReader(stream), true, geminiTextDeltas)
 	if err != nil {
 		t.Fatalf("collectGeminiSSE error: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestCollectGeminiSSE_MergesCumulativeTextWithoutDuplication(t *testing.T) {
 		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}}` + "\n\n" +
 		"data: [DONE]\n\n"
 
-	got, _, err := collectGeminiSSE(strings.NewReader(stream), true)
+	got, _, err := collectGeminiSSE(strings.NewReader(stream), true, geminiTextLegacyAuto)
 	if err != nil {
 		t.Fatalf("collectGeminiSSE error: %v", err)
 	}

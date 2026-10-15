@@ -28,7 +28,7 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 	if model := strings.TrimSpace(gjson.GetBytes(body, "model").String()); isOpenAIImageGenerationModel(model) {
 		return true
 	}
-	if openAIJSONToolsContainImageGeneration(gjson.GetBytes(body, "tools")) {
+	if openAIJSONToolsContainImageGeneration(gjson.GetBytes(body, "tools")) && openAIJSONToolChoiceAllowsImageGeneration(gjson.GetBytes(body, "tool_choice")) {
 		return true
 	}
 	return openAIJSONToolChoiceSelectsImageGeneration(gjson.GetBytes(body, "tool_choice"))
@@ -47,7 +47,7 @@ func IsImageGenerationIntentMap(endpoint string, requestedModel string, reqBody 
 	if isOpenAIImageGenerationModel(firstNonEmptyString(reqBody["model"])) {
 		return true
 	}
-	if hasOpenAIImageGenerationTool(reqBody) {
+	if hasOpenAIImageGenerationTool(reqBody) && openAIAnyToolChoiceAllowsImageGeneration(reqBody["tool_choice"]) {
 		return true
 	}
 	return openAIAnyToolChoiceSelectsImageGeneration(reqBody["tool_choice"])
@@ -140,6 +140,30 @@ func openAIJSONToolChoiceSelectsImageGeneration(choice gjson.Result) bool {
 	return false
 }
 
+func openAIJSONToolChoiceAllowsImageGeneration(choice gjson.Result) bool {
+	if !choice.Exists() || choice.Type == gjson.Null {
+		return true
+	}
+	if choice.Type == gjson.String {
+		switch strings.TrimSpace(choice.String()) {
+		case "auto", "required", "image_generation":
+			return true
+		default:
+			return false
+		}
+	}
+	if !choice.IsObject() {
+		return false
+	}
+	if openAIJSONToolChoiceSelectsImageGeneration(choice) {
+		return true
+	}
+	if strings.TrimSpace(choice.Get("type").String()) != "allowed_tools" {
+		return false
+	}
+	return openAIJSONToolsContainImageGeneration(choice.Get("tools"))
+}
+
 func openAIAnyToolChoiceSelectsImageGeneration(choice any) bool {
 	switch v := choice.(type) {
 	case string:
@@ -156,6 +180,31 @@ func openAIAnyToolChoiceSelectsImageGeneration(choice any) bool {
 		}
 	}
 	return false
+}
+
+func openAIAnyToolChoiceAllowsImageGeneration(choice any) bool {
+	if choice == nil {
+		return true
+	}
+	switch v := choice.(type) {
+	case string:
+		switch strings.TrimSpace(v) {
+		case "auto", "required", "image_generation":
+			return true
+		default:
+			return false
+		}
+	case map[string]any:
+		if openAIAnyToolChoiceSelectsImageGeneration(v) {
+			return true
+		}
+		if strings.TrimSpace(firstNonEmptyString(v["type"])) != "allowed_tools" {
+			return false
+		}
+		return hasOpenAIImageGenerationTool(v)
+	default:
+		return false
+	}
 }
 
 type OpenAIResponsesImageBillingConfig struct {

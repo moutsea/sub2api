@@ -392,8 +392,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	startTime := time.Now()
 
 	var req struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+		Model     string `json:"model"`
+		Stream    bool   `json:"stream"`
+		MaxTokens int    `json:"max_tokens"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, fmt.Errorf("parse request: %w", err)
@@ -406,6 +407,18 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	mappedModel := req.Model
 	if account.Type == AccountTypeAPIKey {
 		mappedModel = account.GetMappedModel(req.Model)
+	}
+	if mappedModel == "gemini-4-argon" && req.MaxTokens <= 0 {
+		req.MaxTokens = 32768
+		if req.Stream {
+			req.MaxTokens = 65536
+		}
+		// Normalize the source request so signature retries retain the same
+		// output budget when they rebuild the Gemini generation config.
+		var payload map[string]json.RawMessage
+		_ = json.Unmarshal(body, &payload)
+		payload["max_tokens"], _ = json.Marshal(req.MaxTokens)
+		body, _ = json.Marshal(payload)
 	}
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body)
@@ -423,6 +436,13 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	var requestIDHeader string
 	var buildReq func(ctx context.Context) (*http.Request, string, error)
 	useUpstreamStream := req.Stream
+	textMode := geminiTextLegacyAuto
+	if mappedModel == "gemini-4-argon" {
+		textMode = geminiTextDeltas
+		// Argon's non-streaming REST endpoint caps each initial request at
+		// 32K. Use streaming hops internally for both Claude response modes.
+		useUpstreamStream = true
+	}
 	if account.Type == AccountTypeOAuth && !req.Stream && strings.TrimSpace(account.GetCredential("project_id")) != "" {
 		// Code Assist's non-streaming generateContent may return no content; use streaming upstream and aggregate.
 		useUpstreamStream = true
@@ -447,11 +467,11 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			}
 
 			action := "generateContent"
-			if req.Stream {
+			if useUpstreamStream {
 				action = "streamGenerateContent"
 			}
 			fullURL := fmt.Sprintf("%s/v1beta/models/%s:%s", strings.TrimRight(normalizedBaseURL, "/"), mappedModel, action)
-			if req.Stream {
+			if useUpstreamStream {
 				fullURL += "?alt=sse"
 			}
 
@@ -793,18 +813,34 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	var usage *ClaudeUsage
 	var firstTokenMs *int
+	if mappedModel == "gemini-4-argon" {
+		resp.Body = newGeminiContinuationBody(ctx, resp.Body, req.MaxTokens, func(ctx context.Context, token string) (*http.Response, error) {
+			var err error
+			geminiReq, err = withGeminiContinuationToken(geminiReq, token)
+			if err != nil {
+				return nil, err
+			}
+			nextReq, _, err := buildReq(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return s.httpUpstream.Do(nextReq, proxyURL, account.ID, account.Concurrency)
+		})
+	}
 	if req.Stream {
-		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel)
+		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, textMode)
 		if err != nil {
-			return nil, err
+			return geminiPartialForwardResult(resp.Body, requestID, originalModel, req.Stream, startTime), err
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := collectGeminiSSE(resp.Body, true)
+			collected, usageObj, err := collectGeminiSSE(resp.Body, true, textMode)
 			if err != nil {
-				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
+				status, errorType, message := geminiClaudeReadError(err, false)
+				_ = s.writeClaudeError(c, status, errorType, message)
+				return geminiPartialForwardResult(resp.Body, requestID, originalModel, req.Stream, startTime), err
 			}
 			claudeResp, usageObj2 := convertGeminiToClaudeMessage(collected, originalModel)
 			c.JSON(http.StatusOK, claudeResp)
@@ -1239,19 +1275,35 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 	var usage *ClaudeUsage
 	var firstTokenMs *int
+	serviceTier := resolveGeminiServiceTier(resp.Header, body)
+	var checkpointBody *geminiNativeStreamBody
+	if mappedModel == "gemini-4-argon" && useUpstreamStream {
+		maxLineSize := defaultMaxLineSize
+		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+			maxLineSize = s.cfg.Gateway.MaxLineSize
+		}
+		checkpointBody = newGeminiNativeStreamBody(resp.Body, maxLineSize)
+		resp.Body = checkpointBody
+	}
 
 	if stream {
 		streamRes, err := s.handleNativeStreamingResponse(c, resp, startTime, isOAuth)
 		if err != nil {
-			return nil, err
+			if checkpointBody != nil {
+				writeGeminiNativeStreamError(c, "Failed to read upstream stream")
+			}
+			return checkpointBody.partialResult(requestID, originalModel, serviceTier, stream, startTime), err
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := collectGeminiSSE(resp.Body, isOAuth)
+			// Native Gemini SSE contains incremental parts, even when this
+			// request does not use the Claude automatic continuation loop.
+			collected, usageObj, err := collectGeminiSSE(resp.Body, isOAuth, geminiTextDeltas)
 			if err != nil {
-				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
+				_ = s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
+				return checkpointBody.partialResult(requestID, originalModel, serviceTier, stream, startTime), err
 			}
 			b, _ := json.Marshal(collected)
 			c.Data(http.StatusOK, "application/json", b)
@@ -1265,6 +1317,10 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 	}
 
+	if checkpointBody != nil {
+		confirmed := checkpointBody.confirmedUsage()
+		usage = &confirmed
+	}
 	if usage == nil {
 		usage = &ClaudeUsage{}
 	}
@@ -1273,6 +1329,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		RequestID:    requestID,
 		Usage:        *usage,
 		Model:        originalModel,
+		ServiceTier:  serviceTier,
 		Stream:       stream,
 		Duration:     time.Since(startTime),
 		FirstTokenMs: firstTokenMs,
@@ -1569,7 +1626,7 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 	return usage, nil
 }
 
-func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*geminiStreamResult, error) {
+func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, textMode geminiTextStreamMode) (*geminiStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -1614,11 +1671,27 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	openToolID := ""
 	openToolName := ""
 	seenToolJSON := ""
+	continuationHop := 0
+	closeToolBlock := func() {
+		if openToolIndex < 0 {
+			return
+		}
+		writeSSE(c.Writer, "content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": openToolIndex,
+		})
+		openToolIndex = -1
+		openToolName = ""
+		seenToolJSON = ""
+	}
 
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
+			_, errorType, message := geminiClaudeReadError(err, true)
+			writeClaudeStreamError(c, errorType, message)
+			flusher.Flush()
 			return nil, fmt.Errorf("stream read error: %w", err)
 		}
 
@@ -1640,6 +1713,11 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 		if err != nil {
 			continue
 		}
+		if hop, ok := asInt(geminiResp[geminiContinuationHopKey]); ok && hop != continuationHop {
+			continuationHop = hop
+			// Keep unfinished string tool arguments until the call is complete.
+			seenText = ""
+		}
 
 		if fr := extractGeminiFinishReason(geminiResp); fr != "" {
 			finishReason = fr
@@ -1648,8 +1726,11 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 		parts := extractGeminiParts(geminiResp)
 		for _, part := range parts {
 			if text, ok := part["text"].(string); ok && text != "" {
-				delta, newSeen := computeGeminiTextDelta(seenText, text)
-				seenText = newSeen
+				closeToolBlock()
+				delta := text
+				if textMode == geminiTextLegacyAuto {
+					delta, seenText = computeGeminiTextDelta(seenText, text)
+				}
 				if delta == "" {
 					continue
 				}
@@ -1697,6 +1778,21 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 					name = "tool"
 				}
 
+				argsJSONText := "{}"
+				_, stringArgs := args.(string)
+				switch v := args.(type) {
+				case nil:
+					// A call without arguments is still an independent call.
+				case string:
+					if strings.TrimSpace(v) != "" {
+						argsJSONText = v
+					}
+				default:
+					if b, err := json.Marshal(args); err == nil && len(b) > 0 {
+						argsJSONText = string(b)
+					}
+				}
+
 				// Close any open text block before tool_use.
 				if openBlockIndex >= 0 {
 					writeSSE(c.Writer, "content_block_stop", map[string]any{
@@ -1706,16 +1802,13 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 					openBlockIndex = -1
 					openBlockType = ""
 				}
+				seenText = ""
 
-				// If we receive streamed tool args in pieces, keep a single tool block open and emit deltas.
-				if openToolIndex >= 0 && openToolName != name {
-					writeSSE(c.Writer, "content_block_stop", map[string]any{
-						"type":  "content_block_stop",
-						"index": openToolIndex,
-					})
-					openToolIndex = -1
-					openToolName = ""
-					seenToolJSON = ""
+				// Gemini object arguments represent a complete, independent call,
+				// even when the name and arguments match the previous call. Only
+				// legacy string arguments may continue an unfinished JSON input.
+				if openToolIndex >= 0 && (!stringArgs || openToolName != name) {
+					closeToolBlock()
 				}
 
 				if openToolIndex < 0 {
@@ -1737,20 +1830,6 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 					})
 				}
 
-				argsJSONText := "{}"
-				switch v := args.(type) {
-				case nil:
-					// keep default "{}"
-				case string:
-					if strings.TrimSpace(v) != "" {
-						argsJSONText = v
-					}
-				default:
-					if b, err := json.Marshal(args); err == nil && len(b) > 0 {
-						argsJSONText = string(b)
-					}
-				}
-
 				delta, newSeen := computeGeminiTextDelta(seenToolJSON, argsJSONText)
 				seenToolJSON = newSeen
 				if delta != "" {
@@ -1762,6 +1841,9 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 							"partial_json": delta,
 						},
 					})
+				}
+				if !stringArgs || json.Valid([]byte(seenToolJSON)) {
+					closeToolBlock()
 				}
 				flusher.Flush()
 			}
@@ -1783,12 +1865,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 			"index": openBlockIndex,
 		})
 	}
-	if openToolIndex >= 0 {
-		writeSSE(c.Writer, "content_block_stop", map[string]any{
-			"type":  "content_block_stop",
-			"index": openToolIndex,
-		})
-	}
+	closeToolBlock()
 
 	stopReason := mapGeminiFinishReasonToClaudeStopReason(finishReason)
 	if sawToolUse {
@@ -1865,14 +1942,34 @@ func unwrapIfNeeded(isOAuth bool, raw []byte) []byte {
 	return b
 }
 
-func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsage, error) {
+type geminiTextStreamMode uint8
+
+const (
+	geminiTextDeltas geminiTextStreamMode = iota
+	// Preserve the existing prefix-based compatibility behavior only when
+	// explicitly selected for older Claude-compatible provider streams.
+	geminiTextLegacyAuto
+)
+
+func collectGeminiSSE(body io.Reader, isOAuth bool, textMode geminiTextStreamMode) (map[string]any, *ClaudeUsage, error) {
 	reader := bufio.NewReader(body)
 
 	var last map[string]any
 	var lastWithParts map[string]any
-	var collectedTextParts []string
+	var collectedParts []any
 	seenText := ""
+	seenThought := false
 	usage := &ClaudeUsage{}
+	continuationHop := 0
+	finish := func() map[string]any {
+		result := pickGeminiCollectResult(last, lastWithParts)
+		if len(collectedParts) > 0 {
+			var setParts func([]any)
+			result, _, setParts = getOrCreateGeminiParts(result)
+			setParts(collectedParts)
+		}
+		return result
+	}
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -1883,7 +1980,7 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 				switch payload {
 				case "", "[DONE]":
 					if payload == "[DONE]" {
-						return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, nil
+						return finish(), usage, nil
 					}
 				default:
 					var parsed map[string]any
@@ -1896,20 +1993,49 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 						_ = json.Unmarshal([]byte(payload), &parsed)
 					}
 					if parsed != nil {
-						last = parsed
+						if hop, ok := asInt(parsed[geminiContinuationHopKey]); ok && hop != continuationHop {
+							continuationHop = hop
+							seenText = ""
+						}
+						last = pickGeminiCollectResult(parsed, last)
 						if u := extractGeminiUsage(parsed); u != nil {
 							usage = u
 						}
 						if parts := extractGeminiParts(parsed); len(parts) > 0 {
 							lastWithParts = parsed
 							for _, part := range parts {
-								if text, ok := part["text"].(string); ok && text != "" {
-									delta, newSeen := computeGeminiTextDelta(seenText, text)
-									seenText = newSeen
-									if delta != "" {
-										collectedTextParts = append(collectedTextParts, delta)
+								// Keep tools, signatures, and other non-text parts in order.
+								// Only adjacent plain text can be coalesced safely.
+								if text, ok := part["text"].(string); ok {
+									thought, _ := part["thought"].(bool)
+									if thought != seenThought {
+										seenText = ""
 									}
+									seenThought = thought
+									delta := text
+									if textMode == geminiTextLegacyAuto {
+										delta, seenText = computeGeminiTextDelta(seenText, text)
+									}
+									if delta == "" && len(part) == 1 {
+										continue
+									}
+									copied := make(map[string]any, len(part))
+									for key, value := range part {
+										copied[key] = value
+									}
+									copied["text"] = delta
+									if len(copied) == 1 && len(collectedParts) > 0 {
+										previous, _ := collectedParts[len(collectedParts)-1].(map[string]any)
+										if priorText, ok := previous["text"].(string); ok && len(previous) == 1 {
+											previous["text"] = priorText + delta
+											continue
+										}
+									}
+									part = copied
+								} else {
+									seenText = ""
 								}
+								collectedParts = append(collectedParts, part)
 							}
 						}
 					}
@@ -1925,17 +2051,89 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 		}
 	}
 
-	return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, nil
+	return finish(), usage, nil
 }
 
 func pickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) map[string]any {
-	if lastWithParts != nil {
-		return lastWithParts
-	}
-	if last != nil {
+	if lastWithParts == nil && last != nil {
 		return last
 	}
-	return map[string]any{}
+	// Keep content from earlier chunks, but let the terminal chunk supply
+	// finishReason, continuationToken, usageMetadata and other final metadata.
+	result := make(map[string]any, len(lastWithParts)+len(last))
+	for key, value := range lastWithParts {
+		result[key] = value
+	}
+	for key, value := range last {
+		if key != "candidates" {
+			result[key] = value
+		}
+	}
+	previous, _ := lastWithParts["candidates"].([]any)
+	latest, _ := last["candidates"].([]any)
+	candidates := append([]any(nil), previous...)
+	for position, raw := range latest {
+		candidate, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		index := position
+		if explicit, ok := asInt(candidate["index"]); ok {
+			index = explicit
+		}
+		matched := -1
+		for i, old := range previous {
+			oldCandidate, _ := old.(map[string]any)
+			oldIndex := i
+			if explicit, ok := asInt(oldCandidate["index"]); ok {
+				oldIndex = explicit
+			}
+			if oldIndex == index {
+				matched = i
+				break
+			}
+		}
+		if matched < 0 {
+			candidates = append(candidates, candidate)
+			continue
+		}
+		oldCandidate, _ := previous[matched].(map[string]any)
+		merged := make(map[string]any, len(oldCandidate)+len(candidate))
+		for key, value := range oldCandidate {
+			merged[key] = value
+		}
+		reason, _ := candidate["finishReason"].(string)
+		for key, value := range candidate {
+			// Trailing usage chunks may serialize default enum/string values.
+			// They must not erase the preceding terminal state or checkpoint.
+			if key == "finishReason" && !isGeminiTerminalFinishReason(reason) {
+				continue
+			}
+			if key == "continuationToken" {
+				if token, _ := value.(string); token == "" {
+					continue
+				}
+			}
+			if key == "content" {
+				content, _ := value.(map[string]any)
+				parts, _ := content["parts"].([]any)
+				if len(parts) == 0 {
+					continue
+				}
+			}
+			merged[key] = value
+		}
+		if isGeminiTerminalFinishReason(reason) {
+			if token, _ := candidate["continuationToken"].(string); token == "" {
+				delete(merged, "continuationToken")
+			}
+		}
+		candidates[matched] = merged
+	}
+	if len(candidates) > 0 {
+		result["candidates"] = candidates
+	}
+	return result
 }
 
 func mergeCollectedTextParts(response map[string]any, textParts []string) map[string]any {
@@ -2350,6 +2548,10 @@ func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel strin
 								name = "tool"
 							}
 							args := fc["args"]
+							// Gemini allows omitted args; Claude tool_use requires an input object.
+							if args == nil {
+								args = map[string]any{}
+							}
 							sawToolUse = true
 							contentBlocks = append(contentBlocks, map[string]any{
 								"type":  "tool_use",
@@ -2583,6 +2785,10 @@ func ensureGeminiFunctionCallThoughtSignatures(body []byte) []byte {
 	return updated
 }
 
+func isGeminiTerminalFinishReason(reason string) bool {
+	return reason != "" && reason != "FINISH_REASON_UNSPECIFIED"
+}
+
 func extractGeminiFinishReason(geminiResp map[string]any) string {
 	if candidates, ok := geminiResp["candidates"].([]any); ok && len(candidates) > 0 {
 		if cand, ok := candidates[0].(map[string]any); ok {
@@ -2635,7 +2841,7 @@ func computeGeminiTextDelta(seen, incoming string) (delta, newSeen string) {
 
 func mapGeminiFinishReasonToClaudeStopReason(finishReason string) string {
 	switch strings.ToUpper(strings.TrimSpace(finishReason)) {
-	case "MAX_TOKENS":
+	case "MAX_TOKENS", "CONTINUATION":
 		return "max_tokens"
 	case "STOP":
 		return "end_turn"

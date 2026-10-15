@@ -169,14 +169,19 @@ type ForwardResult struct {
 	RequestID        string
 	Usage            ClaudeUsage
 	Model            string
+	ServiceTier      string // Resolved upstream tier; empty uses standard pricing.
 	Stream           bool
 	Duration         time.Duration
 	FirstTokenMs     *int // 首字时间（流式请求）
 	ClientDisconnect bool // 客户端是否在流式传输过程中断开
+	// PartialUsage marks confirmed, billable upstream work returned with an error.
+	// Handlers must record it once without retrying the already-started generation.
+	PartialUsage bool
 
-	// 图片生成计费字段（仅 gemini-3-pro-image 使用）
-	ImageCount int    // 生成的图片数量
-	ImageSize  string // 图片尺寸 "1K", "2K", "4K"
+	// 图片生成计费字段
+	ImageBilling bool   // 按张计费，即使未生成图片也不能回退到 token 计费
+	ImageCount   int    // 实际生成的图片数量
+	ImageSize    string // 图片尺寸 "1K", "2K", "4K"
 }
 
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
@@ -4328,7 +4333,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	var cost *CostBreakdown
 
 	// 根据请求类型选择计费方式
-	if result.ImageCount > 0 {
+	if result.ImageBilling || result.ImageCount > 0 {
 		// 图片生成计费
 		var groupConfig *ImagePriceConfig
 		if apiKey.Group != nil {
@@ -4350,7 +4355,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 			CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		}
 		var err error
-		cost, err = s.billingService.CalculateCost(result.Model, tokens, multiplier)
+		cost, err = s.billingService.CalculateCostWithServiceTier(result.Model, tokens, multiplier, result.ServiceTier)
 		if err != nil {
 			log.Printf("Calculate cost failed: %v", err)
 			cost = &CostBreakdown{ActualCost: 0}

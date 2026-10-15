@@ -249,7 +249,7 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 	if geminiResp.UsageMetadata != nil {
 		cached := geminiResp.UsageMetadata.CachedContentTokenCount
 		p.inputTokens = geminiResp.UsageMetadata.PromptTokenCount - cached
-		p.outputTokens = geminiResp.UsageMetadata.CandidatesTokenCount
+		p.outputTokens = geminiResp.UsageMetadata.CandidatesTokenCount + geminiResp.UsageMetadata.ThoughtsTokenCount
 		p.cacheReadTokens = cached
 	}
 
@@ -303,7 +303,7 @@ func (p *StreamingProcessor) emitMessageStart(v1Resp *V1InternalResponse) []byte
 	if v1Resp.Response.UsageMetadata != nil {
 		cached := v1Resp.Response.UsageMetadata.CachedContentTokenCount
 		usage.InputTokens = v1Resp.Response.UsageMetadata.PromptTokenCount - cached
-		usage.OutputTokens = v1Resp.Response.UsageMetadata.CandidatesTokenCount
+		usage.OutputTokens = v1Resp.Response.UsageMetadata.CandidatesTokenCount + v1Resp.Response.UsageMetadata.ThoughtsTokenCount
 		usage.CacheReadInputTokens = cached
 	}
 
@@ -800,7 +800,7 @@ func (p *StreamingProcessor) emitFinish(finishReason string) []byte {
 	stopReason := "end_turn"
 	if p.usedTool {
 		stopReason = "tool_use"
-	} else if finishReason == "MAX_TOKENS" {
+	} else if finishReason == "MAX_TOKENS" || finishReason == "CONTINUATION" {
 		stopReason = "max_tokens"
 	}
 

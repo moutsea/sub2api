@@ -17,7 +17,9 @@ const (
 	ToolDocThresholdLength = 500 // Threshold for moving description to system prompt
 	jsonSchemaDraft07      = "http://json-schema.org/draft-07/schema#"
 
-	historyAssistantFillerContent = "."
+	// AWSQ requires non-empty content. Keep structural padding blank so the
+	// model does not learn punctuation-only replies from synthetic history.
+	historyAssistantFillerContent = " "
 	taskNotificationStart         = "<task-notification>"
 	taskNotificationEnd           = "</task-notification>"
 )
@@ -1180,7 +1182,7 @@ func buildAssistantHistoryEntry(ctx *TransformContext, msg *UnifiedMessage) *His
 
 	// AWSQ requires non-empty content for all messages
 	if text == "" {
-		text = " "
+		text = historyAssistantFillerContent
 	}
 
 	assistantMsg := &HistoryAssistantMessage{

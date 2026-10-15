@@ -144,6 +144,10 @@ func (p *NonStreamingProcessor) processPart(part *GeminiPart) {
 
 		// [FIX] 参数重映射（与 StreamingProcessor 保持一致）
 		var inputArgs any = part.FunctionCall.Args
+		// Gemini allows omitted args; Claude tool_use requires an input object.
+		if inputArgs == nil {
+			inputArgs = map[string]any{}
+		}
 		if part.FunctionCall.Args != nil {
 			var remappedArgs map[string]any
 			switch v := part.FunctionCall.Args.(type) {
@@ -300,7 +304,7 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 	stopReason := "end_turn"
 	if p.hasToolCall {
 		stopReason = "tool_use"
-	} else if finishReason == "MAX_TOKENS" {
+	} else if finishReason == "MAX_TOKENS" || finishReason == "CONTINUATION" {
 		stopReason = "max_tokens"
 	}
 
@@ -310,7 +314,7 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 	if geminiResp.UsageMetadata != nil {
 		cached := geminiResp.UsageMetadata.CachedContentTokenCount
 		usage.InputTokens = geminiResp.UsageMetadata.PromptTokenCount - cached
-		usage.OutputTokens = geminiResp.UsageMetadata.CandidatesTokenCount
+		usage.OutputTokens = geminiResp.UsageMetadata.CandidatesTokenCount + geminiResp.UsageMetadata.ThoughtsTokenCount
 		usage.CacheReadInputTokens = cached
 	}
 

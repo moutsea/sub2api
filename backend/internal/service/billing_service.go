@@ -6,6 +6,7 @@ import (
 
 	"log"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -346,6 +347,9 @@ func (s *BillingService) initFallbackPricing() {
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	modelLower := strings.ToLower(strings.TrimSpace(xai.StripProviderPrefix(model)))
 	modelLower = strings.TrimPrefix(modelLower, "models/")
+	if lastSegment(modelLower) == "gemini-4-argon" {
+		return modelPricingFromLiteLLM(geminiStaticPricingAt("gemini-4-argon", time.Now()))
+	}
 	if modelLower == "gemini-3.8-flash" || strings.HasSuffix(modelLower, "/gemini-3.8-flash") {
 		return s.fallbackPrices["gemini-3.8-flash"]
 	}
@@ -539,6 +543,9 @@ func (s *BillingService) GetModelPricingForDisplay(model string) (*ModelPricing,
 		strings.TrimPrefix(model, "models/"),
 		lastSegment(model),
 	} {
+		if candidate == "gemini-4-argon" {
+			return modelPricingFromLiteLLM(geminiStaticPricingAt(candidate, time.Now())), nil
+		}
 		if pricing, ok := s.fallbackPrices[candidate]; ok {
 			return applyModelSpecificPricingPolicy(model, pricing), nil
 		}
@@ -772,7 +779,9 @@ func (s *BillingService) CalculateCostWithConfig(model string, tokens UsageToken
 
 // ListSupportedModels 列出所有支持的模型（现在总是返回true，因为有模糊匹配）
 func (s *BillingService) ListSupportedModels() []string {
-	models := make([]string, 0)
+	// Argon's scheduled price is resolved at lookup time rather than stored
+	// in fallbackPrices, but it is still part of the supported catalog.
+	models := []string{"gemini-4-argon"}
 	// 返回回退价格支持的模型系列
 	for model := range s.fallbackPrices {
 		models = append(models, model)
@@ -790,6 +799,7 @@ func (s *BillingService) IsModelSupported(model string) bool {
 		strings.Contains(modelLower, "opus") ||
 		strings.Contains(modelLower, "sonnet") ||
 		strings.Contains(modelLower, "haiku") ||
+		lastSegment(modelLower) == "gemini-4-argon" ||
 		xai.IsGrokModelID(nativeGrokModel)
 }
 

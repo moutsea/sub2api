@@ -435,10 +435,11 @@ func ForceTruncateMessages(req *ClaudeRequest, targetTokens int) (*ClaudeRequest
 	copy(truncatedMessages, messages[bestPoint:])
 
 	// Clean orphaned tool_use/tool_result pairs created by the aggressive truncation
-	CleanOrphanToolUsesInClaudeMessages(truncatedMessages)
+	truncatedMessages, _ = CleanOrphanToolUsesInClaudeMessages(truncatedMessages)
 
 	// Also clean orphaned tool_results in user messages (tool_use was removed)
 	cleanOrphanToolResultsInClaudeMessages(truncatedMessages)
+	truncatedMessages = compactEmptyClaudeUserMessages(truncatedMessages)
 
 	newTokens := fixedTokens + suffixSum[bestPoint]
 	log.Printf("[kiro] force truncation: removed %d/%d messages, tokens %d -> %d (target %d)",
@@ -459,28 +460,29 @@ func ForceTruncateMessages(req *ClaudeRequest, targetTokens int) (*ClaudeRequest
 	return newReq, true
 }
 
-// cleanOrphanToolResultsInClaudeMessages removes tool_result blocks from user messages
-// that reference tool_use IDs not present in any assistant message.
+// cleanOrphanToolResultsInClaudeMessages keeps at most one result for each call
+// in the preceding assistant turn. Consecutive messages of one role form a turn.
 // This is the complement of CleanOrphanToolUsesInClaudeMessages.
+// Call compactEmptyClaudeUserMessages after removing emptied assistant messages.
 func cleanOrphanToolResultsInClaudeMessages(messages []ClaudeMessage) bool {
 	if len(messages) == 0 {
 		return false
 	}
 
-	// Collect all tool_use IDs from assistant messages
-	allToolUseIDs := make(map[string]bool)
-	for _, msg := range messages {
-		if msg.Role != "assistant" {
-			continue
-		}
-		for _, id := range extractToolUseIDs(msg) {
-			allToolUseIDs[id] = true
-		}
-	}
-
-	// Remove tool_results that reference non-existent tool_use IDs
+	pendingIDs := make(map[string]bool)
+	previousRole := ""
 	modified := false
 	for i := range messages {
+		role := messages[i].Role
+		if role == "assistant" {
+			if previousRole != "assistant" {
+				clear(pendingIDs)
+			}
+			for _, id := range extractToolUseIDs(messages[i]) {
+				pendingIDs[id] = true
+			}
+		}
+		previousRole = role
 		if messages[i].Role != "user" {
 			continue
 		}
@@ -503,11 +505,12 @@ func cleanOrphanToolResultsInClaudeMessages(messages []ClaudeMessage) bool {
 			blockType, _ := blockMap["type"].(string)
 			if blockType == "tool_result" {
 				if toolUseID, _ := blockMap["tool_use_id"].(string); toolUseID != "" {
-					if !allToolUseIDs[toolUseID] {
+					if !pendingIDs[toolUseID] {
 						contentModified = true
-						log.Printf("[kiro] removed orphan tool_result tool_use_id=%s from user message", toolUseID)
+						log.Printf("[kiro] removed orphan or repeated tool_result tool_use_id=%s from user message", toolUseID)
 						continue // skip orphaned tool_result
 					}
+					delete(pendingIDs, toolUseID)
 				}
 			}
 
@@ -516,10 +519,6 @@ func cleanOrphanToolResultsInClaudeMessages(messages []ClaudeMessage) bool {
 
 		if contentModified {
 			modified = true
-			if len(newContent) == 0 {
-				// Backfill: user message must have content
-				newContent = []any{map[string]any{"type": "text", "text": "Continue"}}
-			}
 			messages[i].Content = newContent
 		}
 	}
@@ -527,31 +526,63 @@ func cleanOrphanToolResultsInClaudeMessages(messages []ClaudeMessage) bool {
 	return modified
 }
 
+// Remove user messages emptied by tool-result cleanup, preserving the order of
+// all remaining content. Only an entirely empty logical user turn needs padding;
+// padding individual messages can put text before a later tool_result.
+func compactEmptyClaudeUserMessages(messages []ClaudeMessage) []ClaudeMessage {
+	cleaned := make([]ClaudeMessage, 0, len(messages))
+	for i := 0; i < len(messages); {
+		if messages[i].Role != "user" {
+			cleaned = append(cleaned, messages[i])
+			i++
+			continue
+		}
+		start, kept := i, len(cleaned)
+		for i < len(messages) && messages[i].Role == "user" {
+			content, isBlocks := messages[i].Content.([]any)
+			if !isBlocks || len(content) > 0 {
+				cleaned = append(cleaned, messages[i])
+			}
+			i++
+		}
+		if len(cleaned) == kept {
+			msg := messages[start]
+			msg.Content = []any{map[string]any{"type": "text", "text": "Continue"}}
+			cleaned = append(cleaned, msg)
+		}
+	}
+	return cleaned
+}
+
 // DeduplicateToolUseIDsInClaudeMessages removes duplicate tool_use blocks across all
 // assistant messages, keeping only the first occurrence of each tool_use ID globally.
-// After removing duplicates, it also cleans up any orphaned tool_result blocks that
-// reference the removed tool_use IDs.
+// The removed calls' results are cleaned within their original turns as well.
 //
 // Claude API requires globally unique tool_use IDs. Clients may send duplicate IDs
 // due to conversation history merging, retry logic, or client-side bugs.
 //
-// Returns true if any modification was made.
-func DeduplicateToolUseIDsInClaudeMessages(messages []ClaudeMessage) bool {
+// Returns the repaired messages and whether anything changed. Callers must use
+// the returned slice because emptied assistant turns are removed.
+func DeduplicateToolUseIDsInClaudeMessages(messages []ClaudeMessage) ([]ClaudeMessage, bool) {
 	if len(messages) == 0 {
-		return false
+		return messages, false
 	}
 
 	// Track all seen tool_use IDs globally across all assistant messages
 	seenIDs := make(map[string]bool)
 	modified := false
+	cleaned := make([]ClaudeMessage, 0, len(messages))
+	emptyAssistantTurns := make(map[int]bool)
 
-	for i := range messages {
-		if messages[i].Role != "assistant" {
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			cleaned = append(cleaned, msg)
 			continue
 		}
 
-		content, ok := messages[i].Content.([]any)
+		content, ok := msg.Content.([]any)
 		if !ok {
+			cleaned = append(cleaned, msg)
 			continue
 		}
 
@@ -584,19 +615,31 @@ func DeduplicateToolUseIDsInClaudeMessages(messages []ClaudeMessage) bool {
 		if contentModified {
 			modified = true
 			if len(newContent) == 0 {
-				// Backfill empty content to avoid sending message with no content blocks
-				newContent = []any{map[string]any{"type": "text", "text": historyAssistantFillerContent}}
+				// Keep the turn boundary until its tool_results are cleaned. An
+				// earlier unpaired call with the same ID must not consume them.
+				emptyAssistantTurns[len(cleaned)] = true
 			}
-			messages[i].Content = newContent
+			msg.Content = newContent
 		}
+		cleaned = append(cleaned, msg)
 	}
 
-	// After dedup, clean orphaned tool_results that reference removed tool_use IDs
 	if modified {
-		cleanOrphanToolResultsInClaudeMessages(messages)
+		cleanOrphanToolResultsInClaudeMessages(cleaned)
+		kept := cleaned[:0]
+		for i, msg := range cleaned {
+			if !emptyAssistantTurns[i] {
+				kept = append(kept, msg)
+			}
+		}
+		cleaned = kept
+		// A retained call may have appeared paired only because a later
+		// duplicate reused its ID. Remove it if no valid result remains.
+		cleaned, _ = CleanOrphanToolUsesInClaudeMessages(cleaned)
+		cleaned = compactEmptyClaudeUserMessages(cleaned)
 	}
 
-	return modified
+	return cleaned, modified
 }
 
 // CleanOrphanToolUsesInClaudeMessages validates tool_use/tool_result pairing across
@@ -611,10 +654,11 @@ func DeduplicateToolUseIDsInClaudeMessages(messages []ClaudeMessage) bool {
 // This is the Claude message format equivalent of cleanOrphanToolUses in
 // request_transformer.go (which operates on AWSQ HistoryEntry format).
 //
-// Returns true if any modification was made.
-func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) bool {
+// Returns the repaired messages and whether anything changed. Callers must use
+// the returned slice because emptied assistant turns are removed.
+func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) ([]ClaudeMessage, bool) {
 	if len(messages) == 0 {
-		return false
+		return messages, false
 	}
 
 	// 1. Collect all tool_use IDs from assistant messages
@@ -629,7 +673,7 @@ func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) bool {
 	}
 
 	if len(allToolUseIDs) == 0 {
-		return false
+		return messages, false
 	}
 
 	// 2. Collect all tool_result IDs from user messages
@@ -652,18 +696,21 @@ func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) bool {
 	}
 
 	if len(orphanedIDs) == 0 {
-		return false
+		return messages, false
 	}
 
 	// 4. Remove orphaned tool_use blocks from assistant messages
 	modified := false
-	for i := range messages {
-		if messages[i].Role != "assistant" {
+	cleaned := make([]ClaudeMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			cleaned = append(cleaned, msg)
 			continue
 		}
 
-		content, ok := messages[i].Content.([]any)
+		content, ok := msg.Content.([]any)
 		if !ok {
+			cleaned = append(cleaned, msg)
 			continue
 		}
 
@@ -692,12 +739,14 @@ func CleanOrphanToolUsesInClaudeMessages(messages []ClaudeMessage) bool {
 		if contentModified {
 			modified = true
 			if len(newContent) == 0 {
-				// Backfill empty content to avoid sending message with no content blocks
-				newContent = []any{map[string]any{"type": "text", "text": historyAssistantFillerContent}}
+				// Drop the emptied turn instead of inventing an assistant reply.
+				// A punctuation filler becomes a response example for the model.
+				continue
 			}
-			messages[i].Content = newContent
+			msg.Content = newContent
 		}
+		cleaned = append(cleaned, msg)
 	}
 
-	return modified
+	return cleaned, modified
 }

@@ -792,6 +792,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     }
   }
   const geminiModels = {
+    'gemini-4-argon': { name: 'Gemini 4 Argon' },
     'gemini-2.0-flash': { name: 'Gemini 2.0 Flash' },
     'gemini-2.5-flash': { name: 'Gemini 2.5 Flash' },
     'gemini-2.5-pro': { name: 'Gemini 2.5 Pro' },
@@ -800,6 +801,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
   }
 
   const antigravityGeminiModels = {
+    'gemini-4-argon': { name: 'Gemini 4 Argon' },
     'gemini-2.5-flash': { name: 'Gemini 2.5 Flash' },
     'gemini-2.5-flash-lite': { name: 'Gemini 2.5 Flash Lite' },
     'gemini-2.5-flash-thinking': { name: 'Gemini 2.5 Flash Thinking' },

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -335,6 +333,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				if result != nil && result.PartialUsage {
+					h.recordForwardUsage(c, result, apiKey, account, subscription)
+					log.Printf("Account %d: forward failed after billable upstream work: %v", account.ID, err)
+					return
+				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					failedAccountIDs[account.ID] = struct{}{}
@@ -353,35 +356,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 
-			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
-			userAgent := c.GetHeader("User-Agent")
-			clientIP := ip.GetClientIP(c)
-			var tempAPIKeyID *int64
-			var tempAPIKey *service.TempAPIKey
-			if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
-				tempAPIKeyID = new(int64)
-				*tempAPIKeyID = tempKey.ID
-				tempAPIKey = tempKey
-			}
-
-			// 异步记录使用量（subscription已在函数开头获取）
-			go func(result *service.ForwardResult, usedAccount *service.Account, ua, clientIP string, tempKeyID *int64, tempKey *service.TempAPIKey) {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:       result,
-					APIKey:       apiKey,
-					User:         apiKey.User,
-					Account:      usedAccount,
-					Subscription: subscription,
-					UserAgent:    ua,
-					IPAddress:    clientIP,
-					TempAPIKeyID: tempKeyID,
-					TempAPIKey:   tempKey,
-				}); err != nil {
-					log.Printf("Record usage failed: %v", err)
-				}
-			}(result, account, userAgent, clientIP, tempAPIKeyID, tempAPIKey)
+			h.recordForwardUsage(c, result, apiKey, account, subscription)
 			return
 		}
 	}
@@ -500,6 +475,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			accountReleaseFunc()
 		}
 		if err != nil {
+			if result != nil && result.PartialUsage {
+				h.recordForwardUsage(c, result, apiKey, account, subscription)
+				log.Printf("Account %d: forward failed after billable upstream work: %v", account.ID, err)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}
@@ -537,35 +517,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 
-		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
-		userAgent := c.GetHeader("User-Agent")
-		clientIP := ip.GetClientIP(c)
-		var tempAPIKeyID *int64
-		var tempAPIKey *service.TempAPIKey
-		if tempKey, ok := middleware2.GetTempAPIKeyFromContext(c); ok && tempKey != nil {
-			tempAPIKeyID = new(int64)
-			*tempAPIKeyID = tempKey.ID
-			tempAPIKey = tempKey
-		}
-
-		// 异步记录使用量（subscription已在函数开头获取）
-		go func(result *service.ForwardResult, usedAccount *service.Account, ua, clientIP string, tempKeyID *int64, tempKey *service.TempAPIKey) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-				Result:       result,
-				APIKey:       apiKey,
-				User:         apiKey.User,
-				Account:      usedAccount,
-				Subscription: subscription,
-				UserAgent:    ua,
-				IPAddress:    clientIP,
-				TempAPIKeyID: tempKeyID,
-				TempAPIKey:   tempKey,
-			}); err != nil {
-				log.Printf("Record usage failed: %v", err)
-			}
-		}(result, account, userAgent, clientIP, tempAPIKeyID, tempAPIKey)
+		h.recordForwardUsage(c, result, apiKey, account, subscription)
 
 		// 对 Antigravity 账号，请求完成后异步刷新配额并更新健康状态
 		if account.Platform == service.PlatformAntigravity {

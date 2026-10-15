@@ -132,10 +132,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
 		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
 	}
+	selectionGroupID := h.gatewayService.ResolveOpenAIRequestGroupID(selectionCtx, apiKey, c.Request.URL.Path, parsed.Model, body)
 
 	for {
-		log.Printf("[OpenAI Images Handler] Selecting account: groupID=%v model=%s capability=%s", apiKey.GroupID, parsed.Model, parsed.RequiredCapability)
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, parsed.Model, failedAccountIDs)
+		log.Printf("[OpenAI Images Handler] Selecting account: groupID=%v model=%s capability=%s", selectionGroupID, parsed.Model, parsed.RequiredCapability)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, selectionGroupID, sessionHash, parsed.Model, failedAccountIDs)
 		if err != nil {
 			log.Printf("[OpenAI Images Handler] SelectAccount failed: %v", err)
 			if len(failedAccountIDs) == 0 {
@@ -147,7 +148,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 				return
 			}
-			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+			h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 			if lastFailoverStatus == 0 {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible OpenAI image accounts", streamStarted)
 				return
@@ -214,7 +215,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false
 			}
-			if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+			if err := h.gatewayService.BindStickySession(c.Request.Context(), selectionGroupID, sessionHash, account.ID); err != nil {
 				log.Printf("Bind sticky session failed: %v", err)
 			}
 		}
@@ -235,17 +236,17 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				lastFailoverStatus = failoverErr.StatusCode
 				lastFailoverMsg = failoverErr.Message
 				if totalSwitchCount >= maxTotalSwitches {
-					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 					return
 				}
 				if failoverErr.StatusCode == http.StatusTooManyRequests {
-					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 					totalSwitchCount++
 					log.Printf("Account %d: upstream 429, rate-limit failover (total=%d/%d)", account.ID, totalSwitchCount, maxTotalSwitches)
 				} else {
 					if switchCount >= maxAccountSwitches {
-						h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+						h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 						h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 						return
 					}

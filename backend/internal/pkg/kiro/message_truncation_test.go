@@ -194,7 +194,7 @@ func TestFindSafeTruncationPoints(t *testing.T) {
 			expected: []int{4}, // Can only truncate after the tool exchange is complete
 		},
 		{
-			name:     "too few messages",
+			name: "too few messages",
 			messages: []ClaudeMessage{
 				{Role: "user", Content: "Hello"},
 				{Role: "assistant", Content: "Hi"},
@@ -988,7 +988,7 @@ func TestEstimateFixedTokens_IncludesCWOverhead(t *testing.T) {
 
 func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 	t.Run("no messages", func(t *testing.T) {
-		modified := CleanOrphanToolUsesInClaudeMessages(nil)
+		_, modified := CleanOrphanToolUsesInClaudeMessages(nil)
 		if modified {
 			t.Error("expected no modification for nil messages")
 		}
@@ -999,7 +999,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "hi there"},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if modified {
 			t.Error("expected no modification when no tool_use blocks exist")
 		}
@@ -1017,7 +1017,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			}},
 			{Role: "assistant", Content: "done"},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if modified {
 			t.Error("expected no modification when all tool_use blocks are paired")
 		}
@@ -1034,7 +1034,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			{Role: "user", Content: "never mind, do something else"},
 			{Role: "assistant", Content: "ok"},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification when orphan tool_use exists")
 		}
@@ -1059,7 +1059,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 		}
 	})
 
-	t.Run("backfills empty content after removing all blocks", func(t *testing.T) {
+	t.Run("removes empty assistant turn after removing all blocks", func(t *testing.T) {
 		messages := []ClaudeMessage{
 			{Role: "user", Content: "do something"},
 			{Role: "assistant", Content: []any{
@@ -1068,28 +1068,16 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			// No tool_result — entire assistant content becomes empty after cleanup
 			{Role: "user", Content: "hello again"},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification")
 		}
 
-		content, ok := messages[1].Content.([]any)
-		if !ok {
-			t.Fatal("expected content to be []any")
+		if len(messages) != 2 || messages[0].Role != "user" || messages[1].Role != "user" {
+			t.Fatalf("expected only original user turns, got %#v", messages)
 		}
-		if len(content) != 1 {
-			t.Fatalf("expected 1 placeholder block, got %d", len(content))
-		}
-		blockMap, ok := content[0].(map[string]any)
-		if !ok {
-			t.Fatal("expected block to be map")
-		}
-		if blockMap["type"] != "text" {
-			t.Errorf("expected placeholder type=text, got %v", blockMap["type"])
-		}
-		text, _ := blockMap["text"].(string)
-		if text == "" {
-			t.Error("placeholder text should not be empty")
+		if messages[0].Content != "do something" || messages[1].Content != "hello again" {
+			t.Fatalf("user content changed: %#v", messages)
 		}
 	})
 
@@ -1110,7 +1098,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			// t3 has NO tool_result
 			{Role: "user", Content: "forget it"},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification")
 		}
@@ -1125,14 +1113,9 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			t.Errorf("expected t1 to be kept, got id=%v", blockMap["id"])
 		}
 
-		// t3 should be removed from messages[3], replaced with placeholder
-		content3, _ := messages[3].Content.([]any)
-		if len(content3) != 1 {
-			t.Fatalf("messages[3] should have 1 placeholder block, got %d", len(content3))
-		}
-		placeholderMap, _ := content3[0].(map[string]any)
-		if placeholderMap["type"] != "text" {
-			t.Errorf("expected placeholder text block, got type=%v", placeholderMap["type"])
+		// The t3-only turn disappears; the following user instruction is retained.
+		if len(messages) != 4 || messages[3].Role != "user" || messages[3].Content != "forget it" {
+			t.Fatalf("expected empty assistant turn removed, got %#v", messages)
 		}
 	})
 
@@ -1146,7 +1129,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 			}},
 			{Role: "user", Content: "ok"},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification")
 		}
@@ -1171,7 +1154,7 @@ func TestCleanOrphanToolUsesInClaudeMessages(t *testing.T) {
 				map[string]any{"type": "tool_result", "tool_use_id": "nonexistent", "content": "x"},
 			}},
 		}
-		modified := CleanOrphanToolUsesInClaudeMessages(messages)
+		messages, modified := CleanOrphanToolUsesInClaudeMessages(messages)
 		if modified {
 			t.Error("should not modify when no tool_use blocks exist")
 		}
@@ -1196,7 +1179,7 @@ func TestDeduplicateToolUseIDsInClaudeMessages(t *testing.T) {
 				map[string]any{"type": "tool_result", "tool_use_id": "t2", "content": "ok"},
 			}},
 		}
-		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		messages, modified := DeduplicateToolUseIDsInClaudeMessages(messages)
 		if modified {
 			t.Error("expected no modification when no duplicates exist")
 		}
@@ -1214,7 +1197,7 @@ func TestDeduplicateToolUseIDsInClaudeMessages(t *testing.T) {
 				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "file content"},
 			}},
 		}
-		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		messages, modified := DeduplicateToolUseIDsInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification when duplicate tool_use exists in same message")
 		}
@@ -1260,7 +1243,7 @@ func TestDeduplicateToolUseIDsInClaudeMessages(t *testing.T) {
 				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "content c"},
 			}},
 		}
-		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		messages, modified := DeduplicateToolUseIDsInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification when duplicate tool_use exists across messages")
 		}
@@ -1302,34 +1285,32 @@ func TestDeduplicateToolUseIDsInClaudeMessages(t *testing.T) {
 				map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "result 2"},
 			}},
 		}
-		modified := DeduplicateToolUseIDsInClaudeMessages(messages)
+		messages, modified := DeduplicateToolUseIDsInClaudeMessages(messages)
 		if !modified {
 			t.Fatal("expected modification")
 		}
 
-		// The second assistant message's tool_use t1 is a duplicate, so it gets removed.
-		// After dedup, the second user message has a tool_result for t1 but the only
-		// remaining tool_use t1 is in messages[1]. The tool_result in messages[4] still
-		// references t1 which exists in messages[1], so it should be kept by
-		// cleanOrphanToolResultsInClaudeMessages (it only removes results with NO
-		// matching tool_use anywhere).
-		// But the second assistant message (messages[3]) should be backfilled.
-		content3, _ := messages[3].Content.([]any)
-		if len(content3) != 1 {
-			t.Fatalf("messages[3] should have 1 placeholder block, got %d", len(content3))
+		// Remove the repeated call and its result together. The retained call's
+		// ID must not make a later result valid after that call was already answered.
+		if len(messages) != 3 || messages[2].Role != "user" {
+			t.Fatalf("expected empty duplicate turn removed, got %#v", messages)
 		}
-		bm, _ := content3[0].(map[string]any)
-		if bm["type"] != "text" {
-			t.Errorf("expected placeholder text block, got type=%v", bm["type"])
+		content2, _ := messages[2].Content.([]any)
+		if len(content2) != 1 {
+			t.Fatalf("expected only the original result, got %#v", content2)
+		}
+		bm, _ := content2[0].(map[string]any)
+		if bm["type"] != "tool_result" || bm["content"] != "result 1" {
+			t.Fatalf("original tool result was not preserved: %#v", bm)
 		}
 	})
 
 	t.Run("empty messages", func(t *testing.T) {
-		modified := DeduplicateToolUseIDsInClaudeMessages(nil)
+		_, modified := DeduplicateToolUseIDsInClaudeMessages(nil)
 		if modified {
 			t.Error("expected no modification for nil messages")
 		}
-		modified = DeduplicateToolUseIDsInClaudeMessages([]ClaudeMessage{})
+		_, modified = DeduplicateToolUseIDsInClaudeMessages([]ClaudeMessage{})
 		if modified {
 			t.Error("expected no modification for empty messages")
 		}
@@ -1352,7 +1333,8 @@ func TestDeduplicateToolUseIDsInClaudeMessages(t *testing.T) {
 			Stream:    true,
 		}
 
-		modified := DeduplicateToolUseIDsInClaudeMessages(req.Messages)
+		messages, modified := DeduplicateToolUseIDsInClaudeMessages(req.Messages)
+		req.Messages = messages
 		if !modified {
 			t.Fatal("expected modification")
 		}
@@ -1408,7 +1390,8 @@ func TestCleanOrphanToolUsesInClaudeMessages_RoundtripJSON(t *testing.T) {
 		Stream:    true,
 	}
 
-	modified := CleanOrphanToolUsesInClaudeMessages(req.Messages)
+	messages, modified := CleanOrphanToolUsesInClaudeMessages(req.Messages)
+	req.Messages = messages
 	if !modified {
 		t.Fatal("expected modification")
 	}

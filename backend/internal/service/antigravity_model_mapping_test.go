@@ -23,6 +23,7 @@ func TestIsAntigravityModelSupported(t *testing.T) {
 		{"直接支持 - gemini-2.5-flash", "gemini-2.5-flash", true},
 		{"直接支持 - gemini-2.5-flash-lite", "gemini-2.5-flash-lite", true},
 		{"直接支持 - gemini-3-pro-high", "gemini-3-pro-high", true},
+		{"直接支持 - gemini-4-argon", "gemini-4-argon", true},
 
 		// 可映射的模型
 		{"可映射 - claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", true},
@@ -81,6 +82,11 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 		},
 
 		// 2. 系统默认映射
+		{
+			name:           "Gemini 4 Argon 透传",
+			requestedModel: "gemini-4-argon",
+			expected:       "gemini-4-argon",
+		},
 		{
 			name:           "系统映射 - claude-3-5-sonnet-20241022",
 			requestedModel: "claude-3-5-sonnet-20241022",

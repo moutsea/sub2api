@@ -15,6 +15,7 @@ func TestDefaultModelsContainsFallbackCatalogModels(t *testing.T) {
 	}
 
 	required := []string{
+		"models/gemini-4-argon",
 		"models/gemini-3.5-flash",
 		"models/gemini-3.1-pro-preview",
 		"models/gemini-3.1-flash-lite",

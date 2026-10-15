@@ -18,6 +18,7 @@ type ModelsListResponse struct {
 func DefaultModels() []Model {
 	methods := []string{"generateContent", "streamGenerateContent"}
 	return []Model{
+		{Name: "models/gemini-4-argon", DisplayName: "Gemini 4 Argon", SupportedGenerationMethods: methods},
 		{Name: "models/gemini-3.5-flash", DisplayName: "Gemini 3.5 Flash", SupportedGenerationMethods: methods},
 		{Name: "models/gemini-3.1-pro-preview", DisplayName: "Gemini 3.1 Pro Preview", SupportedGenerationMethods: methods},
 		{Name: "models/gemini-3.1-pro-preview-customtools", DisplayName: "Gemini 3.1 Pro Preview (Custom Tools)", SupportedGenerationMethods: methods},

@@ -164,6 +164,18 @@ var openAIStaticPricingOverrides = map[string]*LiteLLMModelPricing{
 }
 
 var geminiStaticPricingOverrides = map[string]*LiteLLMModelPricing{
+	"gemini-4-argon": {
+		InputCostPerToken:               4e-06,
+		InputCostPerTokenPriority:       7.2e-06,
+		OutputCostPerToken:              20e-06,
+		OutputCostPerTokenPriority:      36e-06,
+		CacheReadInputTokenCost:         0.2e-06,
+		CacheReadInputTokenCostPriority: 0.36e-06,
+		SupportsServiceTier:             true,
+		LiteLLMProvider:                 "gemini",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	},
 	"gemini-3.8-flash": {
 		InputCostPerToken:               7.5e-07,
 		InputCostPerTokenPriority:       1.35e-06,
@@ -175,6 +187,23 @@ var geminiStaticPricingOverrides = map[string]*LiteLLMModelPricing{
 		Mode:                            "chat",
 		SupportsPromptCaching:           true,
 	},
+}
+
+// geminiStaticPricingAt applies Argon's introductory 50% discount through
+// November 30, 2026. Evaluate at lookup time so long-running servers switch
+// to standard pricing without a restart. The cutoff uses UTC.
+// https://ai.google.dev/gemini-api/docs/generate-content/latest-model#pricing
+func geminiStaticPricingAt(model string, at time.Time) *LiteLLMModelPricing {
+	pricing := cloneLiteLLMModelPricing(geminiStaticPricingOverrides[model])
+	if pricing != nil && model == "gemini-4-argon" && at.Before(time.Date(2026, time.December, 1, 0, 0, 0, 0, time.UTC)) {
+		pricing.InputCostPerToken /= 2
+		pricing.InputCostPerTokenPriority /= 2
+		pricing.OutputCostPerToken /= 2
+		pricing.OutputCostPerTokenPriority /= 2
+		pricing.CacheReadInputTokenCost /= 2
+		pricing.CacheReadInputTokenCostPriority /= 2
+	}
+	return pricing
 }
 
 var claudeOpus48EquivalentStaticPricing = &LiteLLMModelPricing{
@@ -672,9 +701,9 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	}
 
 	for _, candidate := range lookupCandidates {
-		if pricing, ok := geminiStaticPricingOverrides[candidate]; ok {
+		if pricing := geminiStaticPricingAt(candidate, time.Now()); pricing != nil {
 			log.Printf("[Pricing] Gemini static pricing matched %s", candidate)
-			return cloneLiteLLMModelPricing(pricing)
+			return pricing
 		}
 	}
 
@@ -729,6 +758,13 @@ func (s *PricingService) GetModelPricingExact(modelName string) *LiteLLMModelPri
 
 	modelLower := strings.ToLower(strings.TrimSpace(modelName))
 	candidates := s.buildModelLookupCandidates(modelLower)
+	// Match billing lookup precedence: an explicit remote entry, including a
+	// provider-prefixed one, takes priority over a canonical static fallback.
+	for _, candidate := range candidates {
+		if pricing, ok := s.pricingData[candidate]; ok {
+			return pricing
+		}
+	}
 	lookup := func(candidate string) *LiteLLMModelPricing {
 		if pricing, ok := s.pricingData[candidate]; ok {
 			return pricing
@@ -736,8 +772,8 @@ func (s *PricingService) GetModelPricingExact(modelName string) *LiteLLMModelPri
 		if pricing, ok := openAIStaticPricingOverrides[candidate]; ok {
 			return cloneLiteLLMModelPricing(pricing)
 		}
-		if pricing, ok := geminiStaticPricingOverrides[candidate]; ok {
-			return cloneLiteLLMModelPricing(pricing)
+		if pricing := geminiStaticPricingAt(candidate, time.Now()); pricing != nil {
+			return pricing
 		}
 		return nil
 	}

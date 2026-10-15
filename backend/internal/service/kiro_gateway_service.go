@@ -590,7 +590,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	// Clean orphan tool_uses that have no matching tool_result.
 	// Claude API requires every tool_use to have a corresponding tool_result in the next user message.
 	// Clients may send broken pairs (e.g., interrupted tool execution, client-side truncation).
-	if kiro.CleanOrphanToolUsesInClaudeMessages(claudeReq.Messages) {
+	if messages, modified := kiro.CleanOrphanToolUsesInClaudeMessages(claudeReq.Messages); modified {
+		claudeReq.Messages = messages
 		log.Printf("%s cleaned orphan tool_use blocks from request", prefix)
 		// Re-serialize body for apikey passthrough path
 		if newBody, err := json.Marshal(claudeReq); err == nil {
@@ -599,7 +600,8 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 
 	// Deduplicate tool_use IDs (Claude API requires globally unique IDs)
-	if kiro.DeduplicateToolUseIDsInClaudeMessages(claudeReq.Messages) {
+	if messages, modified := kiro.DeduplicateToolUseIDsInClaudeMessages(claudeReq.Messages); modified {
+		claudeReq.Messages = messages
 		log.Printf("%s deduplicated tool_use ids in request", prefix)
 		if newBody, err := json.Marshal(claudeReq); err == nil {
 			body = newBody

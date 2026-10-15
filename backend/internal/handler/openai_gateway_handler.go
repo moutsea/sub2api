@@ -221,6 +221,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, reqBody)
+	selectionGroupID := h.gatewayService.ResolveOpenAIRequestGroupID(c.Request.Context(), apiKey, "/v1/responses", reqModel, body)
 	selectionCtx := c.Request.Context()
 	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
 		selectionCtx = service.WithOpenAIRequestPlatform(selectionCtx, service.PlatformGrok)
@@ -236,8 +237,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	for {
 		// Select account supporting the requested model
-		log.Printf("[OpenAI Handler] Selecting account: groupID=%v model=%s", apiKey.GroupID, reqModel)
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
+		log.Printf("[OpenAI Handler] Selecting account: groupID=%v model=%s", selectionGroupID, reqModel)
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, selectionGroupID, sessionHash, reqModel, failedAccountIDs)
 		if err != nil {
 			log.Printf("[OpenAI Handler] SelectAccount failed: %v", err)
 			if len(failedAccountIDs) == 0 {
@@ -249,7 +250,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", noAvailableAccountsMessage(err), streamStarted)
 				return
 			}
-			h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+			h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 			h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 			return
 		}
@@ -309,7 +310,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false
 			}
-			if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+			if err := h.gatewayService.BindStickySession(c.Request.Context(), selectionGroupID, sessionHash, account.ID); err != nil {
 				log.Printf("Bind sticky session failed: %v", err)
 			}
 		}
@@ -333,25 +334,25 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				lastFailoverStatus = failoverErr.StatusCode
 				lastFailoverMsg = failoverErr.Message
 				if shouldStopKiroOAuthInitialFailover(account, failoverErr, requestStartedAt) {
-					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 					return
 				}
 				// 全局硬上限：单请求内最多切换 10 次，避免过长链路。
 				if totalSwitchCount >= maxTotalSwitches {
-					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 					return
 				}
 				if failoverErr.StatusCode == http.StatusTooManyRequests {
 					// 429: 清除 sticky session，避免下次请求仍路由到同一账号
-					h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+					h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 					totalSwitchCount++
 					log.Printf("Account %d: upstream 429, rate-limit failover (total=%d/%d)", account.ID, totalSwitchCount, maxTotalSwitches)
 				} else {
 					// 非 429 维持较低切换上限。
 					if switchCount >= maxAccountSwitches {
-						h.gatewayService.InvalidateStickySession(c.Request.Context(), apiKey.GroupID, sessionHash)
+						h.gatewayService.InvalidateStickySession(c.Request.Context(), selectionGroupID, sessionHash)
 						h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverMsg, streamStarted)
 						return
 					}

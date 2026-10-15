@@ -666,6 +666,9 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		MaxOutputTokens: 64000, // 默认最大输出
 		StopSequences:   DefaultStopSequences,
 	}
+	if req.Model == "gemini-4-argon" && req.MaxTokens > 0 {
+		config.MaxOutputTokens = req.MaxTokens
+	}
 
 	// Thinking 配置
 	if req.Thinking != nil && req.Thinking.Type == "enabled" {
@@ -681,7 +684,7 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 			config.ThinkingConfig.ThinkingBudget = budget
 
 			// 自动修正：max_tokens 必须大于 budget_tokens
-			if adjusted, ok := ensureMaxTokensGreaterThanBudget(config.MaxOutputTokens, budget); ok {
+			if adjusted, ok := ensureMaxTokensGreaterThanBudget(config.MaxOutputTokens, budget); ok && req.Model != "gemini-4-argon" {
 				log.Printf("[Antigravity] Auto-adjusted max_tokens from %d to %d (must be > budget_tokens=%d)",
 					config.MaxOutputTokens, adjusted, budget)
 				config.MaxOutputTokens = adjusted
