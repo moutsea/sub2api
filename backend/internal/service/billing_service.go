@@ -287,6 +287,19 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:    2,
 		LongContextOutputMultiplier:   2,
 	}
+	// Grok 4.7: $2 input / $0.50 cached input / $6 output per million tokens;
+	// long-context requests (>=200K input, including cache tokens) are 2x.
+	// Source: https://docs.x.ai/developers/pricing
+	s.fallbackPrices["grok-4.7"] = &ModelPricing{
+		InputPricePerToken:            2e-6,
+		OutputPricePerToken:           6e-6,
+		CacheReadPricePerToken:        0.5e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
 	s.fallbackPrices["grok-3-mini"] = &ModelPricing{
 		InputPricePerToken: 0.30e-6, OutputPricePerToken: 0.50e-6,
 		CacheReadPricePerToken: 0.075e-6, SupportsCacheBreakdown: false,
@@ -342,6 +355,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// Keep this branch ahead of the Claude family checks because Grok model IDs
 	// do not contain Claude family markers.
 	switch {
+	case modelLower == "grok-4.7", strings.HasPrefix(modelLower, "grok-4.7-"):
+		return s.fallbackPrices["grok-4.7"]
 	case modelLower == "grok-4.6", modelLower == "grok-4.6-latest", strings.HasPrefix(modelLower, "grok-4.6-"):
 		return s.fallbackPrices["grok-4.6"]
 	case modelLower == "grok-4.5", modelLower == "grok-4.5-latest", strings.HasPrefix(modelLower, "grok-4.5-"):

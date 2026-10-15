@@ -126,6 +126,79 @@ func TestApplyGrokPromptCacheKeyIsTenantAndModelScoped(t *testing.T) {
 	}
 }
 
+func TestForwardGrok47Responses(t *testing.T) {
+	for _, accountType := range []string{AccountTypeAPIKey, AccountTypeOAuth} {
+		for _, model := range []string{"grok-4.7", "grok-4.7-latest", "xai/grok-4.7", "x-ai/grok-4.7-latest", "grok/grok-4.7"} {
+			t.Run(accountType+"/"+model, func(t *testing.T) {
+				body := []byte(`{"model":"` + model + `","input":[{"type":"reasoning","encrypted_content":"opaque"},{"role":"user","content":"hi"}],"reasoning":{"effort":"xhigh"},"presence_penalty":0.1,"frequencyPenalty":0.2,"stop":["end"]}`)
+				c, recorder := newGrokTestContext(http.MethodPost, "/v1/responses", body)
+				upstream := &grokTestUpstream{response: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"id":"resp_grok47","model":"grok-4.7","output":[{"type":"reasoning","encrypted_content":"next-opaque"}],"usage":{"input_tokens":3,"output_tokens":2}}`,
+					)),
+				}}
+				account := &Account{
+					ID: 47, Platform: PlatformGrok, Type: accountType, Concurrency: 1,
+					Credentials: map[string]any{
+						"api_key": "test-key", "access_token": "test-token", "base_url": "https://api.x.ai/v1",
+						"model_mapping": map[string]any{"grok-4.7": "grok-4.7"},
+					},
+				}
+				if !isGrokModelSupportedByAccount(account, model) {
+					t.Fatalf("model %q should match the account's canonical model mapping", model)
+				}
+				svc := &OpenAIGatewayService{httpUpstream: upstream}
+				result, err := svc.forwardGrokResponses(context.Background(), c, account, body, model, false, time.Now())
+				if err != nil {
+					t.Fatalf("forwardGrokResponses: %v", err)
+				}
+				if got := gjson.GetBytes(upstream.body, "model").String(); got != "grok-4.7" || result.Model != "grok-4.7" {
+					t.Fatalf("upstream model = %q, billing model = %q, want grok-4.7", got, result.Model)
+				}
+				if got := gjson.GetBytes(upstream.body, "reasoning.effort").String(); got != "xhigh" {
+					t.Fatalf("reasoning effort = %q, want xhigh", got)
+				}
+				for _, field := range []string{"presence_penalty", "frequencyPenalty", "stop"} {
+					if gjson.GetBytes(upstream.body, field).Exists() {
+						t.Fatalf("unsupported parameter %q was forwarded: %s", field, upstream.body)
+					}
+				}
+				if got := gjson.GetBytes(upstream.body, "input.0.encrypted_content").String(); got != "opaque" {
+					t.Fatalf("replayed encrypted reasoning = %q, want opaque", got)
+				}
+				if got := gjson.GetBytes(recorder.Body.Bytes(), "output.0.encrypted_content").String(); got != "next-opaque" {
+					t.Fatalf("returned encrypted reasoning = %q, want next-opaque", got)
+				}
+				if result.Usage.InputTokens != 3 || result.Usage.OutputTokens != 2 {
+					t.Fatalf("unexpected usage: %#v", result.Usage)
+				}
+			})
+		}
+	}
+}
+
+func TestNormalizeGrok47ChatReasoning(t *testing.T) {
+	for _, effort := range []struct{ input, want string }{
+		{"low", "low"}, {"medium", "medium"}, {"high", "high"}, {"xhigh", "xhigh"},
+		{"extra-high", "xhigh"}, {"minimal", "low"}, {"none", "low"},
+	} {
+		t.Run(effort.input, func(t *testing.T) {
+			request := map[string]any{"reasoning": map[string]any{"effort": effort.input}}
+			if !normalizeGrokChatReasoning(request, "xai/grok-4.7-latest") {
+				t.Fatal("expected Responses reasoning object to be converted for Chat Completions")
+			}
+			if got := request["reasoning_effort"]; got != effort.want {
+				t.Fatalf("reasoning_effort = %v, want %q", got, effort.want)
+			}
+			if _, exists := request["reasoning"]; exists {
+				t.Fatal("Responses reasoning object should be removed")
+			}
+		})
+	}
+}
+
 func TestGrokUpstreamRequestDoesNotForwardSessionHeaders(t *testing.T) {
 	c, _ := newGrokTestContext(http.MethodPost, "/v1/chat/completions", []byte(`{"model":"grok-4.6","messages":[]}`))
 	c.Request.Header.Set("session_id", "client-session")

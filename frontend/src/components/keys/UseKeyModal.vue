@@ -815,6 +815,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'claude-sonnet-4-5': { name: 'Claude Sonnet 4.5' }
   }
   const grokModels = {
+    'grok-4.7': { name: 'Grok 4.7' },
     'grok-4.6': { name: 'Grok 4.6' },
     'grok-4.5': { name: 'Grok 4.5' },
     'grok-4.3': { name: 'Grok 4.3' },

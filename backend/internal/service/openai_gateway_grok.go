@@ -667,7 +667,8 @@ func patchGrokResponsesBody(body []byte, upstreamModel string) ([]byte, error) {
 	convertGrokCompactionItems(request)
 	sanitizeGrokResponsesInput(request)
 	sanitizeGrokResponsesTools(request)
-	if strings.EqualFold(upstreamModel, "grok-4.5") || strings.EqualFold(upstreamModel, "grok-4.5-latest") {
+	switch strings.ToLower(xai.ResolveModelID(upstreamModel)) {
+	case "grok-4.5", "grok-4.7":
 		for _, field := range []string{"presence_penalty", "presencePenalty", "frequency_penalty", "frequencyPenalty", "stop"} {
 			delete(request, field)
 		}
@@ -1568,7 +1569,13 @@ func normalizeGrokReasoningEffort(raw, model string) (string, bool) {
 	}
 	value := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(raw)))
 	switch value {
-	case "none", "low", "medium", "high":
+	case "none":
+		// Grok 4.7 cannot disable reasoning; use its lowest supported effort.
+		if strings.EqualFold(xai.ResolveModelID(model), "grok-4.7") {
+			return "low", true
+		}
+		return value, true
+	case "low", "medium", "high":
 		return value, true
 	case "minimal":
 		return "low", true
@@ -1586,13 +1593,14 @@ func normalizeGrokReasoningEffort(raw, model string) (string, bool) {
 
 func grokSupportsXHighReasoningEffort(model string) bool {
 	model = strings.ToLower(xai.StripProviderPrefix(model))
-	return model == "grok-4.6" || model == "grok-4.6-latest"
+	return model == "grok-4.6" || model == "grok-4.6-latest" || model == "grok-4.7" || model == "grok-4.7-latest"
 }
 
 func grokSupportsReasoningEffort(model string) bool {
 	model = strings.ToLower(xai.StripProviderPrefix(model))
 	switch model {
 	case "grok-4.3", "grok-4.3-latest", "grok-4.5", "grok-4.5-latest", "grok-4.6", "grok-4.6-latest",
+		"grok-4.7", "grok-4.7-latest",
 		"grok-3-mini", "grok-3-mini-fast", "grok-4.20-0309-reasoning", "grok-4.20-reasoning", "grok-4.20-multi-agent-0309":
 		return true
 	default:

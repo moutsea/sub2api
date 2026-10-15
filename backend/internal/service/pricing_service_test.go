@@ -414,6 +414,44 @@ func TestBillingServiceIsModelSupported_GrokProviderPrefixes(t *testing.T) {
 	}
 }
 
+func TestBillingServiceGrok47Pricing(t *testing.T) {
+	svc := NewBillingService(nil, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}})
+	for _, model := range []string{"grok-4.7", "grok-4.7-latest", "xai/grok-4.7", "x-ai/grok-4.7-latest", "grok/grok-4.7"} {
+		t.Run(model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(model)
+			if err != nil {
+				t.Fatalf("GetModelPricing: %v", err)
+			}
+			if pricing.InputPricePerToken != 2e-6 || pricing.OutputPricePerToken != 6e-6 || pricing.CacheReadPricePerToken != 0.5e-6 {
+				t.Fatalf("unexpected Grok 4.7 pricing: %#v", pricing)
+			}
+			for _, tc := range []struct {
+				name       string
+				tokens     UsageTokens
+				multiplier float64
+			}{
+				{"below threshold", UsageTokens{InputTokens: 199899, CacheReadTokens: 100, OutputTokens: 10}, 1},
+				{"at threshold", UsageTokens{InputTokens: 199900, CacheReadTokens: 100, OutputTokens: 10}, 2},
+				{"above threshold", UsageTokens{InputTokens: 199901, CacheReadTokens: 100, OutputTokens: 10}, 2},
+				{"cache creation reaches threshold", UsageTokens{InputTokens: 199800, CacheReadTokens: 100, CacheCreationTokens: 100, OutputTokens: 10}, 2},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					cost, err := svc.CalculateCost(model, tc.tokens, 1)
+					if err != nil {
+						t.Fatalf("CalculateCost: %v", err)
+					}
+					wantInput := float64(tc.tokens.InputTokens) * 2e-6 * tc.multiplier
+					wantOutput := float64(tc.tokens.OutputTokens) * 6e-6 * tc.multiplier
+					wantCache := float64(tc.tokens.CacheReadTokens) * 0.5e-6 * tc.multiplier
+					if math.Abs(cost.InputCost-wantInput) > 1e-12 || math.Abs(cost.OutputCost-wantOutput) > 1e-12 || math.Abs(cost.CacheReadCost-wantCache) > 1e-12 {
+						t.Fatalf("cost = %#v, want input=%v output=%v cached=%v", cost, wantInput, wantOutput, wantCache)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestPricingServiceGetModelPricing_Sonnet5DoesNotFallBackToSonnet4(t *testing.T) {
 	svc := &PricingService{
 		pricingData: map[string]*LiteLLMModelPricing{
